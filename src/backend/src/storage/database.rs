@@ -227,6 +227,32 @@ mod tests {
     }
 
     #[test]
+    fn favorite_snapshot_tracks_repeated_and_noop_updates() {
+        let db = Database::open_memory().unwrap();
+        let bookmark = sample_bookmark(
+            "1",
+            "alice",
+            Utc.with_ymd_and_hms(2024, 5, 1, 12, 0, 0).unwrap(),
+            "rust",
+            false,
+        );
+        db.insert_bookmarks(std::slice::from_ref(&bookmark))
+            .unwrap();
+
+        db.set_favorite(&bookmark.id, true).unwrap();
+        assert_eq!(db.get_stats().unwrap().favorite_bookmarks, 1);
+
+        db.set_favorite(&bookmark.id, true).unwrap();
+        assert_eq!(db.get_stats().unwrap().favorite_bookmarks, 1);
+
+        db.set_favorite(&bookmark.id, false).unwrap();
+        assert_eq!(db.get_stats().unwrap().favorite_bookmarks, 0);
+
+        assert!(db.toggle_favorite(&bookmark.id).unwrap());
+        assert_eq!(db.get_stats().unwrap().favorite_bookmarks, 1);
+    }
+
+    #[test]
     fn author_stats_snapshot_stays_hot_after_writes() {
         let db = Database::open_memory().unwrap();
         let first = sample_bookmark(

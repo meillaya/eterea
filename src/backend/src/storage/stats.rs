@@ -91,6 +91,18 @@ impl Database {
         let stats = self.compute_stats()?;
         self.persist_stats_snapshot(&stats)
     }
+
+    /// Adjust the cached favorite total after one bookmark flips state.
+    pub(crate) fn adjust_favorite_snapshot(&self, delta: i64) -> Result<()> {
+        if let Some(snapshot) = self.get_metadata(STATS_SNAPSHOT_METADATA_KEY)? {
+            if let Ok(mut stats) = serde_json::from_str::<BookmarkStats>(&snapshot) {
+                stats.favorite_bookmarks = (stats.favorite_bookmarks + delta).max(0);
+                return self.persist_stats_snapshot(&stats);
+            }
+        }
+
+        self.refresh_stats_snapshot()
+    }
 }
 
 fn utc_timestamp_from_db(timestamp: i64, label: &str) -> Result<DateTime<Utc>> {

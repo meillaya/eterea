@@ -1,4 +1,7 @@
-use super::actions::{enter_focus_scope, leave_focus_scope, navigate_terminal_tab, reload_library};
+use super::actions::{
+    enter_focus_scope, leave_focus_scope, navigate_terminal_tab, refresh_directories,
+    reload_library,
+};
 use super::route::{ScreenRoute, TERMINAL_TOP_TABS};
 use super::state::{FocusScope, KeyboardMode, LibraryState, Services};
 use dioxus::prelude::*;
@@ -352,6 +355,7 @@ fn submit_statusline(services: &Services, state: &mut Signal<LibraryState>) {
 
     if let Some(route) = route {
         let should_reload = route == ScreenRoute::Library;
+        let load_directories = matches!(route, ScreenRoute::Authors | ScreenRoute::Topics);
         {
             let mut next = state.write();
             next.route = route.clone();
@@ -363,6 +367,9 @@ fn submit_statusline(services: &Services, state: &mut Signal<LibraryState>) {
         }
         if should_reload {
             reload_library(services, state);
+        }
+        if load_directories {
+            refresh_directories(services, state);
         }
     } else {
         let mut next = state.write();

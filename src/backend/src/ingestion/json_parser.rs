@@ -109,7 +109,6 @@ impl JsonParser {
                     bookmark.tags.push(tag);
                 }
             }
-            bookmark.compute_search_text();
         }
 
         Ok(bookmark)
@@ -290,7 +289,6 @@ impl JsonParser {
                     bookmark.tags.push(tag);
                 }
             }
-            bookmark.compute_search_text();
         }
 
         Ok(bookmark)

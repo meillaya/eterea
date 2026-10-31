@@ -20,24 +20,12 @@ use std::path::Path;
 use tracing::info;
 
 /// Main ingestion engine that auto-detects format and imports bookmarks
-pub struct Ingester {
-    batch_size: usize,
-}
-
-impl Default for Ingester {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+#[derive(Default)]
+pub struct Ingester;
 
 impl Ingester {
     pub fn new() -> Self {
-        Self { batch_size: 1000 }
-    }
-
-    pub fn with_batch_size(mut self, size: usize) -> Self {
-        self.batch_size = size;
-        self
+        Self
     }
 
     /// Ingest bookmarks from a file, auto-detecting the format
@@ -104,19 +92,12 @@ impl Ingester {
         JsonParser::new().parse_str(content)
     }
 
-    /// Insert bookmarks in batches for optimal performance
+    /// Insert every parsed bookmark in one transaction.
     fn insert_bookmarks(&self, bookmarks: Vec<Bookmark>, db: &Database) -> Result<usize> {
         let total = bookmarks.len();
-        info!(
-            "Inserting {} bookmarks in batches of {}",
-            total, self.batch_size
-        );
+        info!("Inserting {} bookmarks", total);
 
-        let mut inserted = 0;
-        for chunk in bookmarks.chunks(self.batch_size) {
-            inserted += db.insert_bookmarks(chunk)?;
-        }
-
+        let inserted = db.insert_bookmarks(&bookmarks)?;
         info!("Successfully inserted {} bookmarks", inserted);
         Ok(inserted)
     }

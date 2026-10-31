@@ -82,15 +82,27 @@ fn refresh_from_services(services: &Services, state: &mut LibraryState, preserve
         Ok(stats) => {
             state.top_tags = stats.top_tags.clone();
             state.stats = Some(stats);
-            state.authors = services.borrow().author_index().unwrap_or_default();
-            state.topics = services.borrow().topic_index().unwrap_or_default();
         }
         Err(error) => {
             state.error = Some(error.to_string());
             state.stats = None;
             state.top_tags.clear();
-            state.authors.clear();
-            state.topics.clear();
+        }
+    }
+}
+
+pub(crate) fn refresh_directories(services: &Services, state: &mut Signal<LibraryState>) {
+    let authors = services.borrow().author_index();
+    let topics = services.borrow().topic_index();
+
+    match (authors, topics) {
+        (Ok(authors), Ok(topics)) => {
+            let mut next = state.write();
+            next.authors = authors;
+            next.topics = topics;
+        }
+        (Err(error), _) | (_, Err(error)) => {
+            state.write().error = Some(error.to_string());
         }
     }
 }

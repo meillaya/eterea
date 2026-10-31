@@ -4,7 +4,6 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::sync::OnceLock;
 
 use super::{Media, MediaType};
 use uuid::Uuid;
@@ -47,10 +46,6 @@ pub struct Bookmark {
 
     /// Whether this bookmark is marked as favorite
     pub is_favorite: bool,
-
-    /// Full-text search content (precomputed for FTS5)
-    #[serde(skip)]
-    pub search_text: String,
 }
 
 /// Author information (denormalized for speed)
@@ -71,7 +66,7 @@ impl Bookmark {
         author_handle: String,
         author_name: String,
     ) -> Self {
-        let mut bookmark = Self {
+        Self {
             id: Uuid::new_v4().to_string(),
             tweet_url,
             content,
@@ -86,52 +81,52 @@ impl Bookmark {
             comments: None,
             media: Vec::new(),
             is_favorite: false,
-            search_text: String::new(),
-        };
-        bookmark.compute_search_text();
-        bookmark
+        }
     }
 
-    /// Compute the full-text search content
-    pub fn compute_search_text(&mut self) {
-        let mut parts = vec![
-            self.content.clone(),
-            self.author_handle.clone(),
-            self.author_name.clone(),
-        ];
-
-        if let Some(ref note) = self.note_text {
-            parts.push(note.clone());
-        }
-
-        if let Some(ref comments) = self.comments {
-            parts.push(comments.clone());
-        }
-
-        for tag in &self.tags {
-            parts.push(tag.clone());
-        }
-
-        self.search_text = parts.join(" ");
-    }
-
-    /// Extract hashtags from content
+    /// Extract hashtags from content.
     pub fn extract_hashtags(&self) -> Vec<String> {
-        static HASHTAG_RE: OnceLock<regex::Regex> = OnceLock::new();
-        let re = HASHTAG_RE.get_or_init(|| regex::Regex::new(r"#(\w+)").unwrap());
-        re.captures_iter(&self.content)
-            .filter_map(|cap| cap.get(1).map(|m| m.as_str().to_lowercase()))
-            .collect()
+        extract_marked_terms(&self.content, '#')
     }
 
-    /// Extract mentions from content
+    /// Extract mentions from content.
     pub fn extract_mentions(&self) -> Vec<String> {
-        static MENTION_RE: OnceLock<regex::Regex> = OnceLock::new();
-        let re = MENTION_RE.get_or_init(|| regex::Regex::new(r"@(\w+)").unwrap());
-        re.captures_iter(&self.content)
-            .filter_map(|cap| cap.get(1).map(|m| m.as_str().to_lowercase()))
-            .collect()
+        extract_marked_terms(&self.content, '@')
     }
+}
+
+/// Collect the words after each marker, matching the old `#(\w+)` and
+/// `@(\w+)` patterns without compiling a regex per import.
+fn extract_marked_terms(text: &str, marker: char) -> Vec<String> {
+    let mut terms = Vec::new();
+    let mut cursor = 0;
+
+    while cursor < text.len() {
+        let Some(relative) = text[cursor..].find(marker) else {
+            break;
+        };
+        let marker_index = cursor + relative;
+        let start = marker_index + marker.len_utf8();
+        let mut end = start;
+
+        while end < text.len() {
+            let Some(character) = text[end..].chars().next() else {
+                break;
+            };
+            if character.is_alphanumeric() || character == '_' {
+                end += character.len_utf8();
+            } else {
+                break;
+            }
+        }
+
+        if end > start {
+            terms.push(text[start..end].to_lowercase());
+        }
+        cursor = if end > marker_index { end } else { start };
+    }
+
+    terms
 }
 
 /// Builder pattern for constructing bookmarks from various sources
@@ -263,7 +258,6 @@ impl BookmarkBuilder {
         bookmark.comments = self.comments;
         bookmark.media = self.media;
         bookmark.is_favorite = false;
-        bookmark.compute_search_text();
 
         Ok(bookmark)
     }

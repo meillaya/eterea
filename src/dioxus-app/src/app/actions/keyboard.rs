@@ -1,4 +1,4 @@
-use super::{clear_expanded_bookmark, move_expanded_bookmark, reload_library};
+use super::{clear_expanded_bookmark, move_expanded_bookmark, refresh_directories, reload_library};
 use crate::app::route::{ScreenRoute, TERMINAL_TOP_TABS};
 use crate::app::state::{FocusScope, KeyboardMode, LibraryState, Services};
 use dioxus::prelude::{Key, ReadableExt, Signal, WritableExt};
@@ -205,6 +205,7 @@ fn apply_route_navigation(
     state: &mut Signal<LibraryState>,
     route: ScreenRoute,
 ) {
+    let load_directories = matches!(route, ScreenRoute::Authors | ScreenRoute::Topics);
     let should_reload = {
         let mut next = state.write();
         next.route = route.clone();
@@ -237,6 +238,9 @@ fn apply_route_navigation(
 
     if should_reload {
         reload_library(services, state);
+    }
+    if load_directories {
+        refresh_directories(services, state);
     }
 }
 

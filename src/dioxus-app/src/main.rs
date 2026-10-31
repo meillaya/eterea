@@ -1,24 +1,25 @@
 mod app;
 
-use dioxus::desktop::{
+use dioxus_desktop::{
+    launch::launch,
     tao::{dpi::LogicalSize, window::Fullscreen},
     Config as DesktopConfig, WindowBuilder,
 };
-use dioxus::prelude::desktop;
-use dioxus::LaunchBuilder;
+use std::any::Any;
 
 const FULLSCREEN_ENV: &str = "ETEREA_WINDOW_MODE";
 const DEFAULT_WINDOW_WIDTH: f64 = 1280.0;
 const DEFAULT_WINDOW_HEIGHT: f64 = 820.0;
 
 fn main() {
-    LaunchBuilder::desktop()
-        .with_cfg(desktop! {
-            DesktopConfig::new()
-                .with_window(window_builder())
-                .with_menu(None)
-        })
-        .launch(app::App);
+    let platform_config: Vec<Box<dyn Any>> = vec![Box::new(desktop_config())];
+    launch(app::App, Vec::new(), platform_config);
+}
+
+fn desktop_config() -> DesktopConfig {
+    DesktopConfig::new()
+        .with_window(window_builder())
+        .with_menu(None)
 }
 
 fn window_builder() -> WindowBuilder {

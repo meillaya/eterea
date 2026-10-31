@@ -94,6 +94,7 @@ CREATE TABLE IF NOT EXISTS bookmarks_fts_content (
 CREATE INDEX IF NOT EXISTS idx_bookmarks_tweeted_at ON bookmarks(tweeted_at DESC);
 CREATE INDEX IF NOT EXISTS idx_bookmarks_tweeted_at_id ON bookmarks(tweeted_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_bookmarks_author_handle ON bookmarks(author_handle);
+CREATE INDEX IF NOT EXISTS idx_bookmarks_author_date ON bookmarks(author_handle, tweeted_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_author_stats_count_handle ON author_stats(bookmark_count DESC, author_handle ASC);
 CREATE INDEX IF NOT EXISTS idx_bookmarks_imported_at ON bookmarks(imported_at DESC);
 CREATE INDEX IF NOT EXISTS idx_bookmarks_favorite ON bookmarks(is_favorite) WHERE is_favorite = 1;

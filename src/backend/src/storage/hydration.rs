@@ -142,7 +142,6 @@ impl Database {
             tags: Vec::new(),
             media: Vec::new(),
             is_favorite: is_favorite != 0,
-            search_text: String::new(),
         };
 
         // Note: tags and media are loaded separately for performance

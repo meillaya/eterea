@@ -6,7 +6,19 @@ description = "Dioxus desktop shell for Eterea"
 license = "MIT"
 
 [dependencies]
-dioxus = { version = "0.7", features = ["desktop"] }
+dioxus = { version = "0.7", default-features = false, features = [
+    "macro",
+    "html",
+    "signals",
+    "hooks",
+    "document",
+] }
+# dioxus-desktop 0.7 calls WebView::open_devtools without a cfg guard, so its
+# devtools feature is required to compile even though the app never opens them.
+dioxus-desktop = { version = "0.7", default-features = false, features = [
+    "tokio_runtime",
+    "devtools",
+] }
 eterea-app = { path = "../app" }
 eterea-core = { path = "../backend" }
-chrono = { version = "0.4", features = ["serde"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }

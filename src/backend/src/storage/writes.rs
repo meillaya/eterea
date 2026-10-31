@@ -3,7 +3,8 @@
 use super::database::Database;
 use crate::models::Bookmark;
 use crate::{Error, Result};
-use rusqlite::{params, CachedStatement, Connection};
+use rusqlite::{params, CachedStatement, Connection, OptionalExtension};
+use std::collections::HashMap;
 use tracing::debug;
 
 struct BookmarkInsertStatements<'conn> {
@@ -13,6 +14,7 @@ struct BookmarkInsertStatements<'conn> {
     bookmark_tag: CachedStatement<'conn>,
     media: CachedStatement<'conn>,
     fts_content: CachedStatement<'conn>,
+    tag_ids: HashMap<String, i64>,
 }
 
 impl<'conn> BookmarkInsertStatements<'conn> {
@@ -41,6 +43,7 @@ impl<'conn> BookmarkInsertStatements<'conn> {
                    (bookmark_id, content, note_text, author_handle, author_name, tags_text)
                    VALUES (?1, ?2, ?3, ?4, ?5, ?6)"#,
             )?,
+            tag_ids: HashMap::new(),
         })
     }
 }
@@ -113,10 +116,17 @@ impl Database {
         ])?;
 
         for tag in &bookmark.tags {
-            statements.tag.execute(params![tag])?;
-            let tag_id: i64 = statements
-                .tag_id
-                .query_row(params![tag], |row| row.get(0))?;
+            let tag_id = match statements.tag_ids.get(tag).copied() {
+                Some(tag_id) => tag_id,
+                None => {
+                    statements.tag.execute(params![tag])?;
+                    let tag_id: i64 = statements
+                        .tag_id
+                        .query_row(params![tag], |row| row.get(0))?;
+                    statements.tag_ids.insert(tag.clone(), tag_id);
+                    tag_id
+                }
+            };
             statements
                 .bookmark_tag
                 .execute(params![bookmark.id, tag_id])?;
@@ -162,27 +172,44 @@ impl Database {
     }
 
     pub fn toggle_favorite(&self, id: &str) -> Result<bool> {
-        self.conn.execute(
-            "UPDATE bookmarks SET is_favorite = NOT is_favorite WHERE id = ?1",
-            params![id],
-        )?;
-
-        let is_favorite: bool = self.conn.query_row(
+        let previous: bool = self.conn.query_row(
             "SELECT is_favorite FROM bookmarks WHERE id = ?1",
             params![id],
             |row| row.get(0),
         )?;
 
-        self.refresh_stats_snapshot()?;
+        self.conn.execute(
+            "UPDATE bookmarks SET is_favorite = NOT is_favorite WHERE id = ?1",
+            params![id],
+        )?;
+
+        let is_favorite = !previous;
+        self.adjust_favorite_snapshot(if is_favorite { 1 } else { -1 })?;
         Ok(is_favorite)
     }
 
     pub fn set_favorite(&self, id: &str, favorite: bool) -> Result<()> {
+        let previous: Option<bool> = self
+            .conn
+            .query_row(
+                "SELECT is_favorite FROM bookmarks WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(previous) = previous else {
+            return Ok(());
+        };
+
+        if previous == favorite {
+            return Ok(());
+        }
+
         self.conn.execute(
             "UPDATE bookmarks SET is_favorite = ?2 WHERE id = ?1",
             params![id, favorite as i32],
         )?;
-        self.refresh_stats_snapshot()?;
+        self.adjust_favorite_snapshot(if favorite { 1 } else { -1 })?;
         Ok(())
     }
 }
