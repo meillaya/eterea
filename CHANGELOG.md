@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to Eterea are recorded here. This project follows a
+All notable changes to eterea are recorded here. This project follows a
 human-readable changelog and keeps release notes honest about the evidence that
 has actually been captured.
 
@@ -13,6 +13,10 @@ has actually been captured.
 - Reduced the release binary and import path: narrowed Dioxus features, removed
   unused regex and tokio dependencies, cached tag IDs, and made imports run in
   one transaction.
+- UI pass: lifted muted-text contrast, kept dates and tags on one line,
+  reported loaded counts in the status line, opened details with Enter,
+  expanded the dashboard with favorites and timeline panels, and added
+  keyboard layout commands.
 - Keep release notes aligned with the local-first privacy model documented in
   [release readiness](docs/operations/release-readiness.md).
 

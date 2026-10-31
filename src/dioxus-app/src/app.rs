@@ -34,7 +34,7 @@ pub fn App() -> Element {
         Ok(services) => services,
         Err(error) => {
             return rsx! {
-                document::Title { "Eterea — Startup Error" }
+                document::Title { "eterea: Startup Error" }
                 style { "{APP_CSS}" }
                 div {
                     class: "app-shell",
@@ -43,7 +43,7 @@ pub fn App() -> Element {
                         style: "grid-column: 1 / -1; padding: var(--density-page-pad); justify-content: center;",
                         section {
                             class: "error-card",
-                            h1 { "Eterea could not open its archive" }
+                            h1 { "eterea could not open its archive" }
                             p { "{error}" }
                         }
                     }
@@ -68,7 +68,7 @@ pub fn App() -> Element {
     drop(snapshot);
 
     rsx! {
-        document::Title { "Eterea — Dioxus Library" }
+        document::Title { "eterea: Dioxus Library" }
         style { "{APP_CSS}" }
         div {
             class: "{shell_class}",

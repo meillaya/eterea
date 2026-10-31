@@ -8,8 +8,8 @@
   --surface2: #585b70;
   --text: #cdd6f4;
   --subtext: #bac2de;
-  --overlay0: #6c7086;
-  --overlay1: #7f849c;
+  --overlay0: #7f849c;
+  --overlay1: #9399b2;
   --accent: #f5c2e7;
   --blue: #89b4fa;
   --green: #a6e3a1;
@@ -36,8 +36,8 @@
   --surface2: #585b70;
   --text: #cdd6f4;
   --subtext: #bac2de;
-  --overlay0: #6c7086;
-  --overlay1: #7f849c;
+  --overlay0: #7f849c;
+  --overlay1: #9399b2;
   --accent: #f5c2e7;
   --blue: #89b4fa;
   --green: #a6e3a1;
@@ -58,8 +58,8 @@
   --surface2: #5b6078;
   --text: #cad3f5;
   --subtext: #b8c0e0;
-  --overlay0: #6e738d;
-  --overlay1: #8087a2;
+  --overlay0: #8087a2;
+  --overlay1: #939ab7;
   --accent: #f5bde6;
   --blue: #8aadf4;
   --green: #a6da95;
@@ -81,8 +81,8 @@
   --surface2: #acb0be;
   --text: #4c4f69;
   --subtext: #5c5f77;
-  --overlay0: #9ca0b0;
-  --overlay1: #8c8fa1;
+  --overlay0: #8c8fa1;
+  --overlay1: #7c7f93;
   --accent: #ea76cb;
   --blue: #1e66f5;
   --green: #40a02b;
@@ -265,7 +265,7 @@ button, input { color: inherit; }
 }
 .bookmark-card {
   display: grid;
-  grid-template-columns: 36px 130px 76px minmax(0, 1fr) 170px 28px;
+  grid-template-columns: 36px 130px 92px minmax(0, 1fr) 230px 32px;
   gap: 12px;
   align-items: baseline;
   padding: var(--row-pad);
@@ -590,7 +590,7 @@ button, input { color: inherit; }
 .terminal-table { min-height: 0; display: flex; flex-direction: column; overflow: hidden; flex: 1; }
 .table-head, .table-row {
   display: grid;
-  grid-template-columns: 20px 36px 130px 76px minmax(0, 1fr) 170px 28px;
+  grid-template-columns: 20px 36px 130px 92px minmax(0, 1fr) 230px 32px;
   gap: 12px;
   align-items: baseline;
 }
@@ -614,7 +614,7 @@ button, input { color: inherit; }
 .table-row:hover, .table-row.active-row { background: var(--surface0); border-left-color: var(--accent); }
 .table-row.multi-row { background: rgba(250, 179, 135, 0.08); border-left-color: var(--peach); }
 .multi-dot { color: var(--peach); }
-.row-index, .row-when { color: var(--overlay1); }
+.row-index, .row-when { color: var(--overlay1); white-space: nowrap; }
 .row-author { color: var(--green); border: 0; background: transparent; padding: 0; text-align: left; font-weight: 700; }
 .row-content, .row-tags { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .row-tags { color: var(--accent); border: 0; background: transparent; padding: 0; text-align: left; }
@@ -637,22 +637,27 @@ button, input { color: inherit; }
 }
 .tree-row:hover, .tree-row.active-row { background: var(--surface0); border-left-color: var(--accent); }
 .tree-glyph { color: var(--overlay0); }
-.dashboard-view { overflow: auto; padding: 16px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.dashboard-view { overflow: auto; padding: 16px; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
 .dashboard-panel { background: var(--mantle); border: 1px solid var(--surface0); padding: 14px; }
 .dashboard-panel h4, .graph-view h4, .calendar-view h4 { margin: 0 0 10px; color: var(--overlay0); text-transform: uppercase; letter-spacing: 0.1em; font-size: 11px; }
 .span-2 { grid-column: span 2; }
+.span-4 { grid-column: span 4; }
+.dashboard-scope { padding: 10px 14px; }
+.dashboard-scope h4 { margin-bottom: 4px; }
+.dashboard-scope p { margin: 0; }
 .metric-line { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; }
 .metric-line strong { color: var(--text); font-size: 28px; line-height: 1; }
 .sparkline { width: 120px; height: 28px; stroke: currentColor; fill: none; stroke-width: 2; }
-.metric-card.blue { color: var(--blue); }
-.metric-card.green { color: var(--green); }
-.metric-card.yellow { color: var(--yellow); }
-.metric-card.peach { color: var(--peach); }
+.metric-card.blue .metric-line strong { color: var(--blue); }
+.metric-card.green .metric-line strong { color: var(--green); }
+.metric-card.yellow .metric-line strong { color: var(--yellow); }
+.metric-card.peach .metric-line strong { color: var(--peach); }
+.timeline-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
 .tag-bar-row { display: grid; grid-template-columns: 110px minmax(0, 1fr) 40px; gap: 10px; align-items: center; padding: 3px 0; }
 .tag-bar-track { height: 6px; background: var(--surface0); border-radius: 1px; overflow: hidden; }
 .tag-bar-fill { height: 100%; background: var(--accent); }
 .tag-count { color: var(--overlay1); text-align: right; font-size: 11px; }
-.recent-row { display: grid; grid-template-columns: 130px 90px minmax(0, 1fr); gap: 12px; padding: 3px 0; }
+.recent-row { display: grid; grid-template-columns: 120px 110px minmax(0, 1fr); gap: 12px; padding: 3px 0; }
 .graph-view, .calendar-view { overflow: auto; padding: 16px; min-height: 0; flex: 1; }
 .tag-graph { width: 100%; height: min(560px, calc(100vh - 180px)); background: var(--mantle); border: 1px solid var(--surface0); }
 .tag-graph line { stroke: var(--surface1); stroke-width: 1; }
@@ -670,11 +675,17 @@ button, input { color: inherit; }
 .hour-bar { flex: 1; min-width: 6px; background: var(--accent); opacity: 0.75; }
 .hour-labels { display: flex; justify-content: space-between; margin-top: 4px; color: var(--overlay1); font-size: 10px; }
 
+@media (max-width: 1200px) {
+  .dashboard-view { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .span-4 { grid-column: span 2; }
+}
+
 @media (max-width: 900px) {
   .table-head, .table-row { grid-template-columns: 20px 36px 110px minmax(0, 1fr) 28px; }
   .table-head span:nth-child(4), .table-head span:nth-child(6), .row-when, .row-tags { display: none; }
   .dashboard-view { grid-template-columns: 1fr; }
-  .span-2 { grid-column: span 1; }
+  .span-2, .span-4 { grid-column: span 1; }
+  .timeline-grid { grid-template-columns: 1fr; }
 }
 
 .terminal-detail {
@@ -762,3 +773,18 @@ button, input { color: inherit; }
   .terminal-result-row { grid-template-columns: 36px minmax(0, 1fr); }
   .terminal-result-row .row-author, .terminal-result-row .row-tags { display: none; }
 }
+
+button:focus-visible,
+input:focus-visible,
+.library-panel:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--surface2) transparent;
+}
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: var(--surface2); border: 2px solid var(--bg); }
+::-webkit-scrollbar-track { background: transparent; }

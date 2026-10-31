@@ -123,6 +123,17 @@ impl LayoutMode {
         Self::Calendar,
     ];
 
+    pub(crate) fn parse(value: &str) -> Option<Self> {
+        match value.to_lowercase().as_str() {
+            "table" => Some(Self::Table),
+            "tree" => Some(Self::Tree),
+            "dashboard" => Some(Self::Dashboard),
+            "graph" => Some(Self::Graph),
+            "calendar" => Some(Self::Calendar),
+            _ => None,
+        }
+    }
+
     pub(crate) fn as_str(&self) -> &'static str {
         match self {
             Self::Table => "Table",
@@ -261,6 +272,19 @@ impl Default for LibraryState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn layout_parse_accepts_case_insensitive_names() {
+        assert!(matches!(
+            LayoutMode::parse("Dashboard"),
+            Some(LayoutMode::Dashboard)
+        ));
+        assert!(matches!(
+            LayoutMode::parse("calendar"),
+            Some(LayoutMode::Calendar)
+        ));
+        assert!(LayoutMode::parse("unknown").is_none());
+    }
 
     #[test]
     fn library_state_keeps_remote_images_off_by_default() {

@@ -1,6 +1,6 @@
-# Eterea
+# eterea
 
-Eterea turns an X/Twitter bookmark export into a local, keyboard-driven reading
+eterea turns an X/Twitter bookmark export into a local, keyboard-driven reading
 room. Import CSV, JSON, or an X archive JavaScript file, preview the parse, then
 search and read the archive in a Dioxus desktop app backed by SQLite.
 
@@ -20,8 +20,8 @@ anything. The default database is `eterea/bookmarks.db` under the platform
 app-data directory.
 
 <p align="center">
-  <img src="docs/assets/previews/library-preview.png" alt="Eterea library table view" width="49%" />
-  <img src="docs/assets/previews/dashboard-preview.png" alt="Eterea dashboard view" width="49%" />
+  <img src="docs/assets/previews/library-preview.png" alt="eterea library table view" width="49%" />
+  <img src="docs/assets/previews/dashboard-preview.png" alt="eterea dashboard view" width="49%" />
 </p>
 
 ## What it does
@@ -33,7 +33,7 @@ calendar. Filters cover text, author, date range, tag, favorites, and media
 presence.
 
 Remote image previews stay hidden until you load one tweet or enable images for
-the session. Eterea stores media metadata from the export (alt text, dimensions,
+the session. eterea stores media metadata from the export (alt text, dimensions,
 source keys, preview URLs, and variants) so rows can reserve space and label
 previews. The database stores metadata and URLs; the schema has no column for
 media bytes.
@@ -46,7 +46,7 @@ SQLite storage, search, and statistics; and `eterea-dioxus` renders the shell.
 Imports cross the same service boundary, so UI code calls the service layer and
 SQL stays in `eterea-core`.
 
-![Eterea desktop architecture](docs/figures/eterea-architecture.png)
+![eterea desktop architecture](docs/figures/eterea-architecture.png)
 
 The scene source is
 [docs/figures/eterea-architecture.excalidraw](docs/figures/eterea-architecture.excalidraw).
@@ -55,7 +55,7 @@ the persistence contract.
 
 ## Privacy model
 
-Bookmark data stays in SQLite on your machine. Eterea parses and queries the
+Bookmark data stays in SQLite on your machine. eterea parses and queries the
 archive in process, and it stores media metadata without caching image bytes.
 Remote previews remain hidden until you load one tweet or enable images for the
 session. Opening a stored link requires an explicit action and an HTTPS URL.

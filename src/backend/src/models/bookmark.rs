@@ -26,7 +26,7 @@ pub struct Bookmark {
     /// When the tweet was originally posted
     pub tweeted_at: DateTime<Utc>,
 
-    /// When this bookmark was imported into Eterea
+    /// When this bookmark was imported into eterea
     pub imported_at: DateTime<Utc>,
 
     /// Author information

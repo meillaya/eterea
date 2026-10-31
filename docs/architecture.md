@@ -1,9 +1,9 @@
 # Architecture
 
-Eterea is organized as a small Rust workspace with one active desktop runtime and
+eterea is organized as a small Rust workspace with one active desktop runtime and
 one shared application/service boundary.
 
-![Eterea desktop architecture](figures/eterea-architecture.png)
+![eterea desktop architecture](figures/eterea-architecture.png)
 
 ## Workspace crates
 

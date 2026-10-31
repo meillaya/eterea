@@ -110,10 +110,10 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs, String> {
 }
 
 fn print_usage() {
-    println!("Eterea Migration Tool");
+    println!("eterea Migration Tool");
     println!("=====================");
     println!();
-    println!("Import your Twitter bookmarks into the Eterea database.");
+    println!("Import your Twitter bookmarks into the eterea database.");
     println!();
     println!("USAGE:");
     println!("    migrate [OPTIONS] [FILE]");

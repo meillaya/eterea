@@ -16,7 +16,7 @@ Run from the repository root inside the Nix development shell:
   devenv shell -- scripts/perf-baseline.sh
   devenv shell -- scripts/perf-baseline.sh --stress <count>
 
-Runs Eterea's deterministic generated-archive performance harness.
+Runs eterea's deterministic generated-archive performance harness.
 
 Default mode runs the release-blocking service performance baseline, including
 10k budgets from src/app/tests/performance_baseline.rs.

@@ -1,6 +1,6 @@
 # Preview asset contract
 
-Committed preview images for Eterea live in this directory: `docs/assets/previews/`.
+Committed preview images for eterea live in this directory: `docs/assets/previews/`.
 They are public documentation assets and must be safe to publish, copy, and mirror.
 
 ## Privacy rules

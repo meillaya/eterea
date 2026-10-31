@@ -3,7 +3,7 @@
 # requires-python = ">=3.11"
 # dependencies = []
 # ///
-"""Generate the Eterea desktop architecture scene.
+"""Generate the eterea desktop architecture scene.
 
 Run `python3 -B docs/figures/eterea-architecture.py` from the repository root,
 then render the scene with the excalidraw CLI:
@@ -210,7 +210,7 @@ def build() -> dict:
 
     # Front matter and source note.
     elements.append(label("title", 60, 40, 1200, "Desktop reads and writes go through eterea-app", INK, TITLE_FONT, "left"))
-    elements.append(label("subtitle", 60, 92, 800, "Eterea v0.1.0 desktop path", MUTED, NOTE_FONT, "left"))
+    elements.append(label("subtitle", 60, 92, 800, "eterea v0.1.0 desktop path", MUTED, NOTE_FONT, "left"))
     elements.append(label("sqlite-note", 580, 628, 360, "default path: platform app-data dir", MUTED))
     elements.append(label("source-note", 60, 760, 900, "Source: src/dioxus-app, src/app, src/backend", MUTED, NOTE_FONT, "left"))
 

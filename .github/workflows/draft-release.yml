@@ -63,7 +63,7 @@ jobs:
           mkdir -p "${artifact_dir}"
           cp target/release/eterea-dioxus "${artifact_dir}/"
           cat > "${artifact_dir}/PROVENANCE.md" <<EOF
-          # Eterea draft release artifact provenance
+          # eterea draft release artifact provenance
 
           - Source ref: ${GITHUB_REF}
           - Source commit: ${GITHUB_SHA}
@@ -94,5 +94,5 @@ jobs:
             release-artifacts/*.tar.gz \
             release-artifacts/*.sha256 \
             --draft \
-            --title "Eterea ${GITHUB_REF_NAME}" \
+            --title "eterea ${GITHUB_REF_NAME}" \
             --notes "Draft release generated from ${GITHUB_SHA}. See artifact PROVENANCE.md and SHA256SUMS.txt inside the archive."

@@ -16,7 +16,7 @@ pub(crate) fn onboarding_screen(mut state: Signal<LibraryState>) -> Element {
             pre { class: "onboarding-ascii", "{ascii}" }
             p { class: "eyebrow", "first run" }
             h3 { "Bring an export in, and the room becomes searchable." }
-            p { class: "muted-copy onboarding-copy", "Eterea is local-first: export from X, preview the archive here, then browse with table/tree/dashboard/graph/calendar views. No telemetry, no remote sync, no production credentials." }
+            p { class: "muted-copy onboarding-copy", "eterea is local-first: export from X, preview the archive here, then browse with table/tree/dashboard/graph/calendar views. No telemetry, no remote sync, no production credentials." }
             div { class: "onboarding-steps",
                 article {
                     strong { "1." }

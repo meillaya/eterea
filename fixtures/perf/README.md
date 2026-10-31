@@ -1,6 +1,6 @@
 # Performance fixtures
 
-Eterea keeps large performance datasets generated rather than committed. The
+eterea keeps large performance datasets generated rather than committed. The
 performance harness in `src/app/tests/performance_baseline.rs` creates
 repeatable synthetic archives from a deterministic pattern of authors, tags,
 dates, text, and media flags.

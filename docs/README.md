@@ -1,4 +1,4 @@
-# Eterea documentation
+# eterea documentation
 
 This directory is the source of truth for production-facing project docs. Keep
 runtime instructions here concise and move dated planning notes into

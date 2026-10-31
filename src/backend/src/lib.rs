@@ -1,4 +1,4 @@
-//! Eterea Core - Lightning-fast Twitter bookmarks manager
+//! eterea Core - Lightning-fast Twitter bookmarks manager
 //!
 //! This library provides the core functionality for ingesting, processing,
 //! storing, and searching Twitter bookmarks with maximum performance.

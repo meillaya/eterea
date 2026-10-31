@@ -52,6 +52,6 @@ in
   };
 
   enterShell = ''
-    echo "Eterea dev environment ready"
+    echo "eterea dev environment ready"
   '';
 }

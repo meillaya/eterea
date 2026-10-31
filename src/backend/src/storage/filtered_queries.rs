@@ -123,7 +123,7 @@ impl Database {
         let mut bookmarks = Vec::new();
         let mut rows = stmt.query(params_from_iter(params.iter()))?;
         while let Some(row) = rows.next()? {
-            // Named column access — safe against projection reordering
+            // Named column access stays safe against projection reordering
             total = row.get::<_, i64>("total_count")?;
             bookmarks.push(self.row_to_bookmark(row)?);
         }
@@ -146,7 +146,7 @@ impl Database {
         Ok((bookmarks, total))
     }
 
-    /// Build a WHERE clause using subqueries — no outer JOINs means no DISTINCT needed.
+    /// Build a WHERE clause using subqueries. No outer JOINs means no DISTINCT needed.
     /// FTS and tag filters use IN-subqueries; has_media uses the denormalized column.
     #[allow(clippy::too_many_arguments)]
     fn build_filtered_where_clause(
@@ -206,7 +206,7 @@ impl Database {
         }
 
         if let Some(has) = has_media {
-            // Use denormalized column — no JOIN needed
+            // Use the denormalized column so no JOIN is needed.
             conditions.push(format!("b.has_media = {}", if has { 1 } else { 0 }));
         }
 

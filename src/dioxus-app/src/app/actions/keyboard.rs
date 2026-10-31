@@ -67,6 +67,12 @@ pub(crate) fn handle_global_keyboard(
         return true;
     }
 
+    // Leave Command and Control combinations to the OS and the webview unless
+    // the palette shortcut above claimed them.
+    if ctrl_or_meta {
+        return false;
+    }
+
     match key {
         Key::Escape => {
             close_keyboard_surface(state);
@@ -80,9 +86,21 @@ pub(crate) fn handle_global_keyboard(
             move_current_bookmark(state, -1);
             true
         }
+        Key::Enter => open_expanded_detail(state),
         Key::Character(value) => handle_character_key(services, state, value.as_str()),
         _ => false,
     }
+}
+
+fn open_expanded_detail(state: &mut Signal<LibraryState>) -> bool {
+    let Some(id) = state.read().expanded_bookmark_id.clone() else {
+        return false;
+    };
+
+    let mut next = state.write();
+    next.route = ScreenRoute::Entry(id);
+    next.status = "Entry detail opened.".to_string();
+    true
 }
 
 fn close_keyboard_surface(state: &mut Signal<LibraryState>) {
@@ -113,14 +131,14 @@ fn handle_character_key(
         ":" => {
             let mut next = state.write();
             next.shell.enter_mode(KeyboardMode::Command);
-            next.status = "COMMAND mode — type a command in the statusline.".to_string();
+            next.status = "COMMAND mode: type a command in the statusline.".to_string();
             true
         }
         "/" => {
             let mut next = state.write();
             next.shell.enter_mode(KeyboardMode::Search);
             next.shell.command_buffer = next.filters.query.clone();
-            next.status = "SEARCH mode — type a query in the statusline.".to_string();
+            next.status = "SEARCH mode: type a query in the statusline.".to_string();
             true
         }
         "?" => {
@@ -133,14 +151,14 @@ fn handle_character_key(
         "v" | "V" => {
             let mut next = state.write();
             next.shell.enter_mode(KeyboardMode::Visual);
-            next.status = "VISUAL mode — use Space to toggle rows.".to_string();
+            next.status = "VISUAL mode: use Space to toggle rows.".to_string();
             true
         }
         "i" | "I" => {
             let mut next = state.write();
             next.shell.enter_mode(KeyboardMode::Insert);
             next.shell.focus_scope = FocusScope::TextInput;
-            next.status = "INSERT mode — focused fields own text input.".to_string();
+            next.status = "INSERT mode: focused fields own text input.".to_string();
             true
         }
         " " => {

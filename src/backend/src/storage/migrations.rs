@@ -211,7 +211,7 @@ GROUP BY author_handle;
             }
         }
 
-        // These DDL statements depend on has_media existing — run after the migration above.
+        // These DDL statements depend on has_media existing, so run them after the migration above.
         self.conn.execute_batch(
             r#"
 CREATE INDEX IF NOT EXISTS idx_bookmarks_has_media ON bookmarks(has_media) WHERE has_media = 1;

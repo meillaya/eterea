@@ -55,9 +55,9 @@ pub(crate) fn author_directory_status(
             "Showing top {visible_count} of {total_count} authors. Type in the author field above to filter instantly without rendering the entire archive."
         )
     } else if has_more {
-        format!("Showing first {visible_count} matching authors for “{trimmed_filter}”. Keep typing to narrow.")
+        format!("Showing first {visible_count} matching authors for \"{trimmed_filter}\". Keep typing to narrow.")
     } else {
-        format!("Showing {visible_count} matching authors for “{trimmed_filter}”.")
+        format!("Showing {visible_count} matching authors for \"{trimmed_filter}\".")
     }
 }
 

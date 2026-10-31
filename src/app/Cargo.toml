@@ -2,7 +2,7 @@
 name = "eterea-app"
 version = "0.1.0"
 edition = "2021"
-description = "Shared application services for Eterea"
+description = "Shared application services for eterea"
 license = "MIT"
 
 [lib]

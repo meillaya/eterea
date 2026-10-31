@@ -1,5 +1,5 @@
 {
-  description = "Eterea - Lightning-fast Twitter bookmarks manager";
+  description = "eterea - Lightning-fast Twitter bookmarks manager";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";

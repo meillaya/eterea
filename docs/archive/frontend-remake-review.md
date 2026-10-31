@@ -1,7 +1,7 @@
 # Frontend remake review + documentation guardrails
 
 > Historical note: this document described the earlier frontend-remake work while
-> Eterea still used the `src/frontend` Svelte app. The active app path is now the
+> eterea still used the `src/frontend` Svelte app. The active app path is now the
 > Dioxus desktop shell in `src/dioxus-app`, backed by shared Rust services in
 > `src/app`.
 

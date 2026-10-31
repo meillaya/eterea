@@ -102,3 +102,21 @@ The `kiosk` value is accepted as a fullscreen smoke-check alias for test
 scripts. Both values use borderless fullscreen on the current monitor. This is a
 manual smoke-check surface, not the default release mode; verify exit/restore
 behavior on every target OS/window manager before presenting it as supported.
+
+## Screenshot and state overrides
+
+Docs screenshots and UI QA can start on a specific route, layout, and window
+position. These overrides apply once at startup and do not persist:
+
+```bash
+ETEREA_INITIAL_ROUTE=library \
+ETEREA_INITIAL_LAYOUT=dashboard \
+ETEREA_WINDOW_X=40 \
+ETEREA_WINDOW_Y=40 \
+devenv shell -- cargo run -p eterea-dioxus
+```
+
+`ETEREA_INITIAL_ROUTE` accepts the route ids parsed by the shell: `library`,
+`authors`, `topics`, `search`, `import`, `settings`, and `onboarding`.
+`ETEREA_INITIAL_LAYOUT` accepts `table`, `tree`, `dashboard`, `graph`, and
+`calendar`. Inside the shell, `Enter` opens detail for the highlighted entry.

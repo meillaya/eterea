@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Media attachment metadata stored by Eterea.
+/// Media attachment metadata stored by eterea.
 ///
 /// This intentionally stores only source metadata and remote URLs. It does not
 /// cache, download, or persist media bytes.

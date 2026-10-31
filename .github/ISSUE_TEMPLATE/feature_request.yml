@@ -1,5 +1,5 @@
 name: Feature request
-description: Propose a focused improvement for Eterea.
+description: Propose a focused improvement for eterea.
 title: "feature: "
 body:
   - type: textarea
@@ -14,7 +14,7 @@ body:
     id: proposal
     attributes:
       label: Proposed behavior
-      description: What should Eterea do differently?
+      description: What should eterea do differently?
       placeholder: Describe the smallest useful behavior change.
     validations:
       required: true

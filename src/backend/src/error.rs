@@ -1,4 +1,4 @@
-//! Error types for Eterea
+//! Error types for eterea
 
 use thiserror::Error;
 

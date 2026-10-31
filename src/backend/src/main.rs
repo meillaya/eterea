@@ -1,4 +1,4 @@
-//! Eterea CLI - Command-line interface for bookmark management
+//! eterea CLI - Command-line interface for bookmark management
 
 use anyhow::Result;
 use eterea_core::{Database, Ingester};
@@ -48,7 +48,7 @@ fn main() -> Result<()> {
 }
 
 fn print_usage() {
-    println!("Eterea CLI - Lightning-fast Twitter bookmarks manager");
+    println!("eterea CLI - Lightning-fast Twitter bookmarks manager");
     println!();
     println!("Usage:");
     println!("  eterea-cli ingest <file_path>  - Import bookmarks from CSV/JSON");

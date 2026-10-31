@@ -68,13 +68,13 @@ Cold and warm measurements are separate evidence rows. Do not average first-run 
 | --- | --- | --- | --- |
 | T23 UI launch/interaction harness | `.omo/evidence/production-grade-project/t23-doneclaim.json`; `.omo/evidence/production-grade-project/ui-launch-timing.json`; `scripts/ui-launch-timing.sh` | Harness exists with release waivers. | Harness existence is not release timing proof. |
 | T24 UI timing after optimization | `.omo/evidence/production-grade-project/t24-after-ui-launch.json`; `.omo/evidence/production-grade-project/t24-ui-timing-summary.md` | **Failing non-release evidence:** first usable shell `5315ms` over `1500ms`, `pass=false`, `release_evidence=false`, `sample_count=1`; interactions are `blocked_no_stable_ui_driver`. | Keep performance waiver open; public release is NO-GO until first usable timing and interactions meet release criteria. |
-| T28 live visual/accessibility proof | `.omo/evidence/production-grade-project/desktop-display-blocker.md`; `.omo/evidence/production-grade-project/t28-screenshot-manifest.md`; `.omo/evidence/production-grade-project/t28-accessibility-checklist.md` | Accepted blocker path only. No valid live Eterea screenshots exist; focus traversal, focus visibility, pixel/contrast checks, and screen coverage are blocked. | Keep release visual/accessibility waiver open. Synthetic `docs/assets/previews/` images do not substitute for live screenshots. |
+| T28 live visual/accessibility proof | `.omo/evidence/production-grade-project/desktop-display-blocker.md`; `.omo/evidence/production-grade-project/t28-screenshot-manifest.md`; `.omo/evidence/production-grade-project/t28-accessibility-checklist.md` | Accepted blocker path only. No valid live eterea screenshots exist; focus traversal, focus visibility, pixel/contrast checks, and screen coverage are blocked. | Keep release visual/accessibility waiver open. Synthetic `docs/assets/previews/` images do not substitute for live screenshots. |
 
-Live desktop QA must use the real Dioxus app (`scripts/desktop-qa.sh` or the T23/T28 tmux harness), fixture-only/synthetic data, a valid Eterea foreground screenshot, and captured timing. A no-display or non-Eterea screenshot blocker is honest evidence but not a pass.
+Live desktop QA must use the real Dioxus app (`scripts/desktop-qa.sh` or the T23/T28 tmux harness), fixture-only/synthetic data, a valid eterea foreground screenshot, and captured timing. A no-display or non-eterea screenshot blocker is honest evidence but not a pass.
 
 ## Known open waivers and blockers
 
-- **Public release visual proof:** open. T28 left `desktop-display-blocker.md`; no valid live Eterea screenshots are present.
+- **Public release visual proof:** open. T28 left `desktop-display-blocker.md`; no valid live eterea screenshots are present.
 - **Accessibility proof:** open. Keyboard traversal, focus visibility, contrast/pixel checks, and screen coverage remain blocked without valid live screenshots or a stable desktop UI driver.
 - **UI performance release evidence:** open. T24 records first usable shell `5315ms > 1500ms`, `pass=false`, `release_evidence=false`, and blocked interactions.
 - **GitHub release publishing proof:** open. T27 proves local artifact assembly and checksums only; it does not prove GitHub release permissions, upload, draft creation, or public publishing.
@@ -100,7 +100,7 @@ Live desktop QA must use the real Dioxus app (`scripts/desktop-qa.sh` or the T23
 - [x] Backend statistical/dev guardrail and file-backed SQLite/WAL evidence recorded with classifications (T20/T21/T22).
 - [x] Privacy/trust hardening complete for remote media default, unsafe rendering, and raw logging checks (T25).
 - [ ] GitHub-hosted CI/release permission and draft release upload/publish proof.
-- [ ] Live Eterea screenshot set for canonical screens with no unrelated/private desktop captures.
+- [ ] Live eterea screenshot set for canonical screens with no unrelated/private desktop captures.
 - [ ] Live accessibility proof for keyboard traversal, focus visibility, contrast/pixel checks, and screen coverage.
 - [ ] Release-grade UI performance proof: first usable shell within the `1500ms` budget, 7-sample release evidence, and unblocked interactions.
 - [ ] Optional before public release: target-platform installer/signing smoke test.

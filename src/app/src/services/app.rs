@@ -17,7 +17,7 @@ pub struct AppServices {
 
 impl AppServices {
     pub fn open_default() -> Result<Self> {
-        let db = Database::open_default().context("failed to open default Eterea database")?;
+        let db = Database::open_default().context("failed to open default eterea database")?;
         Ok(Self { db })
     }
 

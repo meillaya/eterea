@@ -2,7 +2,7 @@
 name = "eterea-dioxus"
 version = "0.1.0"
 edition = "2021"
-description = "Dioxus desktop shell for Eterea"
+description = "Dioxus desktop shell for eterea"
 license = "MIT"
 
 [dependencies]

@@ -61,7 +61,7 @@ pub(crate) fn import_modal(mut state: Signal<LibraryState>, services: Services) 
                     class: "path-input",
                     r#type: "text",
                     value: "{import_state.path}",
-                    placeholder: "/home/you/Downloads/bookmarks.json",
+                    placeholder: "~/Downloads/bookmarks.json",
                     onfocus: move |_| enter_focus_scope(&mut state, FocusScope::ImportForm),
                     onblur: move |_| leave_focus_scope(&mut state, FocusScope::ImportForm),
                     oninput: move |event| {
@@ -109,7 +109,7 @@ pub(crate) fn import_modal(mut state: Signal<LibraryState>, services: Services) 
                         "Close"
                     }
                     button {
-                        class: "ghost-button",
+                        class: if import_state.preview.is_none() { "accent-button" } else { "ghost-button" },
                         onclick: move |_| {
                             let path = PathBuf::from(state.read().import.path.trim());
                             if path.as_os_str().is_empty() {
@@ -131,7 +131,7 @@ pub(crate) fn import_modal(mut state: Signal<LibraryState>, services: Services) 
                         "Preview"
                     }
                     button {
-                        class: "accent-button",
+                        class: if import_state.preview.is_some() { "accent-button" } else { "ghost-button" },
                         onclick: move |_| {
                             let path = PathBuf::from(state.read().import.path.trim());
                             if path.as_os_str().is_empty() {

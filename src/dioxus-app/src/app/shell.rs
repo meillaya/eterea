@@ -3,7 +3,7 @@ use super::actions::{
     reload_library,
 };
 use super::route::{ScreenRoute, TERMINAL_TOP_TABS};
-use super::state::{FocusScope, KeyboardMode, LibraryState, Services};
+use super::state::{FocusScope, KeyboardMode, LayoutMode, LibraryState, Services};
 use dioxus::prelude::*;
 
 pub(crate) fn top_bar(
@@ -40,7 +40,7 @@ pub(crate) fn top_bar(
             nav { class: "top-tabs", {tabs} }
             div { class: "top-hints",
                 span { class: "kbd-hint", "?" } " help"
-                span { class: "kbd-hint", "Ctrl" } "+" span { class: "kbd-hint", "P" } " palette"
+                span { class: "kbd-hint", "Ctrl/⌘" } "+" span { class: "kbd-hint", "P" } " palette"
             }
         }
     }
@@ -54,18 +54,22 @@ pub(crate) fn status_line(mut state: Signal<LibraryState>, services: Services) -
     let command_buffer = snapshot.shell.command_buffer.clone();
     let selected_count = snapshot.shell.selected_bookmark_ids.len();
     let total = snapshot.total;
-    let current_index = snapshot
-        .expanded_bookmark_id
-        .as_ref()
-        .and_then(|id| {
-            snapshot
-                .bookmarks
-                .iter()
-                .position(|bookmark| &bookmark.id == id)
-        })
-        .map_or(0, |index| index + 1);
+    let current_index = snapshot.expanded_bookmark_id.as_ref().and_then(|id| {
+        snapshot
+            .bookmarks
+            .iter()
+            .position(|bookmark| &bookmark.id == id)
+    });
     let theme = snapshot.appearance.paper_tone.label().to_lowercase();
     drop(snapshot);
+    let row_label = if total == 0 {
+        "0 rows".to_string()
+    } else {
+        current_index.map_or_else(
+            || format!("-/{}", total),
+            |index| format!("{}/{}", index + 1, total),
+        )
+    };
 
     if matches!(mode, KeyboardMode::Command | KeyboardMode::Search) {
         let prompt = if mode == KeyboardMode::Command {
@@ -110,7 +114,7 @@ pub(crate) fn status_line(mut state: Signal<LibraryState>, services: Services) -
                 span { class: "selected-block", "{selected_count} selected" }
             }
             span { class: "status-left", "{status_message}" }
-            span { class: "status-right", "{current_index}/{total} · {theme} · Ln 1 Col 1" }
+            span { class: "status-right", "{row_label} · {theme}" }
         }
     }
 }
@@ -128,6 +132,11 @@ pub(crate) fn command_palette_overlay(
         ("search", "4", "Search archive", "query filter fts"),
         ("import", "5", "Import bookmarks", "csv json archive"),
         ("settings", "6", "Open settings", "theme density media"),
+        ("table", "view", "Table layout", "rows density"),
+        ("tree", "view", "Tree layout", "authors groups"),
+        ("dashboard", "view", "Dashboard layout", "metrics tags"),
+        ("graph", "view", "Graph layout", "tags co-occurrence"),
+        ("calendar", "view", "Calendar layout", "heatmap history"),
     ];
     let matches = commands
         .into_iter()
@@ -224,8 +233,16 @@ pub(crate) fn keybindings_overlay(mut state: Signal<LibraryState>) -> Element {
             "Navigation",
             [
                 ("1..6", "jump tabs"),
-                ("Ctrl-P", "command palette"),
+                ("Ctrl/⌘-P", "command palette"),
                 ("?", "this overlay"),
+            ],
+        ),
+        (
+            "Views",
+            [
+                (":table", "row layout"),
+                (":dashboard", "metrics layout"),
+                (":graph", "tag layout"),
             ],
         ),
         (
@@ -279,6 +296,23 @@ fn submit_statusline(services: &Services, state: &mut Signal<LibraryState>) {
     }
 
     let command = raw_input.to_lowercase();
+    let layout = match command.as_str() {
+        "table" => Some(LayoutMode::Table),
+        "tree" => Some(LayoutMode::Tree),
+        "dashboard" => Some(LayoutMode::Dashboard),
+        "graph" => Some(LayoutMode::Graph),
+        "calendar" => Some(LayoutMode::Calendar),
+        _ => None,
+    };
+    if let Some(layout) = layout {
+        let mut next = state.write();
+        next.layout = layout.clone();
+        next.route = ScreenRoute::Library;
+        next.shell.close_transient_ui();
+        next.status = format!("{} view opened.", layout.as_str());
+        return;
+    }
+
     let route = match command.as_str() {
         "1" | "library" | "open library" => Some(ScreenRoute::Library),
         "2" | "authors" | "open authors" => Some(ScreenRoute::Authors),
@@ -407,7 +441,7 @@ fn apply_search_query(services: &Services, state: &mut Signal<LibraryState>, que
         next.status = if query.trim().is_empty() {
             "Search cleared.".to_string()
         } else {
-            format!("Searching local archive for “{}”.", query.trim())
+            format!("Searching local archive for \"{}\".", query.trim())
         };
     });
 }

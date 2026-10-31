@@ -17,7 +17,7 @@ pub(crate) fn archive_feed_or_empty(
     let payload = feed_payload(&state);
     if let Some(error) = payload.error_message.clone() {
         return rsx! {
-            div { class: "error-card", strong { "Couldn’t load the archive." } p { "{error}" } }
+            div { class: "error-card", strong { "Couldn't load the archive." } p { "{error}" } }
         };
     }
 
@@ -71,6 +71,8 @@ struct FeedPayload {
     top_tags: Vec<(String, i64)>,
     unique_authors: i64,
     favorite_bookmarks: i64,
+    earliest_date: Option<chrono::DateTime<Utc>>,
+    latest_date: Option<chrono::DateTime<Utc>>,
     remote_images_enabled: bool,
     loaded_media_bookmark_ids: BTreeSet<String>,
 }
@@ -108,6 +110,8 @@ fn feed_payload(state: &Signal<LibraryState>) -> FeedPayload {
         top_tags: snapshot.top_tags.clone(),
         unique_authors: stats.as_ref().map_or(0, |stats| stats.unique_authors),
         favorite_bookmarks: stats.as_ref().map_or(0, |stats| stats.favorite_bookmarks),
+        earliest_date: stats.as_ref().and_then(|stats| stats.earliest_date),
+        latest_date: stats.as_ref().and_then(|stats| stats.latest_date),
         remote_images_enabled: snapshot.remote_images_enabled,
         loaded_media_bookmark_ids: snapshot.loaded_media_bookmark_ids.clone(),
     }
@@ -141,7 +145,7 @@ fn table_view(state: Signal<LibraryState>, services: Services, payload: FeedPayl
                 span { "when" }
                 span { "content" }
                 span { "tags" }
-                span { "★" }
+                span { "fav" }
             }
             div { class: "table-body",
                 for (index, bookmark) in bookmarks.into_iter().enumerate() {
@@ -195,6 +199,7 @@ fn table_row(
             span { class: "row-index", "{index_plus(index)}" }
             button {
                 class: "row-author",
+                title: "@{author}",
                 onclick: move |event| {
                     event.stop_propagation();
                     {
@@ -208,10 +213,11 @@ fn table_row(
                 "@{author}"
             }
             span { class: "row-when", "{when}" }
-            span { class: "row-content", "{content}" }
-            span { class: "row-tags", "{tags}" }
+            span { class: "row-content", title: "{content}", "{content}" }
+            span { class: "row-tags", title: "{tags}", "{tags}" }
             button {
                 class: if fav { "favorite-cell is-favorite" } else { "favorite-cell" },
+                title: if fav { "Remove favorite" } else { "Add favorite" },
                 onclick: move |event| {
                     event.stop_propagation();
                     match favorite_services.borrow().toggle_favorite(&favorite_id) {
@@ -318,12 +324,25 @@ fn tree_row(
 
 fn dashboard_view(payload: FeedPayload) -> Element {
     let scope_note = analytics_scope_note(&payload);
-    let recent = payload
+    let mut recent = payload.bookmarks.clone();
+    recent.sort_by(|left, right| right.imported_at.cmp(&left.imported_at));
+    recent.truncate(5);
+    let mut favorites = payload
         .bookmarks
         .iter()
-        .take(5)
+        .filter(|bookmark| bookmark.is_favorite)
         .cloned()
         .collect::<Vec<_>>();
+    favorites.sort_by(|left, right| right.imported_at.cmp(&left.imported_at));
+    favorites.truncate(5);
+    let earliest = payload
+        .earliest_date
+        .map(|date| format_timestamp(&date))
+        .unwrap_or_else(|| "no rows".to_string());
+    let latest = payload
+        .latest_date
+        .map(|date| format_timestamp(&date))
+        .unwrap_or_else(|| "no rows".to_string());
     let max_tag = payload
         .top_tags
         .iter()
@@ -332,16 +351,16 @@ fn dashboard_view(payload: FeedPayload) -> Element {
         .unwrap_or(1);
     rsx! {
         div { class: "dashboard-view",
-            section { class: "dashboard-panel span-2",
-                h4 { "── analytics scope ──" }
+            section { class: "dashboard-panel span-4 dashboard-scope",
+                h4 { "analytics scope" }
                 p { class: "muted-copy tiny", "{scope_note}" }
             }
             {metric_card("current matches", payload.total.to_string(), "blue")}
             {metric_card("archive authors", payload.unique_authors.to_string(), "green")}
-            {metric_card("archive ★ favorites", payload.favorite_bookmarks.to_string(), "yellow")}
+            {metric_card("archive favorites", payload.favorite_bookmarks.to_string(), "yellow")}
             {metric_card("loaded rows", payload.bookmarks.len().to_string(), "peach")}
             section { class: "dashboard-panel span-2",
-                h4 { "── archive-wide top tags ──" }
+                h4 { "archive-wide top tags" }
                 for (tag, count) in payload.top_tags.iter().take(8) {
                     div { class: "tag-bar-row",
                         span { class: "mini-tag", "#{tag}" }
@@ -351,13 +370,35 @@ fn dashboard_view(payload: FeedPayload) -> Element {
                 }
             }
             section { class: "dashboard-panel span-2",
-                h4 { "── loaded-row recent saves ──" }
+                h4 { "loaded-row recent saves" }
                 for bookmark in recent {
                     div { class: "recent-row",
                         span { class: "row-author", "@{bookmark.author_handle}" }
                         span { class: "row-when", "{format_timestamp(&bookmark.imported_at)}" }
                         span { class: "row-content", "{bookmark.content}" }
                     }
+                }
+            }
+            section { class: "dashboard-panel span-2",
+                h4 { "loaded-row favorites" }
+                if favorites.is_empty() {
+                    p { class: "muted-copy tiny", "No favorites in the loaded result set." }
+                } else {
+                    for bookmark in favorites {
+                        div { class: "recent-row",
+                            span { class: "row-author", "@{bookmark.author_handle}" }
+                            span { class: "row-when", "★ {format_timestamp(&bookmark.imported_at)}" }
+                            span { class: "row-content", "{bookmark.content}" }
+                        }
+                    }
+                }
+            }
+            section { class: "dashboard-panel span-2",
+                h4 { "archive timeline" }
+                div { class: "timeline-grid",
+                    div { class: "detail-metric", span { "earliest post" } strong { "{earliest}" } }
+                    div { class: "detail-metric", span { "latest post" } strong { "{latest}" } }
+                    div { class: "detail-metric", span { "archive authors" } strong { "{payload.unique_authors}" } }
                 }
             }
         }

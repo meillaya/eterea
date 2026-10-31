@@ -1,5 +1,5 @@
 name: Bug report
-description: Report a reproducible defect in Eterea.
+description: Report a reproducible defect in eterea.
 title: "bug: "
 body:
   - type: textarea

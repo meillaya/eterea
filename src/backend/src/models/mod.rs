@@ -1,4 +1,4 @@
-//! Data models for Eterea
+//! Data models for eterea
 //!
 //! Provides a unified bookmark model that can be populated from various
 //! source formats (legacy CSV, new CSV, JSON exports).

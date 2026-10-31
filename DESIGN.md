@@ -1,10 +1,10 @@
-# Eterea Design System
+# eterea Design System
 
 `design.html` at the repository root is the canonical visual and interaction reference for the current redesign. This document is the implementation contract for translating that reference into the Rust/Dioxus desktop app without copying its bundled React runtime.
 
 ## 1. Product and UX direction
 
-Eterea is a local-first bookmark/archive desktop app. The redesigned UI must feel like a keyboard-native terminal library: dense, fast, legible, data-backed, and calm. The previous editorial paper reading-room aesthetic is superseded for this redesign.
+eterea is a local-first bookmark/archive desktop app. The redesigned UI must feel like a keyboard-native terminal library: dense, fast, legible, data-backed, and calm. The previous editorial paper reading-room aesthetic is superseded for this redesign.
 
 Core qualities:
 
@@ -42,8 +42,8 @@ Default theme is **Catppuccin Mocha**. Macchiato and Latte remain supported appe
 | `surface2` | `#585b70` | `#5b6078` | `#acb0be` | Stronger dividers. |
 | `text` | `#cdd6f4` | `#cad3f5` | `#4c4f69` | Primary copy. |
 | `subtext` | `#bac2de` | `#b8c0e0` | `#5c5f77` | Secondary labels. |
-| `overlay0` | `#6c7086` | `#6e738d` | `#9ca0b0` | Disabled/idx/chrome hints. |
-| `overlay1` | `#7f849c` | `#8087a2` | `#8c8fa1` | Muted status metadata. |
+| `overlay0` | `#7f849c` | `#8087a2` | `#8c8fa1` | Muted labels and chrome hints. |
+| `overlay1` | `#9399b2` | `#939ab7` | `#7c7f93` | Secondary metadata. |
 | `accent` | `#f5c2e7` | `#f5bde6` | `#ea76cb` | Active tab/row rail/tags/default accent. |
 | `blue` | `#89b4fa` | `#8aadf4` | `#1e66f5` | Normal mode. |
 | `green` | `#a6e3a1` | `#a6da95` | `#40a02b` | Authors/success/Insert mode. |
@@ -100,7 +100,7 @@ Top tabs are exactly: `[1] library`, `[2] authors`, `[3] topics`, `[4] search`, 
 
 Bottom statusline:
 
-- Normal mode: mode block + left status text + right metadata (`1/12 · mocha · Ln 1 Col 1`).
+- Normal mode: mode block + left loaded-count text + right row position and active theme (`-/12 · mocha`).
 - Visual mode: shows multi-select count as a second colored segment.
 - Command mode: mode block + `:` + focused command input.
 - Search mode: mode block + `/` + focused search input.
@@ -109,17 +109,17 @@ Bottom statusline:
 
 | Mode | Required entry | Required behavior |
 | --- | --- | --- |
-| Normal | default / `Esc` | Navigation and commands: `j/k`, arrows, `1..6`, `?`, Cmd/Ctrl-P, `/`, `:`. |
+| Normal | default / `Esc` | Navigation and commands: `j/k`, arrows, `1..6`, `Enter` for detail, `?`, Cmd/Ctrl-P, `/`, `:`. |
 | Insert | `i` or focused editable field | Text inputs own keystrokes; global shortcuts must not leak. |
 | Visual | `v` | Multi-select; `Space` toggles row; `a` selects all; `A` clears; `Esc` returns Normal. |
 | Command | `:` | Statusline input; `Enter` submits; `Esc` cancels. |
 | Search | `/` | Statusline search input; `Enter` applies; `Esc` cancels. |
 
-Global shortcut leakage is a blocker when command palette, search input, import fields, settings controls, or onboarding controls are focused.
+Global shortcut leakage is a blocker when command palette, search input, import fields, settings controls, or onboarding controls are focused. Command mode also accepts `table`, `tree`, `dashboard`, `graph`, and `calendar` to switch the library view.
 
 ### Overlays
 
-- Command palette (`Ctrl/Cmd-P`): translucent full-window overlay, centered 600px panel, fuzzy filtered command rows, max 12 visible results, keyboard hints footer.
+- Command palette (`Ctrl/⌘-P`): translucent full-window overlay, centered 600px panel, fuzzy filtered command rows, max 12 visible results, keyboard hints footer.
 - Keybindings overlay (`?`): grouped terminal cheat sheet, escape/click close, visually consistent with palette.
 - Flash/status messages: one-line terminal notifications using theme colors; no toast-card stack.
 
@@ -127,9 +127,9 @@ Global shortcut leakage is a blocker when command palette, search input, import 
 
 | Surface | Target behavior |
 | --- | --- |
-| Library table | Dense grid columns: selection marker, idx, author, when, content, tags, favorite. Active row uses `surface0` and `2px` accent rail. |
+| Library table | Dense grid columns: selection marker, idx, author, when, content, tags, favorite. Dates stay on one line, tags widen before clipping, and the active row uses `surface0` with a `2px` accent rail. |
 | Library tree | Author-grouped file-tree shape under `~/eterea/library/by-author/`, with nested rows and active rail. |
-| Dashboard | Metric cards for totals/authors/favorites/recent period, sparklines, top tag bars, recent saves list. |
+| Dashboard | Four metric cards for matches/authors/favorites/loaded rows, top tag bars, recent saves, loaded favorites, and the post timeline. |
 | Graph | SVG tag co-occurrence panel using existing tag/topic data where possible. |
 | Calendar | Save/import heatmap and by-hour bars derived from stored timestamps where possible. |
 | Detail/Entry | Main content pane plus metadata/actions; no fake likes/reach. Media remains local/privacy-safe. |

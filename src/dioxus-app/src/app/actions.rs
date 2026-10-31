@@ -15,18 +15,39 @@ pub(crate) use keyboard::{
 };
 
 use super::route::ScreenRoute;
-use super::state::{LibraryState, Services};
+use super::state::{LayoutMode, LibraryState, Services};
 use chrono::{DateTime, Local, Utc};
 use dioxus::prelude::{ReadableExt, Signal, WritableExt};
 use query::build_query;
 
+const INITIAL_ROUTE_ENV: &str = "ETEREA_INITIAL_ROUTE";
+const INITIAL_LAYOUT_ENV: &str = "ETEREA_INITIAL_LAYOUT";
+
 pub(crate) fn load_initial_state(services: &Services) -> LibraryState {
     let mut state = LibraryState::default();
     refresh_from_services(services, &mut state, false);
-    if state.total == 0 && state.error.is_none() {
+    apply_initial_route(&mut state);
+    apply_initial_layout(&mut state);
+    if state.route == ScreenRoute::Library && state.total == 0 && state.error.is_none() {
         state.route = ScreenRoute::Onboarding;
     }
     state
+}
+
+fn apply_initial_route(state: &mut LibraryState) {
+    let Ok(route) = std::env::var(INITIAL_ROUTE_ENV) else {
+        return;
+    };
+    state.route = ScreenRoute::parse(route.trim());
+}
+
+fn apply_initial_layout(state: &mut LibraryState) {
+    let Ok(layout) = std::env::var(INITIAL_LAYOUT_ENV) else {
+        return;
+    };
+    if let Some(layout) = LayoutMode::parse(layout.trim()) {
+        state.layout = layout;
+    }
 }
 
 pub(crate) fn reload_library(services: &Services, state: &mut Signal<LibraryState>) {
@@ -64,9 +85,13 @@ fn refresh_from_services(services: &Services, state: &mut LibraryState, preserve
             state.error = None;
             if !preserve_status {
                 state.status = if state.total == 0 {
-                    "Archive is empty — import a bookmark export to begin.".to_string()
+                    "Archive is empty. Import a bookmark export to begin.".to_string()
                 } else {
-                    format!("Archive ready — {} bookmarks loaded.", state.total)
+                    format!(
+                        "Showing {} of {} bookmarks.",
+                        state.bookmarks.len(),
+                        state.total
+                    )
                 };
             }
         }
