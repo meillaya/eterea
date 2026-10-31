@@ -16,7 +16,7 @@ body:
       label: Steps to reproduce
       description: Include exact commands, inputs, or UI actions.
       placeholder: |
-        1. Run `nix develop`
+        1. Run `devenv shell`
         2. Run ...
         3. Observe ...
     validations:
@@ -47,7 +47,7 @@ body:
     id: environment
     attributes:
       label: Environment
-      description: OS, desktop/session details, GPU if relevant, and whether you used `nix develop`.
+      description: OS, desktop/session details, GPU if relevant, and whether you used `devenv shell`.
       placeholder: "OS, shell, Nix status, hardware notes"
     validations:
       required: false

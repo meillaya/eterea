@@ -63,7 +63,7 @@ start_epoch_ns="$(date +%s%N)"
 # elapsed wall time from launch to the live screenshot capture checkpoint; it is
 # not satisfied by unit tests or a successful cargo build.
 tmux new-session -d -s "$session_name" \
-  "cd '$PWD' && nix develop -c cargo run -p eterea-dioxus"
+  "cd '$PWD' && devenv shell -- cargo run -p eterea-dioxus"
 
 sleep "$wait_seconds"
 tmux capture-pane -pt "$session_name" -S -2000 >"$log_path"

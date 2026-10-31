@@ -1,0 +1,5 @@
+inputs:
+  # Keep the dev shell on the same nixpkgs revision as flake.nix so local
+  # checks and package builds use one toolchain.
+  nixpkgs:
+    url: github:NixOS/nixpkgs/5ae3b07d8d6527c42f17c876e404993199144b6a

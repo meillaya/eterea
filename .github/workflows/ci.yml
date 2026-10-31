@@ -25,6 +25,15 @@ jobs:
 
       - name: Install Nix
         uses: cachix/install-nix-action@v31
+
+      - name: Configure devenv cache
+        uses: cachix/cachix-action@v16
+        with:
+          name: devenv
+
+      - name: Install devenv
+        run: nix profile add nixpkgs#devenv
+
       - name: Cache Cargo registry, git, and target
         uses: actions/cache@v5
         with:
@@ -37,16 +46,16 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Rust formatting
-        run: nix develop -c cargo fmt --all -- --check
+        run: devenv shell -- cargo fmt --all -- --check
 
       - name: Rust clippy
-        run: nix develop -c cargo clippy --workspace --all-targets -- -D warnings
+        run: devenv shell -- cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Rust tests
-        run: nix develop -c cargo test --workspace
+        run: devenv shell -- cargo test --workspace
 
       - name: Dioxus release build
-        run: nix develop -c cargo build -p eterea-dioxus --release
+        run: devenv shell -- cargo build -p eterea-dioxus --release
 
       - name: Performance baseline
-        run: nix develop -c scripts/perf-baseline.sh
+        run: devenv shell -- scripts/perf-baseline.sh

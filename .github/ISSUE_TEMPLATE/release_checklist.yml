@@ -16,7 +16,7 @@ body:
       label: Local checks
       description: Confirm local validation before any hosted release action.
       options:
-        - label: Ran the required checks from `nix develop` or documented exceptions.
+        - label: Ran the required checks from `devenv shell` or documented exceptions.
           required: true
         - label: Reviewed performance risk and attached measurement evidence if relevant.
           required: true

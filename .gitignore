@@ -6,6 +6,10 @@ node_modules/
 .svelte-kit/
 build/
 
+# Python
+__pycache__/
+*.pyc
+
 # Tauri
 src-tauri/target/
 
@@ -41,6 +45,10 @@ src/frontend/.omc/
 
 # Nix
 result
+
+# devenv
+.devenv/
+.devenv.flake.nix
 
 src/legacy/
 

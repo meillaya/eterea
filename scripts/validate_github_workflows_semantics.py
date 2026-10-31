@@ -11,11 +11,13 @@ UPLOAD_ARTIFACT_ACTION: Final = "actions/upload-artifact@v7"
 REQUIRED_ACTIONS: Final = (
     ("real checkout action step", "actions/checkout@v6"),
     ("real Nix installer action step", "cachix/install-nix-action@v31"),
+    ("real devenv cache action step", "cachix/cachix-action@v16"),
     ("real Cargo cache action step", "actions/cache@v5"),
 )
 GH_TOKEN_RE: Final = re.compile(r"^GH_TOKEN:\s*\$\{\{\s*github\.token\s*\}\}\s*$")
+COMMENT_RE: Final = re.compile(r"(?<!\S)#.*$")
 YAML_KEY_RE: Final = re.compile(r"^(?P<indent> *)(?P<key>[A-Za-z0-9_-]+|'[^']+'|\"[^\"]+\"):(?P<value>.*)$")
-CI_COMMANDS: Final = (("real cargo fmt command", "nix develop -c cargo fmt --all -- --check"), ("real cargo clippy command", "nix develop -c cargo clippy --workspace --all-targets -- -D warnings"), ("real cargo test command", "nix develop -c cargo test --workspace"), ("real Dioxus release build command", "nix develop -c cargo build -p eterea-dioxus --release"), ("real performance baseline command", "nix develop -c scripts/perf-baseline.sh"))
+CI_COMMANDS: Final = (("real devenv install command", "nix profile add nixpkgs#devenv"), ("real cargo fmt command", "devenv shell -- cargo fmt --all -- --check"), ("real cargo clippy command", "devenv shell -- cargo clippy --workspace --all-targets -- -D warnings"), ("real cargo test command", "devenv shell -- cargo test --workspace"), ("real Dioxus release build command", "devenv shell -- cargo build -p eterea-dioxus --release"), ("real performance baseline command", "devenv shell -- scripts/perf-baseline.sh"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,7 +26,8 @@ class Step:
 
 
 def strip_yaml_comments(text: str) -> str:
-    return "\n".join(filter(None, (line.partition("#")[0].rstrip() for line in text.splitlines())))
+    """Remove YAML comments without truncating a # inside a scalar."""
+    return "\n".join(COMMENT_RE.sub("", line).rstrip() for line in text.splitlines())
 
 
 def top_level_block(text: str, heading: str) -> list[str]:
@@ -208,7 +211,7 @@ def has_cache_key_contract(steps: Sequence[Step]) -> bool:
 
 
 def has_real_build_command(steps: Sequence[Step]) -> bool:
-    return any("nix develop -c cargo build -p eterea-dioxus --release" in command for command in commands_from_steps(steps))
+    return any("devenv shell -- cargo build -p eterea-dioxus --release" in command for command in commands_from_steps(steps))
 
 
 def has_real_checksum_command(steps: Sequence[Step]) -> bool:

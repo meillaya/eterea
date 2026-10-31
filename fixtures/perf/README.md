@@ -7,7 +7,7 @@ dates, text, and media flags.
 
 ## Release baseline
 
-Run from the Nix shell or through `nix develop -c`:
+Run from the devenv shell or through `devenv shell --`:
 
 ```bash
 scripts/perf-baseline.sh

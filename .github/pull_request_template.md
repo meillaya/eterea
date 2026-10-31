@@ -2,7 +2,7 @@
 -
 
 ## Verification
-- [ ] Ran the relevant checks from `nix develop` or documented why they do not apply.
+- [ ] Ran the relevant checks from `devenv shell` or documented why they do not apply.
 - [ ] Added or updated tests for behavior changes.
 - [ ] Captured manual QA evidence when the change affects user-visible behavior.
 

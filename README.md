@@ -11,7 +11,7 @@ their own disk. The shell follows terminal conventions: `1` to `6` switch tabs,
 ## Quick start
 
 ```bash
-nix develop -c cargo run -p eterea-dioxus
+devenv shell -- cargo run -p eterea-dioxus
 ```
 
 Press `5` to open Import and paste the path to your export. Preview reports the
@@ -62,15 +62,15 @@ session. Opening a stored link requires an explicit action and an HTTPS URL.
 
 ## Develop and verify
 
-The flake supplies the Rust toolchain and the native desktop libraries. CI runs
-these gates:
+The devenv shell supplies the Rust toolchain and the native desktop libraries.
+CI runs these gates:
 
 ```bash
-nix develop -c cargo fmt --all -- --check
-nix develop -c cargo clippy --workspace --all-targets -- -D warnings
-nix develop -c cargo test --workspace
-nix develop -c cargo build -p eterea-dioxus --release
-nix develop -c scripts/perf-baseline.sh
+devenv shell -- cargo fmt --all -- --check
+devenv shell -- cargo clippy --workspace --all-targets -- -D warnings
+devenv shell -- cargo test --workspace
+devenv shell -- cargo build -p eterea-dioxus --release
+devenv shell -- scripts/perf-baseline.sh
 ```
 
 The documentation link check is local:
@@ -78,24 +78,3 @@ The documentation link check is local:
 ```bash
 python3 scripts/check-doc-links.py README.md 'docs/**/*.md' CHANGELOG.md
 ```
-
-## Project map
-
-- `src/backend/` (`eterea-core`): domain models, CSV/JSON/X archive parsing,
-  SQLite storage, search, statistics, and the `eterea-cli` binary.
-- `src/app/` (`eterea-app`): product service API used by the desktop shell and
-  integration tests.
-- `src/dioxus-app/` (`eterea-dioxus`): Dioxus desktop shell, routes, state,
-  components, and CSS.
-- `docs/`: architecture, development, design system, release notes, and
-  rendered figures.
-- `fixtures/`: import and performance fixtures.
-
-## Documentation
-
-- [Documentation index](docs/README.md)
-- [Architecture](docs/architecture.md)
-- [Development](docs/development.md)
-- [Design system](docs/design-system.md)
-- [Release readiness](docs/operations/release-readiness.md)
-- [Changelog](CHANGELOG.md)

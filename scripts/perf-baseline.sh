@@ -13,8 +13,8 @@ Usage:
   scripts/perf-baseline.sh --help
 
 Run from the repository root inside the Nix development shell:
-  nix develop -c scripts/perf-baseline.sh
-  nix develop -c scripts/perf-baseline.sh --stress <count>
+  devenv shell -- scripts/perf-baseline.sh
+  devenv shell -- scripts/perf-baseline.sh --stress <count>
 
 Runs Eterea's deterministic generated-archive performance harness.
 

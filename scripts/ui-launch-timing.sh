@@ -41,7 +41,7 @@ cleanup() {
     fi
     echo 'remaining_matching_processes:'
     ps -eo pid=,ppid=,stat=,comm=,args= \
-      | grep -E 'eterea-ui-perf|eterea-dioxus|cargo run -p eterea-dioxus|nix develop -c cargo run' \
+      | grep -E 'eterea-ui-perf|eterea-dioxus|cargo run -p eterea-dioxus|devenv shell -- cargo run' \
       | grep -v grep \
       | grep -v "$$" || echo 'none'
     echo 'remaining_matching_tmux_sessions:'
@@ -133,7 +133,7 @@ payload = {
     "captured_at_utc": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
     "scenario": "T23 live Dioxus desktop launch timing via tmux and screenshot checkpoint",
     "command": "timeout 180s scripts/ui-launch-timing.sh",
-    "launch_command": "tmux new-session ... /usr/bin/time -f %e nix develop -c cargo run -p eterea-dioxus",
+    "launch_command": "tmux new-session ... /usr/bin/time -f %e devenv shell -- cargo run -p eterea-dioxus",
     "first_usable_shell_ms": first_ms,
     "first_usable_basis": "elapsed wall time from harness start to startup log readiness checkpoint, before screenshot stabilization delay",
     "post_ready_screenshot_delay_ms": int(os.environ["DELAY_MS"]),
@@ -209,9 +209,9 @@ BLOCKER
   cat >"$launcher_path" <<LAUNCH
 #!/usr/bin/env bash
 cd "$repo_root"
-if [[ -x /usr/bin/time ]]; then exec /usr/bin/time -f 'cargo_run_wall_seconds=%e' -o "$command_time_path" nix develop -c cargo run -p eterea-dioxus; fi
+if [[ -x /usr/bin/time ]]; then exec /usr/bin/time -f 'cargo_run_wall_seconds=%e' -o "$command_time_path" devenv shell -- cargo run -p eterea-dioxus; fi
 echo 'time_binary_missing=/usr/bin/time' >"$command_time_path"
-exec nix develop -c cargo run -p eterea-dioxus
+exec devenv shell -- cargo run -p eterea-dioxus
 LAUNCH
   chmod +x "$launcher_path"
   local start_ns now_ns first_usable_ms screenshot_ms delay_seconds delay_ms deadline_ns ready=false

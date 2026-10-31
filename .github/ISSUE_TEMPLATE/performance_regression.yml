@@ -24,9 +24,9 @@ body:
     id: reproduce
     attributes:
       label: Reproduction commands
-      description: Include exact commands, fixtures, or UI steps. Prefer commands run from `nix develop` when possible.
+      description: Include exact commands, fixtures, or UI steps. Prefer commands run from `devenv shell` when possible.
       placeholder: |
-        nix develop
+        devenv shell
         command ...
     validations:
       required: true

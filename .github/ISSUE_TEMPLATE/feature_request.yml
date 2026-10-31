@@ -7,7 +7,7 @@ body:
     attributes:
       label: Problem or workflow
       description: What user need or workflow should this improve?
-      placeholder: Describe the user-facing problem, not only the implementation idea.
+      placeholder: Describe the user-facing problem, not the implementation idea.
     validations:
       required: true
   - type: textarea

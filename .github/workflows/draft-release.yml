@@ -34,6 +34,14 @@ jobs:
       - name: Install Nix
         uses: cachix/install-nix-action@v31
 
+      - name: Configure devenv cache
+        uses: cachix/cachix-action@v16
+        with:
+          name: devenv
+
+      - name: Install devenv
+        run: nix profile add nixpkgs#devenv
+
       - name: Cache Cargo registry, git, and target
         uses: actions/cache@v5
         with:
@@ -46,7 +54,7 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Build release binary
-        run: nix develop -c cargo build -p eterea-dioxus --release
+        run: devenv shell -- cargo build -p eterea-dioxus --release
 
       - name: Assemble artifact bundle
         run: |
@@ -61,7 +69,7 @@ jobs:
           - Source commit: ${GITHUB_SHA}
           - Workflow run: ${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}
           - Runner: ${RUNNER_OS}/${RUNNER_ARCH}
-          - Build command: nix develop -c cargo build -p eterea-dioxus --release
+          - Build command: devenv shell -- cargo build -p eterea-dioxus --release
           - Signing/notarization: not performed by this draft workflow
           EOF
           (cd "${artifact_dir}" && sha256sum eterea-dioxus PROVENANCE.md > SHA256SUMS.txt)

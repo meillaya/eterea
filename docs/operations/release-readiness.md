@@ -18,11 +18,11 @@ Status: **NO-GO for public release** as of 2026-06-18. Local CI mirror and local
 Run from the repository root. These are local gates; they do not prove GitHub-hosted release upload or public release readiness by themselves.
 
 ```bash
-nix develop -c cargo fmt --all -- --check
-nix develop -c cargo clippy --workspace --all-targets -- -D warnings
-nix develop -c cargo test --workspace
-nix develop -c cargo build -p eterea-dioxus --release
-nix develop -c scripts/perf-baseline.sh
+devenv shell -- cargo fmt --all -- --check
+devenv shell -- cargo clippy --workspace --all-targets -- -D warnings
+devenv shell -- cargo test --workspace
+devenv shell -- cargo build -p eterea-dioxus --release
+devenv shell -- scripts/perf-baseline.sh
 python scripts/validate-github-workflows.py
 python scripts/check-doc-links.py README.md 'docs/**/*.md' CHANGELOG.md
 scripts/desktop-qa.sh
@@ -83,7 +83,9 @@ Live desktop QA must use the real Dioxus app (`scripts/desktop-qa.sh` or the T23
 
 ## Packaging notes
 
-- Keep the `nix develop` path as the canonical verification environment because plain `cargo test --workspace` may miss system OpenSSL/pkg-config outside Nix on this host.
+- Keep the `devenv shell` path as the canonical verification environment
+  because plain `cargo test --workspace` may miss system OpenSSL/pkg-config
+  metadata outside the shell.
 - The backend stores the default database at the platform app-data path from `dirs::data_local_dir()/eterea/bookmarks.db`.
 - Imports skip duplicate tweet URLs and parse before writing, so unsupported/broken files should leave the archive unchanged.
 - Current local draft release artifacts live under `release-artifacts/` and are intentionally local proof, not GitHub-hosted assets.

@@ -75,7 +75,11 @@ def comment_only_ci(workflow_dir: Path) -> None:
     write_workflow(
         workflow_dir,
         CI_NAME,
-        replace_once(text, "run: nix develop -c cargo test --workspace", "run: '# nix develop -c cargo test --workspace'"),
+        replace_once(
+            text,
+            "run: devenv shell -- cargo test --workspace",
+            "run: |\n          # devenv shell -- cargo test --workspace",
+        ),
     )
 
 
@@ -84,7 +88,7 @@ def echo_only_ci(workflow_dir: Path) -> None:
     write_workflow(
         workflow_dir,
         CI_NAME,
-        replace_once(text, "run: nix develop -c cargo test --workspace", "run: echo 'nix develop -c cargo test --workspace'"),
+        replace_once(text, "run: devenv shell -- cargo test --workspace", "run: echo 'devenv shell -- cargo test --workspace'"),
     )
 
 
@@ -95,8 +99,8 @@ def if_false_ci(workflow_dir: Path) -> None:
         CI_NAME,
         replace_once(
             text,
-            "run: nix develop -c cargo test --workspace",
-            "run: |\n          if false; then\n            nix develop -c cargo test --workspace\n          fi",
+            "run: devenv shell -- cargo test --workspace",
+            "run: |\n          if false; then\n            devenv shell -- cargo test --workspace\n          fi",
         ),
     )
 
@@ -108,8 +112,8 @@ def if_zero_eq_one_ci(workflow_dir: Path) -> None:
         CI_NAME,
         replace_once(
             text,
-            "run: nix develop -c cargo clippy --workspace --all-targets -- -D warnings",
-            "run: |\n          if [ 0 -eq 1 ]; then\n            nix develop -c cargo clippy --workspace --all-targets -- -D warnings\n          fi",
+            "run: devenv shell -- cargo clippy --workspace --all-targets -- -D warnings",
+            "run: |\n          if [ 0 -eq 1 ]; then\n            devenv shell -- cargo clippy --workspace --all-targets -- -D warnings\n          fi",
         ),
     )
 
@@ -121,8 +125,8 @@ def inert_function_ci(workflow_dir: Path) -> None:
         CI_NAME,
         replace_once(
             text,
-            "run: nix develop -c cargo test --workspace",
-            "run: |\n          pretend_success() {\n            nix develop -c cargo test --workspace\n          }",
+            "run: devenv shell -- cargo test --workspace",
+            "run: |\n          pretend_success() {\n            devenv shell -- cargo test --workspace\n          }",
         ),
     )
 

@@ -2,35 +2,38 @@
 
 ## Environment
 
-Use the Nix dev shell as the canonical environment:
+Use the devenv shell as the canonical environment:
 
 ```bash
-nix develop
+devenv shell
 ```
 
+With direnv installed, entering the repository activates the same shell through
+`.envrc`.
+
 The shell provides the native libraries needed by the Rust workspace. Running
-plain `cargo test --workspace` outside Nix can fail on hosts without OpenSSL
-pkg-config metadata.
+plain `cargo test --workspace` outside the shell can fail on hosts without
+OpenSSL pkg-config metadata.
 
 ## Common commands
 
 ```bash
 # Run the desktop app
-nix develop -c cargo run -p eterea-dioxus
+devenv shell -- cargo run -p eterea-dioxus
 
 # Optional developer/QA fullscreen smoke check
-ETEREA_WINDOW_MODE=fullscreen nix develop -c cargo run -p eterea-dioxus
+ETEREA_WINDOW_MODE=fullscreen devenv shell -- cargo run -p eterea-dioxus
 
 # Fast compile check
-nix develop -c cargo check --workspace
+devenv shell -- cargo check --workspace
 
 # Formatting, linting, and tests
-nix develop -c cargo fmt --all -- --check
-nix develop -c cargo clippy --workspace --all-targets -- -D warnings
-nix develop -c cargo test --workspace
+devenv shell -- cargo fmt --all -- --check
+devenv shell -- cargo clippy --workspace --all-targets -- -D warnings
+devenv shell -- cargo test --workspace
 
 # Release build smoke check
-nix develop -c cargo build -p eterea-dioxus --release
+devenv shell -- cargo build -p eterea-dioxus --release
 ```
 
 ## Change hygiene
@@ -46,16 +49,16 @@ nix develop -c cargo build -p eterea-dioxus --release
 
 Before a public release, run the desktop app and verify:
 
-- the default desktop window is frameless, maximized, resizable, and has no
+- the default desktop window is decorated, resizable, 1280x820, and has no
   native app menu where the platform/Dioxus host supports menu removal
-- web content reaches the webview client-area edges without a top title/menu gap
+- web content reaches the webview client-area edges inside the window frame
 - `ETEREA_WINDOW_MODE=fullscreen` (or its `kiosk` alias) enters the explicit
   fullscreen path and can be exited/restored with the platform window controls
   or window-manager shortcut
 - first launch and empty/onboarding state
 - import dry-run and committed import paths
 - search, author/topic filters, favorites, deletion, and detail routes
-- all reading layouts
+- all library views
 - remote media preview opt-in/off behavior
 
 ## Live desktop QA harness
@@ -68,7 +71,7 @@ scripts/desktop-qa.sh
 ```
 
 The script starts the app in tmux with the real command
-`tmux new-session -d -s eterea-desktop-qa 'cd /home/mei/projects/eterea && nix develop -c cargo run -p eterea-dioxus'`,
+`tmux new-session -d -s eterea-desktop-qa 'cd "$PWD" && devenv shell -- cargo run -p eterea-dioxus'`,
 captures live logs with
 `tmux capture-pane -pt eterea-desktop-qa -S -2000 > .omo/evidence/production-grade-project/desktop-tmux.log`,
 records launch timing for the first usable desktop shell in
@@ -85,16 +88,14 @@ live desktop screenshot and first usable timing are captured on a real display.
 ## Desktop window modes
 
 The Dioxus shell launches with an explicit desktop window configuration instead
-of relying on framework defaults. The default mode is a frameless, maximized,
-resizable window with the native menu disabled where supported. This removes the
-top OS/window chrome while keeping Eterea a normal desktop app rather than a
-kiosk.
+of relying on framework defaults. The default mode is a decorated, resizable
+1280x820 window with the native menu disabled where supported.
 
 Fullscreen is deliberately opt-in and intended as a developer/QA smoke-check
 surface, not a packaged user preference:
 
 ```bash
-ETEREA_WINDOW_MODE=fullscreen nix develop -c cargo run -p eterea-dioxus
+ETEREA_WINDOW_MODE=fullscreen devenv shell -- cargo run -p eterea-dioxus
 ```
 
 The `kiosk` value is accepted as a fullscreen smoke-check alias for test
