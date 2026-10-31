@@ -6,13 +6,14 @@ runtime instructions here concise and move dated planning notes into
 
 ## Start here
 
-1. `architecture.md` — crate boundaries, app flow, and repository layout.
-2. `development.md` — supported toolchain, commands, and contribution checks.
-3. `design-system.md` — implemented UI design system and screen map.
-4. `operations/release-readiness.md` — release evidence, waivers, and go/no-go
+1. `architecture.md`: crate boundaries, app flow, and repository layout.
+2. `development.md`: supported toolchain, commands, and verification checks.
+3. `design-system.md`: implemented UI design system and screen map.
+4. `operations/release-readiness.md`: release evidence, waivers, and go/no-go
    checks.
 
 ## Supporting areas
 
 - `archive/` contains historical notes from earlier frontend/performance work.
+- `figures/` contains the architecture scene, its PNG, and the generator.
 - `../fixtures/` contains test and performance fixtures only.

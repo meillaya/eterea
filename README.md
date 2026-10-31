@@ -1,85 +1,101 @@
 # Eterea
 
-Eterea is a quiet, local-first reading room for X/Twitter bookmarks. Import an
-export, keep it in SQLite on your own machine, then browse it through a fast
-keyboard-friendly Dioxus desktop app.
+Eterea turns an X/Twitter bookmark export into a local, keyboard-driven reading
+room. Import CSV, JSON, or an X archive JavaScript file, preview the parse, then
+search and read the archive in a Dioxus desktop app backed by SQLite.
 
-It is built for people who save too much and want the archive to feel useful
-again: search it, slice it by author or topic, favorite things, inspect media
-only when you ask for it, and move through the library without a browser tab
-trying to become another inbox.
+It is for people with thousands of saved posts who want a searchable archive on
+their own disk. The shell follows terminal conventions: `1` to `6` switch tabs,
+`/` searches, `:` opens commands, and `?` lists shortcuts.
+
+## Quick start
+
+```bash
+nix develop -c cargo run -p eterea-dioxus
+```
+
+Press `5` to open Import and paste the path to your export. Preview reports the
+format, bookmark count, source, and sample rows before the import writes
+anything. The default database is `eterea/bookmarks.db` under the platform
+app-data directory.
 
 <p align="center">
   <img src="docs/assets/previews/library-preview.png" alt="Eterea library table view" width="49%" />
   <img src="docs/assets/previews/dashboard-preview.png" alt="Eterea dashboard view" width="49%" />
 </p>
 
-Status: [CI](https://github.com/Meillaya/eterea/actions/workflows/ci.yml) · [MIT License](LICENSE) · [Rust workspace](Cargo.toml) · [Dioxus UI](src/dioxus-app/) · [privacy: local-first](#privacy-model)
-
 ## What it does
 
-- Imports CSV, JSON, and X archive JavaScript bookmark exports.
-- Previews an import before it writes anything.
-- Stores everything locally in SQLite under the platform app-data directory.
-- Searches text and filters by author, topic, date, media, and favorites.
-- Offers terminal-style library views: table, tree, dashboard, graph, and calendar.
-- Opens entry detail, author, topic, search, import, and settings routes from the same desktop shell.
-- Keeps remote tweet images hidden by default; load media per tweet or for the current session only.
-- Stores media metadata such as alt text, dimensions, source type, preview URL, and variants when exports include it; it does not cache media bytes.
+The import path accepts CSV, JSON, and X archive JavaScript exports and skips
+duplicate tweet URLs. The library has search, author and topic directories,
+favorites, entry detail, and five views: table, tree, dashboard, graph, and
+calendar. Filters cover text, author, date range, tag, favorites, and media
+presence.
+
+Remote image previews stay hidden until you load one tweet or enable images for
+the session. Eterea stores media metadata from the export (alt text, dimensions,
+source keys, preview URLs, and variants) so rows can reserve space and label
+previews. The database stores metadata and URLs; the schema has no column for
+media bytes.
+
+## Architecture
+
+The desktop shell calls `eterea-app` for every read and write. `eterea-app` owns
+import, query, and mutation operations; `eterea-core` provides the parsers,
+SQLite storage, search, and statistics; and `eterea-dioxus` renders the shell.
+Imports cross the same service boundary, so UI code calls the service layer and
+SQL stays in `eterea-core`.
+
+![Eterea desktop architecture](docs/figures/eterea-architecture.png)
+
+The scene source is
+[docs/figures/eterea-architecture.excalidraw](docs/figures/eterea-architecture.excalidraw).
+See the [architecture document](docs/architecture.md) for trust boundaries and
+the persistence contract.
 
 ## Privacy model
 
-Eterea does not sync with X, phone home, or run a background companion service.
-Imported bookmark data stays on your machine. Text is rendered as text, not raw
-HTML. Stored media URLs are treated cautiously: previews are hidden unless you
-explicitly load one tweet or enable all images for the current session, and
-external opening is limited to explicit HTTPS user actions. Eterea stores
-metadata-only media fields from imports (alt text, dimensions, source keys,
-preview URLs, and variants) so the UI can label and reserve layout space, but it
-does not download media in the background or persist media bytes.
+Bookmark data stays in SQLite on your machine. Eterea parses and queries the
+archive in process, and it stores media metadata without caching image bytes.
+Remote previews remain hidden until you load one tweet or enable images for the
+session. Opening a stored link requires an explicit action and an HTTPS URL.
 
-## Quick start
+## Develop and verify
 
-The easiest supported development path is Nix, because the desktop app needs a
-few native system libraries.
-
-```bash
-nix develop
-nix develop -c cargo run -p eterea-dioxus
-```
-
-Plain `cargo run -p eterea-dioxus` can work on machines that already have the
-native desktop dependencies installed, but Nix is the reproducible path.
-
-## Verify before shipping
+The flake supplies the Rust toolchain and the native desktop libraries. CI runs
+these gates:
 
 ```bash
 nix develop -c cargo fmt --all -- --check
 nix develop -c cargo clippy --workspace --all-targets -- -D warnings
 nix develop -c cargo test --workspace
 nix develop -c cargo build -p eterea-dioxus --release
-python scripts/check-doc-links.py README.md 'docs/**/*.md'
+nix develop -c scripts/perf-baseline.sh
 ```
 
-CI runs the Rust gates. The docs-link checker is still a local release check.
+The documentation link check is local:
+
+```bash
+python3 scripts/check-doc-links.py README.md 'docs/**/*.md' CHANGELOG.md
+```
 
 ## Project map
 
-- `src/backend/` — storage, ingestion, search, stats, and migrations.
-- `src/app/` — application service layer used by the desktop UI and tests.
-- `src/dioxus-app/` — Dioxus desktop shell and UI.
-- `docs/` — architecture, workflow, design-system, preview, and release notes.
-- `fixtures/` — local test fixtures for import and guardrail coverage.
+- `src/backend/` (`eterea-core`): domain models, CSV/JSON/X archive parsing,
+  SQLite storage, search, statistics, and the `eterea-cli` binary.
+- `src/app/` (`eterea-app`): product service API used by the desktop shell and
+  integration tests.
+- `src/dioxus-app/` (`eterea-dioxus`): Dioxus desktop shell, routes, state,
+  components, and CSS.
+- `docs/`: architecture, development, design system, release notes, and
+  rendered figures.
+- `fixtures/`: import and performance fixtures.
 
 ## Documentation
 
 - [Documentation index](docs/README.md)
 - [Architecture](docs/architecture.md)
-- [Development workflow](docs/development.md)
+- [Development](docs/development.md)
 - [Design system](docs/design-system.md)
-- [Preview asset notes](docs/assets/previews/README.md)
 - [Release readiness](docs/operations/release-readiness.md)
-
-## License
-
-MIT. See [LICENSE](LICENSE).
+- [Changelog](CHANGELOG.md)

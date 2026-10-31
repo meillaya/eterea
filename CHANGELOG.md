@@ -6,8 +6,8 @@ has actually been captured.
 
 ## Unreleased
 
-- Added production community documentation: contributing guide, security policy,
-  code of conduct, and this changelog.
+- Added a rendered desktop architecture figure and rewrote the README around
+  the current import, library, and service boundary.
 - Keep release notes aligned with the local-first privacy model documented in
   [release readiness](docs/operations/release-readiness.md).
 
@@ -23,7 +23,6 @@ Initial production-candidate desktop release surface.
 - Dioxus desktop shell with session-only appearance settings and remote media
   previews hidden by default.
 - Nix-based verification path documented in [development](docs/development.md).
-- Licensed under the [MIT](LICENSE) license.
 
 Known release follow-ups remain tracked in
 [release readiness](docs/operations/release-readiness.md), including live desktop

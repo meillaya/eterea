@@ -24,7 +24,7 @@ nix develop -c cargo test --workspace
 nix develop -c cargo build -p eterea-dioxus --release
 nix develop -c scripts/perf-baseline.sh
 python scripts/validate-github-workflows.py
-python scripts/check-doc-links.py README.md 'docs/**/*.md' CHANGELOG.md CONTRIBUTING.md SECURITY.md CODE_OF_CONDUCT.md
+python scripts/check-doc-links.py README.md 'docs/**/*.md' CHANGELOG.md
 scripts/desktop-qa.sh
 ```
 
