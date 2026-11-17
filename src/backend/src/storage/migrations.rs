@@ -6,7 +6,12 @@ use crate::{Error, Result};
 use rusqlite::types::ValueRef;
 use tracing::debug;
 
-const CURRENT_SCHEMA_USER_VERSION: i64 = 0;
+const CURRENT_SCHEMA_USER_VERSION: i64 = 2;
+
+const BOOKMARK_V2_COLUMNS: &[(&str, &str)] = &[
+    ("is_read", "INTEGER NOT NULL DEFAULT 0"),
+    ("links_json", "TEXT NOT NULL DEFAULT '[]'"),
+];
 
 const MEDIA_METADATA_COLUMNS: &[(&str, &str)] = &[
     ("alt_text", "TEXT"),
@@ -17,26 +22,55 @@ const MEDIA_METADATA_COLUMNS: &[(&str, &str)] = &[
     ("preview_url", "TEXT"),
     ("variant_url", "TEXT"),
     ("variants_json", "TEXT"),
+    ("duration_ms", "INTEGER"),
+    ("poster_url", "TEXT"),
+    ("playback_url", "TEXT"),
 ];
 
 impl Database {
     pub(crate) fn initialize(&self) -> Result<()> {
-        // Set performance pragmas
+        // Set performance pragmas. These are connection settings, not schema
+        // changes, so they run outside the migration transaction.
         self.conn.execute_batch(PRAGMAS)?;
 
         self.ensure_supported_user_version()?;
         self.ensure_supported_legacy_shape()?;
-        self.ensure_legacy_bookmark_columns()?;
 
-        // Create schema
-        self.conn.execute_batch(SCHEMA)?;
+        // Run every schema/data migration in one transaction: a failed
+        // migration must leave the previous database byte-identical instead of
+        // claiming a newer user_version with a half-applied shape.
+        self.conn.execute("BEGIN IMMEDIATE", [])?;
+        let migrated = (|| -> Result<()> {
+            self.ensure_legacy_bookmark_columns()?;
+            self.ensure_bookmark_v2_columns()?;
 
-        self.ensure_is_favorite_column()?;
-        self.ensure_media_metadata_columns()?;
-        self.ensure_has_media_column()?;
-        self.ensure_author_stats_snapshot()?;
+            // Repair any earlier development quote-table shape before `SCHEMA`
+            // creates the quote indexes that reference those columns.
+            self.ensure_quoted_tweets_table()?;
+
+            // Create schema (fresh tables, indexes, triggers).
+            self.conn.execute_batch(SCHEMA)?;
+
+            self.ensure_is_favorite_column()?;
+            self.ensure_media_metadata_columns()?;
+            self.ensure_has_media_column()?;
+            self.ensure_author_stats_snapshot()?;
+            self.backfill_playback_urls()?;
+            self.stamp_schema_version()?;
+            Ok(())
+        })();
+
+        match migrated {
+            Ok(()) => {
+                self.conn.execute("COMMIT", [])?;
+            }
+            Err(error) => {
+                let _ = self.conn.execute("ROLLBACK", []);
+                return Err(error);
+            }
+        }
+
         self.conn.execute_batch("PRAGMA optimize;")?;
-
         debug!("Database initialized");
         Ok(())
     }
@@ -86,6 +120,26 @@ impl Database {
                 "ALTER TABLE bookmarks ADD COLUMN is_favorite INTEGER DEFAULT 0",
                 [],
             )?;
+        }
+
+        Ok(())
+    }
+
+    /// Add the schema-v2 reader/links columns to a v1 database.
+    ///
+    /// Runs before `SCHEMA` because the unread partial index in `SCHEMA`
+    /// references `is_read`. Existing rows read as unread with no links.
+    fn ensure_bookmark_v2_columns(&self) -> Result<()> {
+        if !self.table_exists("bookmarks")? {
+            return Ok(());
+        }
+
+        for (column_name, column_definition) in BOOKMARK_V2_COLUMNS {
+            if !self.bookmarks_column_exists(column_name)? {
+                let statement =
+                    format!("ALTER TABLE bookmarks ADD COLUMN {column_name} {column_definition}");
+                self.conn.execute(&statement, [])?;
+            }
         }
 
         Ok(())
@@ -184,32 +238,125 @@ GROUP BY author_handle;
         Ok(())
     }
 
+    /// Backfill `media.playback_url` for rows written before the column
+    /// existed: choose the best progressive MP4 from `variants_json`, falling
+    /// back to a legacy `.mp4` `variant_url`. Idempotent because it only
+    /// touches NULL playback URLs.
+    fn backfill_playback_urls(&self) -> Result<()> {
+        if !self.table_exists("media")? {
+            return Ok(());
+        }
+
+        let rows: Vec<(i64, Option<String>, Option<String>)> = {
+            let mut stmt = self.conn.prepare(
+                "SELECT id, variants_json, variant_url FROM media WHERE playback_url IS NULL",
+            )?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            rows
+        };
+
+        if rows.is_empty() {
+            return Ok(());
+        }
+
+        let mut update = self
+            .conn
+            .prepare("UPDATE media SET playback_url = ?1 WHERE id = ?2")?;
+        for (id, variants_json, variant_url) in rows {
+            let playback_url = crate::models::playback_url_from_variants_json(
+                variants_json.as_deref(),
+            )
+            .or_else(|| {
+                variant_url.filter(|url| {
+                    let lower = url.to_ascii_lowercase();
+                    lower.ends_with(".mp4") && !lower.contains(".m3u8")
+                })
+            });
+            if let Some(playback_url) = playback_url {
+                update.execute(rusqlite::params![playback_url, id])?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Bring the display-only quote table up to the current shape.
+    ///
+    /// The base `SCHEMA` batch already creates the full table on fresh and
+    /// migrated databases; this keeps databases written by earlier development
+    /// builds (quotes existed, display columns did not) repairable instead of
+    /// failing on hydration.
+    fn ensure_quoted_tweets_table(&self) -> Result<()> {
+        if !self.table_exists("quoted_tweets")? {
+            return Ok(());
+        }
+
+        if !self.table_column_exists("quoted_tweets", "bookmark_id")? {
+            return Err(Error::Other(
+                "unsupported quoted_tweets table shape: missing bookmark_id".to_string(),
+            ));
+        }
+
+        for (column_name, column_definition) in [
+            ("content", "TEXT NOT NULL DEFAULT ''"),
+            ("tweeted_at", "INTEGER"),
+            ("author_handle", "TEXT NOT NULL DEFAULT ''"),
+            ("author_name", "TEXT NOT NULL DEFAULT ''"),
+            ("author_profile_image", "TEXT"),
+            ("media_json", "TEXT NOT NULL DEFAULT '[]'"),
+            ("unavailable", "INTEGER NOT NULL DEFAULT 0"),
+        ] {
+            if !self.table_column_exists("quoted_tweets", column_name)? {
+                let statement = format!(
+                    "ALTER TABLE quoted_tweets ADD COLUMN {column_name} {column_definition}"
+                );
+                self.conn.execute(&statement, [])?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Stamp the schema version after every migration step has succeeded.
+    ///
+    /// A fresh database and a database created by the previous schema both
+    /// start at `user_version = 0`; both end at [`CURRENT_SCHEMA_USER_VERSION`].
+    /// Reopening a stamped database is a no-op. The stamp lands last, so a
+    /// failed migration never claims a newer schema.
+    fn stamp_schema_version(&self) -> Result<()> {
+        let user_version: i64 = self
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        if user_version < CURRENT_SCHEMA_USER_VERSION {
+            self.conn.execute_batch(&format!(
+                "PRAGMA user_version = {CURRENT_SCHEMA_USER_VERSION};"
+            ))?;
+        }
+        Ok(())
+    }
+
     fn ensure_has_media_column(&self) -> Result<()> {
         let has_column = self.bookmarks_column_exists("has_media")?;
 
-        self.conn.execute("BEGIN IMMEDIATE", [])?;
-        let result = (|| -> Result<()> {
-            if !has_column {
-                self.conn.execute(
-                    "ALTER TABLE bookmarks ADD COLUMN has_media INTEGER DEFAULT 0",
-                    [],
-                )?;
-            }
+        // Runs inside the caller-owned migration transaction.
+        if !has_column {
             self.conn.execute(
-                "UPDATE bookmarks SET has_media = (SELECT CASE WHEN COUNT(*) > 0 THEN 1 ELSE 0 END FROM media WHERE bookmark_id = bookmarks.id)",
+                "ALTER TABLE bookmarks ADD COLUMN has_media INTEGER DEFAULT 0",
                 [],
             )?;
-            Ok(())
-        })();
-        match result {
-            Ok(()) => {
-                self.conn.execute("COMMIT", [])?;
-            }
-            Err(e) => {
-                let _ = self.conn.execute("ROLLBACK", []);
-                return Err(e);
-            }
         }
+        self.conn.execute(
+            "UPDATE bookmarks SET has_media = (SELECT CASE WHEN COUNT(*) > 0 THEN 1 ELSE 0 END FROM media WHERE bookmark_id = bookmarks.id)",
+            [],
+        )?;
 
         // These DDL statements depend on has_media existing, so run them after the migration above.
         self.conn.execute_batch(

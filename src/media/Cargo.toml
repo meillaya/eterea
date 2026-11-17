@@ -1,0 +1,16 @@
+[package]
+name = "eterea-media"
+version = "0.1.0"
+edition = "2021"
+description = "Image and video fetching for eterea"
+license = "MIT"
+
+[lib]
+name = "eterea_media"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = "1.0"
+crossbeam-channel = "0.5"
+eterea-logic = { path = "../logic" }
+ureq = { version = "3", default-features = false, features = ["rustls"] }

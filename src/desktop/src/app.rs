@@ -1,0 +1,4969 @@
+//! eterea Rune shell.
+//!
+//! The screen is the approved Daylight surface: a 720px reading column with a
+//! 150px marginalia rail. The keyboard is Signal's: j/k, Enter, Esc, f, c, o, m.
+//! Data comes from the background store; media bytes from the media workers.
+
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::Arc;
+use std::time::Duration;
+
+use chrono::{NaiveDate, Utc};
+use eterea_app::{
+    AuthorSummary, BookmarkQuery, BookmarkSelection, BookmarkStats, CalendarData, CalendarRequest,
+    DirectoryPageRequest, ExportFormat, ExportRequest, ExportScope, GraphData, GraphRequest,
+    HistoryDetail, HistoryEvent, HistoryKind, HistoryListRequest, HistoryState, ImportBatchPreview,
+    ImportBatchSummary, Response, StoreHandle, TagMutation, TopicSummary,
+};
+use eterea_media::{ImageKind, VideoCache, VideoCacheConfig, VideoPlayer, VideoPlayerOptions};
+use eterea_ui_model::{Mode, Route};
+use rune::{
+    canvas, col, el, row, text, text_input, Align, AppSpec, Color, Cx, Drag, El, FileDialogOptions,
+    Image, ImageCache, Key, KeyEvent, LineCap, Link, MagnifyEvent, Phase, ScrollSpec, Shape, Span,
+    SurfaceFit, TextEdit, Tx, Waker, WheelEvent,
+};
+
+use crate::images::ImageStore;
+use crate::model::{self, Post};
+use crate::settings;
+use crate::theme::{self, Palette};
+
+const FONTS: &[&[u8]] = &[
+    include_bytes!("../assets/fonts/Newsreader.ttf"),
+    include_bytes!("../assets/fonts/InstrumentSans.ttf"),
+    include_bytes!("../assets/fonts/IBMPlexMono-Regular.ttf"),
+    include_bytes!("../assets/fonts/IBMPlexMono-Medium.ttf"),
+];
+const FAMILIES: (&str, &str) = ("Instrument Sans", "IBM Plex Mono");
+
+const CONTENT: f32 = 720.0;
+const DETAIL_CONTENT: f32 = 740.0;
+const RAIL: f32 = 86.0;
+const GAP: f32 = 12.0;
+const PAGE: usize = 48;
+
+struct Status {
+    text: String,
+    until: f64,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Overlay {
+    None,
+    Palette,
+    Keys,
+    Lightbox,
+    Tags,
+    ConfirmDelete,
+    Export,
+    BulkTag,
+    GraphColor,
+}
+
+struct TagEdit {
+    bookmark_id: String,
+    tags: Vec<String>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CommandItem {
+    Feed,
+    Favorites,
+    Unread,
+    Authors,
+    Topics,
+    Graph,
+    Calendar,
+    Import,
+    History,
+    Settings,
+    Export,
+    Favorite,
+    LoadMedia,
+    CopyLink,
+    OpenOnX,
+    ClearFilter,
+    Reload,
+}
+
+const COMMANDS: &[(&str, CommandItem)] = &[
+    ("feed", CommandItem::Feed),
+    ("favorites", CommandItem::Favorites),
+    ("unread", CommandItem::Unread),
+    ("authors", CommandItem::Authors),
+    ("topics", CommandItem::Topics),
+    ("graph", CommandItem::Graph),
+    ("calendar", CommandItem::Calendar),
+    ("import", CommandItem::Import),
+    ("history", CommandItem::History),
+    ("settings", CommandItem::Settings),
+    ("export", CommandItem::Export),
+    ("favorite", CommandItem::Favorite),
+    ("load media", CommandItem::LoadMedia),
+    ("copy link", CommandItem::CopyLink),
+    ("open on x", CommandItem::OpenOnX),
+    ("clear filter", CommandItem::ClearFilter),
+    ("reload", CommandItem::Reload),
+];
+
+enum InitResult {
+    Ready(StoreHandle),
+    Failed(String),
+}
+
+enum ImportState {
+    Idle,
+    Previewing {
+        paths: Vec<PathBuf>,
+    },
+    Preview {
+        paths: Vec<PathBuf>,
+        preview: ImportBatchPreview,
+    },
+    Importing {
+        paths: Vec<PathBuf>,
+    },
+    Done {
+        summary: ImportBatchSummary,
+    },
+    Error {
+        message: String,
+        paths: Vec<PathBuf>,
+    },
+}
+
+#[derive(Default)]
+struct SelectionState {
+    mode: bool,
+    ids: HashSet<String>,
+    predicate: Option<BookmarkQuery>,
+    affected: Option<i64>,
+    anchor: Option<usize>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ExportScopeChoice {
+    All,
+    Filter,
+    Selection,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ExportKind {
+    Csv,
+    Json,
+}
+
+#[derive(Clone, Copy)]
+struct ExportSheet {
+    scope: ExportScopeChoice,
+    format: ExportKind,
+}
+
+#[derive(Clone)]
+enum Filter {
+    Author(String),
+    Topic(String),
+    Day(String, String),
+    Query(String),
+    Favorites,
+    Unread,
+}
+
+pub(crate) struct State {
+    posts: Vec<Post>,
+    total: i64,
+    selected: usize,
+    route: Route,
+    store: Option<StoreHandle>,
+    images: ImageStore,
+    logo: Option<Image>,
+    logo_light: Option<Image>,
+    dark: Option<bool>,
+    status: Option<Status>,
+    feed_pending: bool,
+    favorite_request: Option<(u64, String)>,
+    delete_request: Option<(u64, String)>,
+    demo: bool,
+    /// Test/headless switch: load every post's media after the feed arrives.
+    auto_media: bool,
+    authors: Vec<AuthorSummary>,
+    authors_total: i64,
+    authors_pending: bool,
+    topics: Vec<TopicSummary>,
+    topics_total: i64,
+    topics_pending: bool,
+    graph: Option<GraphData>,
+    calendar: Option<CalendarData>,
+    filter: Option<Filter>,
+    pending_views: usize,
+    latest_month: Option<String>,
+    mode: Mode,
+    overlay: Overlay,
+    search: String,
+    palette: String,
+    palette_index: usize,
+    lightbox: Option<(usize, usize)>,
+    import: ImportState,
+    import_paths: Vec<PathBuf>,
+    import_picker: Option<Receiver<Vec<PathBuf>>>,
+    import_drop: bool,
+    import_pending: bool,
+    video: Option<VideoPlayer>,
+    video_cache: Option<Arc<VideoCache>>,
+    video_target: Option<(usize, usize)>,
+    video_image: Option<Image>,
+    video_pending: Option<Image>,
+    auto_play: bool,
+    avatars: bool,
+    stats: Option<BookmarkStats>,
+    text_size: u8,
+    motion_reduced: Option<bool>,
+    init_rx: Option<Receiver<InitResult>>,
+    booted: bool,
+    directory_index: usize,
+    graph_zoom: f32,
+    graph_pan: (f32, f32),
+    graph_focus: Option<usize>,
+    graph_drag_pan: Option<(f32, f32)>,
+    tag_edit: Option<TagEdit>,
+    tag_buffer: TextEdit,
+    delete_target: Option<String>,
+    history: Vec<HistoryEvent>,
+    history_total: i64,
+    history_selected: Option<i64>,
+    history_detail: Option<HistoryDetail>,
+    export_sheet: Option<ExportSheet>,
+    selection: SelectionState,
+    bulk_delete: bool,
+    bulk_tag_remove: bool,
+    tag_colors: HashMap<String, String>,
+    graph_color_tag: Option<String>,
+    pending_focus: Option<String>,
+}
+
+impl State {
+    fn new() -> Self {
+        // The real cache/store are created in setup, where the waker exists.
+        Self {
+            posts: Vec::new(),
+            total: 0,
+            selected: 0,
+            route: Route::Feed,
+            store: None,
+            images: ImageStore::empty(),
+            logo: None,
+            logo_light: None,
+            dark: None,
+            status: None,
+            feed_pending: false,
+            favorite_request: None,
+            delete_request: None,
+            demo: false,
+            auto_media: false,
+            authors: Vec::new(),
+            authors_total: 0,
+            authors_pending: false,
+            topics: Vec::new(),
+            topics_total: 0,
+            topics_pending: false,
+            graph: None,
+            calendar: None,
+            filter: None,
+            pending_views: 0,
+            latest_month: None,
+            mode: Mode::Normal,
+            overlay: Overlay::None,
+            search: String::new(),
+            palette: String::new(),
+            palette_index: 0,
+            lightbox: None,
+            import: ImportState::Idle,
+            import_paths: Vec::new(),
+            import_picker: None,
+            import_drop: false,
+            import_pending: false,
+            video: None,
+            video_cache: None,
+            video_target: None,
+            video_image: None,
+            video_pending: None,
+            auto_play: false,
+            avatars: true,
+            stats: None,
+            text_size: 0,
+            motion_reduced: None,
+            init_rx: None,
+            booted: false,
+            directory_index: 0,
+            graph_zoom: 1.0,
+            graph_pan: (0.0, 0.0),
+            graph_focus: None,
+            graph_drag_pan: None,
+            tag_edit: None,
+            tag_buffer: TextEdit::new(""),
+            delete_target: None,
+            history: Vec::new(),
+            history_total: 0,
+            history_selected: None,
+            history_detail: None,
+            export_sheet: None,
+            selection: SelectionState::default(),
+            bulk_delete: false,
+            bulk_tag_remove: false,
+            tag_colors: HashMap::new(),
+            graph_color_tag: None,
+            pending_focus: None,
+        }
+    }
+
+    fn set_status(&mut self, text: impl Into<String>, now: f64) {
+        self.status = Some(Status {
+            text: text.into(),
+            until: now + 2.0,
+        });
+    }
+
+    fn current_query(&self) -> BookmarkQuery {
+        let mut query = BookmarkQuery {
+            offset: 0,
+            limit: PAGE,
+            ..BookmarkQuery::default()
+        };
+        match &self.filter {
+            Some(Filter::Author(handle)) => query.author = Some(handle.clone()),
+            Some(Filter::Topic(tag)) => query.tag = Some(tag.clone()),
+            Some(Filter::Day(from, to)) => {
+                query.from_date = Some(from.clone());
+                query.to_date = Some(to.clone());
+            }
+            Some(Filter::Query(text)) => query.query = Some(text.clone()),
+            Some(Filter::Favorites) => query.favorites_only = true,
+            Some(Filter::Unread) => query.unread_only = true,
+            None => {}
+        }
+        query
+    }
+
+    fn request_history(&mut self) {
+        if let Some(store) = self.store.as_ref() {
+            store.history_list(HistoryListRequest {
+                offset: 0,
+                limit: 5,
+                include_undone: true,
+            });
+            self.pending_views += 1;
+        }
+    }
+
+    fn select_history(&mut self, id: i64) {
+        self.history_selected = Some(id);
+        if let Some(store) = self.store.as_ref() {
+            store.history_detail(id);
+            self.pending_views += 1;
+        }
+    }
+
+    fn undo_latest(&mut self) {
+        if let Some(store) = self.store.as_ref() {
+            store.undo_latest();
+            self.pending_views += 1;
+        }
+    }
+
+    fn open_export(&mut self) {
+        let scope = if self.filter.is_some() {
+            ExportScopeChoice::Filter
+        } else {
+            ExportScopeChoice::All
+        };
+        self.export_sheet = Some(ExportSheet {
+            scope,
+            format: ExportKind::Csv,
+        });
+        self.overlay = Overlay::Export;
+    }
+
+    fn export_now(&mut self, tx: &mut Tx) {
+        let Some(sheet) = self.export_sheet else {
+            return;
+        };
+        let scope = match sheet.scope {
+            ExportScopeChoice::All => ExportScope::All,
+            ExportScopeChoice::Filter => ExportScope::Query(self.current_query()),
+            ExportScopeChoice::Selection => {
+                if self.selection.ids.is_empty() && self.selection.predicate.is_none() {
+                    ExportScope::All
+                } else {
+                    ExportScope::from_selection(&current_selection(self))
+                }
+            }
+        };
+        let format = match sheet.format {
+            ExportKind::Csv => ExportFormat::Csv,
+            ExportKind::Json => ExportFormat::Json,
+        };
+        let extension = match sheet.format {
+            ExportKind::Csv => "csv",
+            ExportKind::Json => "json",
+        };
+        let name = format!("eterea-{}.{}", Utc::now().format("%Y-%m-%d"), extension);
+        let options = FileDialogOptions {
+            title: "export bookmarks".into(),
+            file_name: Some(name),
+            ..FileDialogOptions::default()
+        }
+        .filter(extension.to_ascii_uppercase(), &[extension]);
+        tx.save_file(options, move |state: &mut State, result, tx| {
+            let Ok(Some(path)) = result else {
+                if let Err(error) = result {
+                    let now = tx.clock();
+                    state.set_status(error.to_string(), now);
+                }
+                return;
+            };
+            state.overlay = Overlay::None;
+            state.export_sheet = None;
+            let now = tx.clock();
+            state.set_status("exporting", now);
+            if let Some(store) = state.store.as_ref() {
+                store.export(ExportRequest {
+                    scope,
+                    format,
+                    path,
+                });
+            }
+        });
+    }
+
+    fn request_authors(&mut self, offset: usize) {
+        if self.authors_pending {
+            return;
+        }
+        let Some(store) = self.store.as_ref() else {
+            return;
+        };
+        self.authors_pending = true;
+        self.pending_views += 1;
+        store.author_page(DirectoryPageRequest {
+            offset,
+            limit: 100,
+            filter: None,
+        });
+    }
+
+    fn request_topics(&mut self, offset: usize) {
+        if self.topics_pending {
+            return;
+        }
+        let Some(store) = self.store.as_ref() else {
+            return;
+        };
+        self.topics_pending = true;
+        self.pending_views += 1;
+        store.topic_page(DirectoryPageRequest {
+            offset,
+            limit: 100,
+            filter: None,
+        });
+    }
+
+    fn load_more_authors(&mut self) {
+        if self.authors.len() < self.authors_total as usize {
+            self.request_authors(self.authors.len());
+        }
+    }
+
+    fn load_more_topics(&mut self) {
+        if self.topics.len() < self.topics_total as usize {
+            self.request_topics(self.topics.len());
+        }
+    }
+
+    fn request_feed(&mut self, filter: Option<Filter>) {
+        self.filter = filter;
+        let Some(store) = self.store.as_ref() else {
+            return;
+        };
+        let mut query = BookmarkQuery {
+            offset: 0,
+            limit: PAGE,
+            ..BookmarkQuery::default()
+        };
+        match &self.filter {
+            Some(Filter::Author(handle)) => query.author = Some(handle.clone()),
+            Some(Filter::Topic(tag)) => query.tag = Some(tag.clone()),
+            Some(Filter::Day(from, to)) => {
+                query.from_date = Some(from.clone());
+                query.to_date = Some(to.clone());
+            }
+            Some(Filter::Query(text)) => query.query = Some(text.clone()),
+            Some(Filter::Favorites) => query.favorites_only = true,
+            Some(Filter::Unread) => query.unread_only = true,
+            None => {}
+        }
+        store.feed(query);
+        self.feed_pending = true;
+    }
+
+    fn open_route(&mut self, route: Route) {
+        let previous = self.route;
+        stop_video(self);
+        self.route = route;
+        if route == Route::Import
+            && previous != Route::Import
+            && !matches!(
+                self.import,
+                ImportState::Previewing { .. } | ImportState::Importing { .. }
+            )
+        {
+            self.import = ImportState::Idle;
+            self.import_paths.clear();
+        }
+        match route {
+            Route::Feed => self.request_feed(None),
+            Route::Authors if self.authors.is_empty() => {
+                self.request_authors(0);
+            }
+            Route::Topics if self.topics.is_empty() => {
+                self.request_topics(0);
+            }
+            Route::Graph => {
+                if self.graph.is_none() {
+                    if let Some(store) = self.store.as_ref() {
+                        store.graph(GraphRequest::default());
+                        self.pending_views += 1;
+                    }
+                }
+                if self.tag_colors.is_empty() {
+                    if let Some(store) = self.store.as_ref() {
+                        store.tag_colors();
+                        self.pending_views += 1;
+                    }
+                }
+            }
+            Route::History => self.request_history(),
+            Route::Settings if self.stats.is_none() => {
+                if let Some(store) = self.store.as_ref() {
+                    store.stats();
+                    self.pending_views += 1;
+                }
+            }
+            Route::Calendar if self.calendar.is_none() => {
+                if let Some(store) = self.store.as_ref() {
+                    let month = self
+                        .latest_month
+                        .clone()
+                        .unwrap_or_else(|| Utc::now().format("%Y-%m").to_string());
+                    store.calendar(CalendarRequest::new(month));
+                    self.pending_views += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn filter_author(&mut self, handle: &str) {
+        self.route = Route::Feed;
+        self.request_feed(Some(Filter::Author(handle.to_string())));
+    }
+
+    fn filter_topic(&mut self, tag: &str) {
+        self.route = Route::Feed;
+        self.request_feed(Some(Filter::Topic(tag.to_string())));
+    }
+
+    fn filter_day(&mut self, day: &str) {
+        let Ok(date) = NaiveDate::parse_from_str(day, "%Y-%m-%d") else {
+            return;
+        };
+        let Some(start) = date.and_hms_opt(0, 0, 0) else {
+            return;
+        };
+        let Some(next) = date.succ_opt() else {
+            return;
+        };
+        let Some(end) = next.and_hms_opt(0, 0, 0) else {
+            return;
+        };
+        self.route = Route::Feed;
+        self.request_feed(Some(Filter::Day(
+            format!("{}Z", start.format("%Y-%m-%dT%H:%M:%S")),
+            format!("{}Z", end.format("%Y-%m-%dT%H:%M:%S")),
+        )));
+    }
+
+    fn choose_import_files(&mut self) {
+        if self.import_picker.is_some() {
+            return;
+        }
+        let (sender, receiver) = mpsc::channel();
+        self.import_picker = Some(receiver);
+        let _ = std::thread::Builder::new()
+            .name("eterea-file-picker".into())
+            .spawn(move || {
+                let picked = rfd::FileDialog::new()
+                    .add_filter("Bookmarks", &["csv", "json", "js"])
+                    .set_title("import bookmarks exports")
+                    .pick_files()
+                    .unwrap_or_default();
+                let _ = sender.send(picked);
+            });
+    }
+
+    fn preview_import_paths(&mut self, paths: Vec<PathBuf>) {
+        let paths: Vec<PathBuf> = paths
+            .into_iter()
+            .filter(|path| {
+                path.extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| {
+                        matches!(ext.to_ascii_lowercase().as_str(), "csv" | "json" | "js")
+                    })
+            })
+            .collect();
+        if paths.is_empty() {
+            return;
+        }
+        self.import_paths = paths.clone();
+        self.import_pending = true;
+        if let Some(store) = self.store.as_ref() {
+            self.import = ImportState::Previewing {
+                paths: paths.clone(),
+            };
+            store.preview_files(paths);
+        } else {
+            self.import = ImportState::Error {
+                message: "archive is not ready".into(),
+                paths,
+            };
+            self.import_pending = false;
+        }
+    }
+
+    fn drop_import_paths(&mut self, paths: &[PathBuf]) {
+        self.route = Route::Import;
+        self.preview_import_paths(paths.to_vec());
+    }
+
+    fn start_import(&mut self) {
+        let paths = self.import_paths.clone();
+        if paths.is_empty() {
+            return;
+        }
+        self.import = ImportState::Importing {
+            paths: paths.clone(),
+        };
+        self.import_pending = true;
+        if let Some(store) = self.store.as_ref() {
+            store.import_files(paths);
+        }
+    }
+
+    fn refresh_feed(&mut self) {
+        let filter = self.filter.clone();
+        self.request_feed(filter);
+    }
+
+    fn filtered_commands(&self) -> Vec<(&'static str, CommandItem)> {
+        let needle = self.palette.to_lowercase();
+        COMMANDS
+            .iter()
+            .copied()
+            .filter(|(name, _)| needle.is_empty() || name.contains(&needle))
+            .collect()
+    }
+
+    fn run_command(&mut self, item: CommandItem, tx: &mut Tx) {
+        match item {
+            CommandItem::Feed => self.open_route(Route::Feed),
+            CommandItem::Favorites => {
+                self.route = Route::Feed;
+                self.request_feed(Some(Filter::Favorites));
+            }
+            CommandItem::Unread => {
+                self.route = Route::Feed;
+                self.request_feed(Some(Filter::Unread));
+            }
+            CommandItem::Authors => self.open_route(Route::Authors),
+            CommandItem::Topics => self.open_route(Route::Topics),
+            CommandItem::Graph => self.open_route(Route::Graph),
+            CommandItem::Calendar => self.open_route(Route::Calendar),
+            CommandItem::Import => self.open_route(Route::Import),
+            CommandItem::History => self.open_route(Route::History),
+            CommandItem::Settings => self.open_route(Route::Settings),
+            CommandItem::Export => self.open_export(),
+            CommandItem::Favorite => toggle_favorite(self),
+            CommandItem::LoadMedia => load_media(self, self.selected),
+            CommandItem::CopyLink => {
+                if let Some(post) = self.posts.get(self.selected) {
+                    tx.copy(post.tweet_url.clone());
+                    let now = tx.clock();
+                    self.set_status("link copied", now);
+                }
+            }
+            CommandItem::OpenOnX => {
+                if let Some(post) = self.posts.get(self.selected) {
+                    if eterea_logic::is_safe_https_url(&post.tweet_url) {
+                        let _ = tx.open_url(&post.tweet_url);
+                    }
+                }
+            }
+            CommandItem::ClearFilter => self.request_feed(None),
+            CommandItem::Reload => {
+                let filter = self.filter.clone();
+                self.request_feed(filter);
+            }
+        }
+    }
+
+    fn close_overlay(&mut self) {
+        self.overlay = Overlay::None;
+        self.palette.clear();
+        self.palette_index = 0;
+    }
+}
+
+fn setup(state: &mut State, waker: Waker) {
+    let cache = ImageCache::new(waker.clone());
+    // Decode the logo off the UI thread; the view draws whichever is ready.
+    state.logo = Some(cache.svg(
+        &include_bytes!("../../../docs/assets/brand/eterea-orb-header.svg")[..],
+        20.0,
+        1.0,
+    ));
+    state.logo_light = state.logo.clone();
+    state.images = ImageStore::with_cache(cache, Some(&media_cache_dir()));
+    state.demo = std::env::var_os("ETEREA_DEMO").is_some();
+    state.auto_media = std::env::var_os("ETEREA_HIDE_MEDIA").is_none();
+    state.auto_play = std::env::var_os("ETEREA_PLAY").is_some();
+    let stored = settings::load();
+    state.dark = match stored.theme.as_deref() {
+        Some("dark") => Some(true),
+        Some("light") => Some(false),
+        _ => None,
+    };
+    state.avatars = stored.avatars.unwrap_or(true);
+    state.auto_media = if std::env::var_os("ETEREA_HIDE_MEDIA").is_some() {
+        false
+    } else {
+        stored.media.unwrap_or(true)
+    };
+    state.motion_reduced = match stored.motion.as_deref() {
+        Some("reduced") => Some(true),
+        Some("system") => Some(false),
+        _ => None,
+    };
+    state.text_size = stored.text_size.unwrap_or(0).min(2);
+    theme::set_text_scale(match state.text_size {
+        1 => 1.12,
+        2 => 1.24,
+        _ => 1.0,
+    });
+
+    // Demo mode is test-only and uses the local fixture deck synchronously so
+    // screenshots stay deterministic. Real startup never blocks the UI here.
+    if state.demo {
+        state.posts = model::demo_posts();
+        state.total = state.posts.len() as i64;
+        preload_demo_images(state);
+        request_avatars(state);
+        for post in &mut state.posts {
+            post.media_loaded = true;
+        }
+        state.booted = true;
+        if state.posts.is_empty() {
+            state.route = Route::Onboarding;
+        }
+        if let Some(route) = route_from_env() {
+            state.route = route;
+        }
+        return;
+    }
+
+    let (tx, rx) = mpsc::channel();
+    state.init_rx = Some(rx);
+    std::thread::Builder::new()
+        .name("eterea-init".into())
+        .spawn(move || {
+            let opened = match std::env::var_os("ETEREA_DB") {
+                Some(path) => StoreHandle::open(Path::new(&path)),
+                None => StoreHandle::open_default(),
+            };
+            match opened {
+                Ok(store) => {
+                    let _ = tx.send(InitResult::Ready(store));
+                }
+                Err(error) => {
+                    let _ = tx.send(InitResult::Failed(format!(
+                        "database could not open: {error}"
+                    )));
+                }
+            }
+            waker();
+        })
+        .ok();
+}
+
+fn install_store(state: &mut State, store: StoreHandle) {
+    let request = store.feed(BookmarkQuery {
+        offset: 0,
+        limit: PAGE,
+        ..BookmarkQuery::default()
+    });
+    let _ = request;
+    state.store = Some(store.clone());
+    state.feed_pending = true;
+    if state.route == Route::Feed {
+        state.route = Route::Onboarding;
+    }
+    if let Some(route) = route_from_env() {
+        state.open_route(route);
+    }
+    if let Ok(path) = std::env::var("ETEREA_IMPORT") {
+        state.route = Route::Import;
+        state.preview_import_paths(vec![PathBuf::from(path)]);
+    }
+    if let Ok(value) = std::env::var("ETEREA_SELECTED") {
+        if let Ok(index) = value.parse::<usize>() {
+            state.selected = index;
+        }
+    }
+    state.booted = true;
+}
+
+fn route_from_env() -> Option<Route> {
+    match std::env::var("ETEREA_ROUTE").ok()?.as_str() {
+        "feed" => Some(Route::Feed),
+        "authors" => Some(Route::Authors),
+        "topics" => Some(Route::Topics),
+        "graph" => Some(Route::Graph),
+        "calendar" => Some(Route::Calendar),
+        "detail" => Some(Route::Detail),
+        "import" => Some(Route::Import),
+        "history" => Some(Route::History),
+        "settings" => Some(Route::Settings),
+        _ => None,
+    }
+}
+
+fn preload_demo_images(state: &mut State) {
+    let mut keys = Vec::new();
+    for post in &state.posts {
+        if let Some(key) = &post.avatar_key {
+            keys.push(key.clone());
+        }
+        for item in &post.media {
+            keys.push(item.key.clone());
+        }
+        if let Some(quote) = &post.quote {
+            if let Some(key) = &quote.avatar_key {
+                keys.push(key.clone());
+            }
+            if let Some(key) = &quote.thumb_key {
+                keys.push(key.clone());
+            }
+        }
+    }
+    for key in keys {
+        if let Some(path) = model::demo_asset(&key) {
+            state.images.preload_file(&key, &path, 720.0);
+        }
+    }
+}
+
+fn request_avatars(state: &mut State) {
+    if !state.avatars {
+        return;
+    }
+    let mut keys = Vec::new();
+    for post in &state.posts {
+        if let Some(key) = &post.avatar_key {
+            keys.push(key.clone());
+        }
+        if let Some(quote) = &post.quote {
+            if let Some(key) = &quote.avatar_key {
+                keys.push(key.clone());
+            }
+        }
+    }
+    for key in keys {
+        state.images.request(&key, ImageKind::Avatar);
+    }
+}
+
+fn poll(state: &mut State, clock: f64, tx: &mut Tx) -> bool {
+    let mut changed = false;
+    let mut init = None;
+    if let Some(rx) = state.init_rx.as_ref() {
+        match rx.try_recv() {
+            Ok(result) => init = Some(result),
+            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Disconnected) => {
+                init = Some(InitResult::Failed("initialization stopped".into()));
+            }
+        }
+    }
+    if let Some(result) = init {
+        state.init_rx = None;
+        match result {
+            InitResult::Ready(store) => install_store(state, store),
+            InitResult::Failed(message) => {
+                state.booted = true;
+                state.set_status(message, clock);
+                state.route = Route::Onboarding;
+            }
+        }
+        changed = true;
+    }
+
+    if let Some(key) = state.pending_focus.take() {
+        tx.focus(key, false);
+        changed = true;
+    }
+
+    if let Some(store) = state.store.as_ref() {
+        let responses = store.drain();
+        if !responses.is_empty() {
+            changed = true;
+        }
+        for response in responses {
+            handle_response(state, response, clock);
+        }
+    }
+
+    if let Some(receiver) = state.import_picker.as_ref() {
+        match receiver.try_recv() {
+            Ok(paths) => {
+                state.import_picker = None;
+                if !paths.is_empty() {
+                    state.preview_import_paths(paths);
+                    changed = true;
+                }
+            }
+            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Disconnected) => {
+                state.import_picker = None;
+                changed = true;
+            }
+        }
+    }
+
+    if state.images.poll() {
+        changed = true;
+    }
+
+    if let Some(player) = state.video.as_mut() {
+        if state
+            .video_pending
+            .as_ref()
+            .is_some_and(|image| image.is_ready())
+        {
+            state.video_image = state.video_pending.take();
+            changed = true;
+        }
+        let frame = if state.video_pending.is_none() {
+            player.poll().map(|frame| frame.rgba.clone())
+        } else {
+            None
+        };
+        if let Some(bytes) = frame {
+            if let Some(image) = state.images.rgba(960, 540, bytes) {
+                state.video_pending = Some(image);
+            }
+        }
+        if player.is_ended() {
+            let error = player.error().map(str::to_string);
+            state.video = None;
+            state.video_target = None;
+            if let Some(error) = error {
+                let now = tx.clock();
+                state.set_status(error, now);
+            }
+            changed = true;
+        }
+    }
+
+    if state.auto_play && !state.posts.is_empty() {
+        state.auto_play = false;
+        toggle_video(state, tx);
+        changed = true;
+    }
+
+    if let Some(status) = &state.status {
+        if clock > status.until {
+            state.status = None;
+            changed = true;
+        }
+    }
+
+    if state.feed_pending
+        || state.favorite_request.is_some()
+        || state.pending_views > 0
+        || state.import_pending
+        || state.import_picker.is_some()
+        || state.video.is_some()
+        || state.images.pending() > 0
+    {
+        tx.wake_after(Duration::from_millis(33));
+    }
+
+    changed
+}
+
+fn handle_response(state: &mut State, response: Response, clock: f64) {
+    match response {
+        Response::Feed { result, .. } => {
+            state.feed_pending = false;
+            match result {
+                Ok(page) => {
+                    if state.latest_month.is_none() {
+                        if let Some(first) = page.items.first() {
+                            state.latest_month = Some(first.tweeted_at.format("%Y-%m").to_string());
+                        }
+                    }
+                    state.posts = page.items.iter().map(Post::from_bookmark).collect();
+                    state.total = page.total;
+                    state.selected = std::env::var("ETEREA_SELECTED")
+                        .ok()
+                        .and_then(|value| value.parse::<usize>().ok())
+                        .unwrap_or(state.selected)
+                        .min(state.posts.len().saturating_sub(1));
+                    if matches!(state.route, Route::Feed | Route::Onboarding) {
+                        state.route = if state.posts.is_empty() && state.filter.is_none() {
+                            Route::Onboarding
+                        } else {
+                            Route::Feed
+                        };
+                    }
+                    state.feed_pending = false;
+                    if state.route == Route::Calendar {
+                        if let (Some(month), Some(store)) =
+                            (state.latest_month.clone(), state.store.as_ref())
+                        {
+                            store.calendar(CalendarRequest::new(month));
+                            state.pending_views += 1;
+                        }
+                    }
+                    request_avatars(state);
+                    request_all_media(state);
+                }
+                Err(error) => {
+                    state.set_status(error.message, 0.0);
+                    state.route = Route::Onboarding;
+                }
+            }
+        }
+        Response::ToggleFavorite { result, .. } => {
+            if let Some((_, id)) = state.favorite_request.take() {
+                if let Ok(value) = result {
+                    if let Some(post) = state.posts.iter_mut().find(|post| post.id == id) {
+                        post.favorite = value;
+                    }
+                }
+            }
+        }
+        Response::AuthorPage { result, .. } => {
+            state.pending_views = state.pending_views.saturating_sub(1);
+            state.authors_pending = false;
+            match result {
+                Ok(page) => {
+                    state.authors_total = page.total;
+                    state.authors.extend(page.items);
+                }
+                Err(error) => {
+                    let now = clock;
+                    state.set_status(error.message, now);
+                }
+            }
+        }
+        Response::TopicPage { result, .. } => {
+            state.pending_views = state.pending_views.saturating_sub(1);
+            state.topics_pending = false;
+            match result {
+                Ok(page) => {
+                    state.topics_total = page.total;
+                    state.topics.extend(page.items);
+                }
+                Err(error) => {
+                    let now = clock;
+                    state.set_status(error.message, now);
+                }
+            }
+        }
+        Response::AuthorIndex { result, .. } => {
+            state.pending_views = state.pending_views.saturating_sub(1);
+            if let Ok(authors) = result {
+                state.authors_total = authors.len() as i64;
+                state.authors = authors;
+            }
+        }
+        Response::TopicIndex { result, .. } => {
+            state.pending_views = state.pending_views.saturating_sub(1);
+            if let Ok(topics) = result {
+                state.topics_total = topics.len() as i64;
+                state.topics = topics;
+            }
+        }
+        Response::TagColors { result, .. } => {
+            state.pending_views = state.pending_views.saturating_sub(1);
+            if let Ok(colors) = result {
+                state.tag_colors = colors
+                    .into_iter()
+                    .map(|color| (color.tag, color.color))
+                    .collect();
+            }
+        }
+        Response::SetTagColor { result, .. } => {
+            if let Ok(color) = result {
+                state.tag_colors.insert(color.tag, color.color);
+            }
+        }
+        Response::Graph { result, .. } => {
+            state.pending_views = state.pending_views.saturating_sub(1);
+            if let Ok(graph) = result {
+                state.graph = Some(graph);
+            }
+        }
+        Response::Calendar { result, .. } => {
+            state.pending_views = state.pending_views.saturating_sub(1);
+            if let Ok(calendar) = result {
+                state.calendar = Some(calendar);
+            }
+        }
+        Response::PreviewFiles { result, .. } => {
+            state.import_pending = false;
+            state.import = match result {
+                Ok(preview) => ImportState::Preview {
+                    paths: state.import_paths.clone(),
+                    preview,
+                },
+                Err(error) => ImportState::Error {
+                    message: error.message,
+                    paths: state.import_paths.clone(),
+                },
+            };
+        }
+        Response::ImportFiles { result, .. } => {
+            state.import_pending = false;
+            match result {
+                Ok(summary) => {
+                    state.import = ImportState::Done { summary };
+                    state.refresh_feed();
+                }
+                Err(error) => {
+                    state.import = ImportState::Error {
+                        message: error.message,
+                        paths: state.import_paths.clone(),
+                    }
+                }
+            }
+        }
+        Response::Stats { result, .. } => {
+            state.pending_views = state.pending_views.saturating_sub(1);
+            if let Ok(stats) = result {
+                state.stats = Some(stats);
+            }
+        }
+        Response::HistoryList { result, .. } => {
+            state.pending_views = state.pending_views.saturating_sub(1);
+            match result {
+                Ok(page) => {
+                    state.history = page.items;
+                    state.history_total = page.total;
+                    if state.history_selected.is_none() {
+                        if let Some(first) =
+                            state.history.iter().find(|event| event.undone_at.is_none())
+                        {
+                            let id = first.id;
+                            state.select_history(id);
+                        }
+                    }
+                }
+                Err(error) => {
+                    let now = clock;
+                    state.set_status(error.message, now);
+                }
+            }
+        }
+        Response::HistoryDetail { result, .. } => {
+            state.pending_views = state.pending_views.saturating_sub(1);
+            match *result {
+                Ok(detail) => state.history_detail = detail,
+                Err(error) => {
+                    let now = clock;
+                    state.set_status(error.message, now);
+                }
+            }
+        }
+        Response::UndoLatest { result, .. } => {
+            state.pending_views = state.pending_views.saturating_sub(1);
+            match result {
+                Ok(undo) => {
+                    let now = clock;
+                    let message = if let Some(kind) = undo.kind {
+                        let label = match kind {
+                            HistoryKind::Import => "import",
+                            HistoryKind::Delete => "delete",
+                            HistoryKind::Tag => "tags",
+                        };
+                        format!("{label} undone · {} changed", undo.affected)
+                    } else {
+                        "nothing to undo".to_string()
+                    };
+                    state.set_status(message, now);
+                    state.history_detail = None;
+                    state.history_selected = None;
+                    state.request_history();
+                    state.refresh_feed();
+                    state.authors.clear();
+                    state.topics.clear();
+                    state.graph = None;
+                }
+                Err(error) => {
+                    let now = clock;
+                    state.set_status(error.message, now);
+                }
+            }
+        }
+        Response::Export { result, .. } => match result {
+            Ok(summary) => {
+                let now = clock;
+                state.set_status(
+                    format!(
+                        "exported {} posts · {}",
+                        summary.count,
+                        summary
+                            .path
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or("file")
+                    ),
+                    now,
+                );
+            }
+            Err(error) => {
+                let now = clock;
+                state.set_status(error.message, now);
+            }
+        },
+        Response::BulkTag { result, .. } => match result {
+            Ok(bulk) => {
+                let now = clock;
+                state.set_status(format!("{} posts tagged", bulk.affected), now);
+                clear_selection(state);
+                state.refresh_feed();
+            }
+            Err(error) => {
+                let now = clock;
+                state.set_status(error.message, now);
+            }
+        },
+        Response::BulkDelete { result, .. } => match result {
+            Ok(bulk) => {
+                let now = clock;
+                state.set_status(format!("{} posts deleted", bulk.affected), now);
+                clear_selection(state);
+                state.route = Route::Feed;
+                state.refresh_feed();
+            }
+            Err(error) => {
+                let now = clock;
+                state.set_status(error.message, now);
+            }
+        },
+        Response::BulkSetRead { result, .. } => match result {
+            Ok(bulk) => {
+                let now = clock;
+                state.set_status(format!("{} posts updated", bulk.affected), now);
+                clear_selection(state);
+                state.refresh_feed();
+            }
+            Err(error) => {
+                let now = clock;
+                state.set_status(error.message, now);
+            }
+        },
+        Response::DeleteBookmark { result, .. } => {
+            let target = state.delete_request.take().map(|(_, id)| id);
+            match result {
+                Ok(true) => {
+                    if let Some(id) = target {
+                        state.posts.retain(|post| post.id != id);
+                        state.total = state.total.saturating_sub(1);
+                        state.selected = state.selected.min(state.posts.len().saturating_sub(1));
+                    }
+                    state.route = Route::Feed;
+                    let now = clock;
+                    state.set_status("post deleted", now);
+                    state.refresh_feed();
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    let now = clock;
+                    state.set_status(error.message, now);
+                }
+            }
+        }
+        Response::SetRead { result, .. } => {
+            if let Err(error) = result {
+                let now = clock;
+                state.set_status(error.message, now);
+            }
+        }
+        Response::SetTags { result, .. } => {
+            if let Err(error) = result {
+                let now = clock;
+                state.set_status(error.message, now);
+            }
+        }
+        Response::ImportPreview { .. } | Response::Import { .. } => {}
+        Response::Detail { .. } => {}
+    }
+}
+
+fn on_key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
+    if state.overlay != Overlay::None {
+        return overlay_key(state, event, tx);
+    }
+    if state.mode == Mode::Search {
+        return search_key(state, event, tx);
+    }
+    if state.route == Route::Import {
+        match &event.key {
+            Key::Escape => {
+                state.open_route(Route::Feed);
+                return true;
+            }
+            Key::Enter => {
+                match &state.import {
+                    ImportState::Idle => state.choose_import_files(),
+                    ImportState::Preview { .. } => state.start_import(),
+                    ImportState::Done { .. } => {
+                        state.import = ImportState::Idle;
+                        state.choose_import_files();
+                    }
+                    _ => {}
+                }
+                return true;
+            }
+            _ => {}
+        }
+    }
+    if state.route == Route::History {
+        match &event.key {
+            Key::Escape => {
+                state.open_route(Route::Feed);
+                return true;
+            }
+            Key::Text(t) if t.as_str() == "j" || matches!(event.key, Key::Down) => {
+                let len = state.history.len();
+                if len > 0 {
+                    let index = state
+                        .history
+                        .iter()
+                        .position(|event| Some(event.id) == state.history_selected)
+                        .unwrap_or(0);
+                    state.select_history(state.history[(index + 1).min(len - 1)].id);
+                }
+                return true;
+            }
+            Key::Text(t) if t.as_str() == "k" || matches!(event.key, Key::Up) => {
+                let len = state.history.len();
+                if len > 0 {
+                    let index = state
+                        .history
+                        .iter()
+                        .position(|event| Some(event.id) == state.history_selected)
+                        .unwrap_or(0);
+                    state.select_history(state.history[index.saturating_sub(1)].id);
+                }
+                return true;
+            }
+            Key::Text(t) if t.as_str() == "u" => {
+                state.undo_latest();
+                return true;
+            }
+            _ => {}
+        }
+    }
+    if let Some(handled) = graph_key(state, event) {
+        return handled;
+    }
+    match &event.key {
+        Key::Command('f') => {
+            state.route = Route::Feed;
+            state.mode = Mode::Search;
+            state.search.clear();
+            true
+        }
+        Key::Command('p') => {
+            state.overlay = Overlay::Palette;
+            state.palette.clear();
+            state.palette_index = 0;
+            true
+        }
+        Key::Command(',') => {
+            state.open_route(Route::Settings);
+            true
+        }
+        Key::Command('a') => {
+            if event.mods.shift {
+                select_all_matching(state);
+            } else {
+                select_page(state);
+            }
+            true
+        }
+        Key::Text(t) if t.as_str() == "x" => {
+            toggle_selection_current(state);
+            true
+        }
+        Key::Text(t) if t.as_str() == "u" && state.selection.mode => {
+            bulk_read(state, false);
+            true
+        }
+        Key::Text(t) if t.as_str() == "r" && state.selection.mode => {
+            bulk_read(state, true);
+            true
+        }
+        Key::Text(t) if (t.as_str() == "u" || t.as_str() == "r") => {
+            let read = t.as_str() == "r";
+            if let Some(post) = state.posts.get_mut(state.selected) {
+                post.is_read = read;
+                let id = post.id.clone();
+                if let Some(store) = state.store.as_ref() {
+                    store.set_read(id, read);
+                }
+            }
+            true
+        }
+        Key::Text(t) if t.as_str() == "/" => {
+            state.route = Route::Feed;
+            state.mode = Mode::Search;
+            state.search.clear();
+            true
+        }
+        Key::Text(t) if t.as_str() == ":" => {
+            state.overlay = Overlay::Palette;
+            state.palette.clear();
+            state.palette_index = 0;
+            true
+        }
+        Key::Text(t) if t.as_str() == "?" => {
+            state.overlay = Overlay::Keys;
+            true
+        }
+        Key::Text(t) if t.as_str() == "h" => {
+            state.open_route(Route::History);
+            true
+        }
+        Key::Text(t) if t.as_str() == "e" => {
+            state.open_export();
+            true
+        }
+        Key::Text(t) if t.as_str() == "j" => {
+            if event.mods.shift {
+                extend_selection(state, 1);
+            } else if matches!(state.route, Route::Authors | Route::Topics) {
+                move_directory(state, 1);
+            } else {
+                move_selection(state, 1);
+            }
+            reveal(state, tx);
+            true
+        }
+        Key::Text(t) if t.as_str() == "k" => {
+            if event.mods.shift {
+                extend_selection(state, -1);
+            } else if matches!(state.route, Route::Authors | Route::Topics) {
+                move_directory(state, -1);
+            } else {
+                move_selection(state, -1);
+            }
+            reveal(state, tx);
+            true
+        }
+        Key::Down => {
+            if matches!(state.route, Route::Authors | Route::Topics) {
+                move_directory(state, 1);
+            } else {
+                move_selection(state, 1);
+            }
+            reveal(state, tx);
+            true
+        }
+        Key::Up => {
+            if matches!(state.route, Route::Authors | Route::Topics) {
+                move_directory(state, -1);
+            } else {
+                move_selection(state, -1);
+            }
+            reveal(state, tx);
+            true
+        }
+        Key::Enter => {
+            if matches!(state.route, Route::Authors | Route::Topics) {
+                open_directory_selection(state);
+            } else if !state.posts.is_empty() {
+                open_detail(state);
+            }
+            true
+        }
+        Key::Left => {
+            turn_carousel(state, state.selected, -1);
+            true
+        }
+        Key::Right => {
+            turn_carousel(state, state.selected, 1);
+            true
+        }
+        Key::Escape | Key::Backspace => {
+            if state.selection.mode {
+                clear_selection(state);
+            } else if state.route == Route::Detail {
+                state.route = Route::Feed;
+            } else if state.filter.is_some() {
+                state.request_feed(None);
+            } else if state.route != Route::Feed {
+                state.open_route(Route::Feed);
+            } else {
+                state.status = None;
+            }
+            true
+        }
+        Key::Text(t) if t.as_str() == " " => {
+            toggle_video(state, tx);
+            true
+        }
+        Key::Text(t) if t.as_str() == "f" => {
+            toggle_favorite(state);
+            true
+        }
+        Key::Text(t) if t.as_str() == "m" => {
+            if state.video.is_some() {
+                toggle_mute(state, tx);
+            } else {
+                load_media(state, state.selected);
+            }
+            true
+        }
+        Key::Text(t) if t.as_str() == "t" => {
+            if state.selection.mode {
+                begin_bulk_tag(state);
+                state.pending_focus = Some("bulk-tag-input".into());
+                let _ = tx;
+            } else if state.route == Route::Detail {
+                begin_tag_edit(state, tx);
+            }
+            true
+        }
+        Key::Text(t) if t.as_str() == "d" => {
+            if state.selection.mode {
+                begin_bulk_delete(state);
+            } else if state.route == Route::Detail {
+                begin_delete(state);
+            }
+            true
+        }
+        Key::Text(t) if t.as_str() == "," => {
+            state.open_route(Route::Settings);
+            true
+        }
+        Key::Text(t) if t.as_str() == "o" => {
+            if let Some(post) = state.posts.get(state.selected) {
+                if eterea_logic::is_safe_https_url(&post.tweet_url) {
+                    let _ = tx.open_url(&post.tweet_url);
+                }
+            }
+            true
+        }
+        Key::Text(t) if t.as_str() == "c" => {
+            if let Some(post) = state.posts.get(state.selected) {
+                tx.copy(post.tweet_url.clone());
+                let now = tx.clock();
+                state.set_status("link copied", now);
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
+fn overlay_key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
+    match state.overlay {
+        Overlay::Palette => match &event.key {
+            Key::Escape => state.close_overlay(),
+            Key::Up => {
+                state.palette_index = state.palette_index.saturating_sub(1);
+            }
+            Key::Text(t) if t.as_str() == "k" => {
+                state.palette_index = state.palette_index.saturating_sub(1);
+            }
+            Key::Down => {
+                let len = state.filtered_commands().len();
+                if len > 0 {
+                    state.palette_index = (state.palette_index + 1).min(len - 1);
+                }
+            }
+            Key::Text(t) if t.as_str() == "j" => {
+                let len = state.filtered_commands().len();
+                if len > 0 {
+                    state.palette_index = (state.palette_index + 1).min(len - 1);
+                }
+            }
+            Key::Enter => {
+                let commands = state.filtered_commands();
+                if let Some((_, item)) = commands.get(state.palette_index).copied() {
+                    state.close_overlay();
+                    state.run_command(item, tx);
+                }
+            }
+            Key::Backspace => {
+                state.palette.pop();
+                state.palette_index = 0;
+            }
+            Key::Text(t) => {
+                state.palette.push_str(t);
+                state.palette_index = 0;
+            }
+            _ => {}
+        },
+        Overlay::Keys => match &event.key {
+            Key::Escape => state.overlay = Overlay::None,
+            Key::Text(t) if t.as_str() == "?" => state.overlay = Overlay::None,
+            _ => {}
+        },
+        Overlay::Lightbox => match &event.key {
+            Key::Escape => {
+                state.lightbox = None;
+                state.overlay = Overlay::None;
+            }
+            Key::Text(t) if t.as_str() == " " || t.as_str() == "Enter" => {
+                if let Some((post, index)) = state.lightbox {
+                    start_video_at(state, tx, post, index);
+                }
+            }
+            Key::Left => {
+                if let Some((post, index)) = state.lightbox {
+                    if index > 0 {
+                        state.lightbox = Some((post, index - 1));
+                    }
+                }
+            }
+            Key::Right => {
+                if let Some((post, index)) = state.lightbox {
+                    if let Some(count) = state.posts.get(post).map(|post| post.media.len()) {
+                        if index + 1 < count {
+                            state.lightbox = Some((post, index + 1));
+                        }
+                    }
+                }
+            }
+            _ => {}
+        },
+        Overlay::Tags => match &event.key {
+            Key::Escape => {
+                state.overlay = Overlay::None;
+                state.tag_edit = None;
+            }
+            Key::Enter => add_tag(state),
+            _ => {}
+        },
+        Overlay::GraphColor => {
+            if event.key == Key::Escape {
+                state.overlay = Overlay::None;
+                state.graph_color_tag = None;
+            }
+        }
+        Overlay::BulkTag => match &event.key {
+            Key::Escape => state.overlay = Overlay::None,
+            Key::Enter => apply_bulk_tag(state),
+            _ => {}
+        },
+        Overlay::Export => match &event.key {
+            Key::Escape => {
+                state.overlay = Overlay::None;
+                state.export_sheet = None;
+            }
+            Key::Text(t) if t.as_str() == "a" => {
+                if let Some(sheet) = state.export_sheet.as_mut() {
+                    sheet.scope = ExportScopeChoice::All;
+                }
+            }
+            Key::Text(t) if t.as_str() == "f" => {
+                if let Some(sheet) = state.export_sheet.as_mut() {
+                    sheet.scope = ExportScopeChoice::Filter;
+                }
+            }
+            Key::Text(t) if t.as_str() == "s" => {
+                if let Some(sheet) = state.export_sheet.as_mut() {
+                    sheet.scope = ExportScopeChoice::Selection;
+                }
+            }
+            Key::Text(t) if t.as_str() == "c" => {
+                if let Some(sheet) = state.export_sheet.as_mut() {
+                    sheet.format = ExportKind::Csv;
+                }
+            }
+            Key::Text(t) if t.as_str() == "j" => {
+                if let Some(sheet) = state.export_sheet.as_mut() {
+                    sheet.format = ExportKind::Json;
+                }
+            }
+            Key::Enter => state.export_now(tx),
+            _ => {}
+        },
+        Overlay::ConfirmDelete => match &event.key {
+            Key::Escape => {
+                state.delete_target = None;
+                state.overlay = Overlay::None;
+            }
+            Key::Enter => confirm_delete(state),
+            _ => {}
+        },
+        Overlay::None => return false,
+    }
+    true
+}
+
+fn search_key(state: &mut State, event: &KeyEvent, _tx: &mut Tx) -> bool {
+    match &event.key {
+        Key::Escape => {
+            state.mode = Mode::Normal;
+            state.search.clear();
+            if matches!(state.filter, Some(Filter::Query(_))) {
+                state.request_feed(None);
+            }
+        }
+        Key::Backspace => {
+            state.search.pop();
+            if state.search.is_empty() {
+                state.request_feed(None);
+            } else {
+                state.request_feed(Some(Filter::Query(state.search.clone())));
+            }
+        }
+        Key::Enter => {
+            state.mode = Mode::Normal;
+            if !state.posts.is_empty() {
+                state.route = Route::Detail;
+            }
+        }
+        Key::Text(t) => {
+            state.search.push_str(t);
+            state.request_feed(Some(Filter::Query(state.search.clone())));
+        }
+        _ => return false,
+    }
+    true
+}
+
+fn stop_video(state: &mut State) {
+    if let Some(mut player) = state.video.take() {
+        player.stop();
+    }
+    state.video_target = None;
+    state.video_image = None;
+    state.video_pending = None;
+}
+
+fn media_cache_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("ETEREA_CACHE_DIR") {
+        return PathBuf::from(dir);
+    }
+    if let Some(dir) = std::env::var_os("XDG_CACHE_HOME") {
+        return PathBuf::from(dir).join("eterea");
+    }
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".cache/eterea")
+}
+
+fn video_cache(state: &mut State) -> Option<Arc<VideoCache>> {
+    if state.video_cache.is_none() {
+        let config = VideoCacheConfig::new(media_cache_dir());
+        state.video_cache = VideoCache::open(config).ok().map(Arc::new);
+    }
+    state.video_cache.clone()
+}
+
+fn start_video_at(state: &mut State, tx: &mut Tx, post_index: usize, media_index: usize) {
+    if state.video_target == Some((post_index, media_index)) {
+        if let Some(player) = state.video.as_mut() {
+            player.toggle_pause();
+        }
+        return;
+    }
+    stop_video(state);
+    let Some(post) = state.posts.get(post_index) else {
+        return;
+    };
+    let Some(item) = post.media.get(media_index) else {
+        return;
+    };
+    let Some(url) = item.video_url.clone() else {
+        return;
+    };
+    let cache = video_cache(state);
+    let muted = state.route == Route::Feed && state.overlay != Overlay::Lightbox;
+    let options = VideoPlayerOptions {
+        cache,
+        muted,
+        looping: true,
+        ..VideoPlayerOptions::default()
+    };
+    match VideoPlayer::start_with_options(url, options) {
+        Ok(mut player) => {
+            let audio_error = player.state().audio_error;
+            state.video = Some(player);
+            state.video_target = Some((post_index, media_index));
+            state.video_image = None;
+            let now = tx.clock();
+            if let Some(error) = audio_error {
+                state.set_status(error, now);
+            } else {
+                state.set_status("loading video", now);
+            }
+        }
+        Err(error) => {
+            let now = tx.clock();
+            state.set_status(error.to_string(), now);
+        }
+    }
+}
+
+fn toggle_video(state: &mut State, tx: &mut Tx) {
+    if let Some((post, media)) = state.video_target {
+        start_video_at(state, tx, post, media);
+        return;
+    }
+    let Some(post) = state.posts.get(state.selected) else {
+        return;
+    };
+    let page_start = carousel_page(post) * 4;
+    let page_end = (page_start + 4).min(post.media.len());
+    let found = (page_start..page_end)
+        .find(|index| post.media[*index].video_url.is_some())
+        .or_else(|| post.media.iter().position(|item| item.video_url.is_some()));
+    if let Some(index) = found {
+        start_video_at(state, tx, state.selected, index);
+    }
+}
+
+fn toggle_mute(state: &mut State, tx: &mut Tx) {
+    let Some(player) = state.video.as_mut() else {
+        return;
+    };
+    let muted = !player.is_muted();
+    if let Err(error) = player.set_muted(muted) {
+        let now = tx.clock();
+        state.set_status(error.to_string(), now);
+        return;
+    }
+    let now = tx.clock();
+    state.set_status(if muted { "sound off" } else { "sound on" }, now);
+}
+
+fn move_selection(state: &mut State, delta: isize) {
+    if state.posts.is_empty() {
+        return;
+    }
+    stop_video(state);
+    let max = state.posts.len() as isize - 1;
+    state.selected = (state.selected as isize + delta).clamp(0, max) as usize;
+}
+
+fn move_directory(state: &mut State, delta: isize) {
+    let len = match state.route {
+        Route::Authors => state.authors.len(),
+        Route::Topics => state.topics.len(),
+        _ => return,
+    };
+    if len == 0 {
+        return;
+    }
+    state.directory_index =
+        (state.directory_index as isize + delta).clamp(0, len as isize - 1) as usize;
+}
+
+fn open_directory_selection(state: &mut State) {
+    match state.route {
+        Route::Authors => {
+            if let Some(author) = state.authors.get(state.directory_index) {
+                let handle = author.handle.clone();
+                state.filter_author(&handle);
+            }
+        }
+        Route::Topics => {
+            if let Some(topic) = state.topics.get(state.directory_index) {
+                let tag = topic.tag.clone();
+                state.filter_topic(&tag);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn toggle_selection_current(state: &mut State) {
+    let Some(post) = state.posts.get(state.selected) else {
+        return;
+    };
+    let id = post.id.clone();
+    state.selection.mode = true;
+    state.selection.anchor = Some(state.selected);
+    state.selection.predicate = None;
+    state.selection.affected = None;
+    if !state.selection.ids.remove(&id) {
+        state.selection.ids.insert(id);
+    }
+    if state.selection.ids.is_empty() {
+        state.selection.mode = false;
+    }
+}
+
+fn extend_selection(state: &mut State, delta: isize) {
+    if state.posts.is_empty() {
+        return;
+    }
+    state.selection.mode = true;
+    state.selection.predicate = None;
+    state.selection.affected = None;
+    let previous = state.selected;
+    let next = (previous as isize + delta).clamp(0, state.posts.len() as isize - 1) as usize;
+    state.selected = next;
+    let from = state.selection.anchor.unwrap_or(previous).min(next);
+    let to = state.selection.anchor.unwrap_or(previous).max(next);
+    for post in &state.posts[from..=to] {
+        state.selection.ids.insert(post.id.clone());
+    }
+}
+
+fn select_page(state: &mut State) {
+    state.selection.mode = true;
+    state.selection.predicate = None;
+    state.selection.affected = None;
+    for post in &state.posts {
+        state.selection.ids.insert(post.id.clone());
+    }
+}
+
+fn select_all_matching(state: &mut State) {
+    state.selection.mode = true;
+    state.selection.ids.clear();
+    state.selection.predicate = Some(state.current_query());
+    state.selection.affected = Some(state.total);
+}
+
+fn clear_selection(state: &mut State) {
+    state.selection = SelectionState::default();
+}
+
+fn current_selection(state: &State) -> BookmarkSelection {
+    if let Some(query) = state.selection.predicate.clone() {
+        BookmarkSelection::Query(query)
+    } else {
+        BookmarkSelection::Ids(state.selection.ids.iter().cloned().collect())
+    }
+}
+
+fn begin_bulk_tag(state: &mut State) {
+    if state.selection.ids.is_empty() && state.selection.predicate.is_none() {
+        return;
+    }
+    state.bulk_tag_remove = false;
+    state.tag_buffer = TextEdit::new("");
+    state.overlay = Overlay::BulkTag;
+}
+
+fn apply_bulk_tag(state: &mut State) {
+    let tag = state
+        .tag_buffer
+        .text
+        .trim()
+        .trim_start_matches('#')
+        .to_string();
+    if tag.is_empty() {
+        return;
+    }
+    let selection = current_selection(state);
+    let mutation = if state.bulk_tag_remove {
+        TagMutation::Remove(vec![tag])
+    } else {
+        TagMutation::Add(vec![tag])
+    };
+    if let Some(store) = state.store.as_ref() {
+        store.bulk_tag(selection, mutation);
+    }
+    state.overlay = Overlay::None;
+}
+
+fn begin_bulk_delete(state: &mut State) {
+    if state.selection.ids.is_empty() && state.selection.predicate.is_none() {
+        return;
+    }
+    state.bulk_delete = true;
+    state.delete_target = None;
+    state.overlay = Overlay::ConfirmDelete;
+}
+
+fn bulk_delete(state: &mut State) {
+    let selection = current_selection(state);
+    if let Some(store) = state.store.as_ref() {
+        store.bulk_delete(selection);
+    }
+    state.bulk_delete = false;
+    state.overlay = Overlay::None;
+}
+
+fn bulk_read(state: &mut State, read: bool) {
+    if state.selection.ids.is_empty() && state.selection.predicate.is_none() {
+        return;
+    }
+    let selection = current_selection(state);
+    if let Some(store) = state.store.as_ref() {
+        store.bulk_set_read(selection, read);
+    }
+}
+
+fn open_detail(state: &mut State) {
+    let Some(post) = state.posts.get_mut(state.selected) else {
+        return;
+    };
+    state.route = Route::Detail;
+    if post.is_read {
+        return;
+    }
+    post.is_read = true;
+    let id = post.id.clone();
+    if let Some(store) = state.store.as_ref() {
+        store.set_read(id, true);
+    }
+}
+
+fn reveal(state: &State, tx: &mut Tx) {
+    match state.route {
+        Route::Feed => tx.scroll_into_view(format!("post-{}", state.selected)),
+        Route::Authors => tx.scroll_into_view(format!("author-{}", state.directory_index)),
+        Route::Topics => tx.scroll_into_view(format!("topic-{}", state.directory_index)),
+        _ => {}
+    }
+}
+
+fn begin_tag_edit(state: &mut State, tx: &mut Tx) {
+    let Some((id, tags)) = state
+        .posts
+        .get(state.selected)
+        .map(|post| (post.id.clone(), post.tags.clone()))
+    else {
+        return;
+    };
+    stop_video(state);
+    state.tag_edit = Some(TagEdit {
+        bookmark_id: id,
+        tags,
+    });
+    state.tag_buffer = TextEdit::new("");
+    state.overlay = Overlay::Tags;
+    state.pending_focus = Some("tag-input".into());
+    let _ = tx;
+}
+
+fn save_tags(state: &mut State) {
+    let Some(edit) = state.tag_edit.as_ref() else {
+        return;
+    };
+    let id = edit.bookmark_id.clone();
+    let tags = edit.tags.clone();
+    if let Some(post) = state.posts.iter_mut().find(|post| post.id == id) {
+        post.tags = tags.clone();
+    }
+    if let Some(store) = state.store.as_ref() {
+        store.set_tags(id, tags);
+    }
+}
+
+fn add_tag(state: &mut State) {
+    let value = state
+        .tag_buffer
+        .text
+        .trim()
+        .trim_start_matches('#')
+        .to_string();
+    if value.is_empty() {
+        return;
+    }
+    if let Some(edit) = state.tag_edit.as_mut() {
+        if !edit.tags.iter().any(|tag| tag.eq_ignore_ascii_case(&value)) {
+            edit.tags.push(value.clone());
+        }
+    }
+    state.tag_buffer = TextEdit::new("");
+    save_tags(state);
+}
+
+fn remove_tag(state: &mut State, index: usize) {
+    if let Some(edit) = state.tag_edit.as_mut() {
+        if index < edit.tags.len() {
+            edit.tags.remove(index);
+        }
+    }
+    save_tags(state);
+}
+
+fn begin_delete(state: &mut State) {
+    let Some(id) = state.posts.get(state.selected).map(|post| post.id.clone()) else {
+        return;
+    };
+    stop_video(state);
+    state.delete_target = Some(id);
+    state.overlay = Overlay::ConfirmDelete;
+}
+
+fn confirm_delete(state: &mut State) {
+    if state.bulk_delete {
+        bulk_delete(state);
+        return;
+    }
+    let Some(id) = state.delete_target.take() else {
+        state.overlay = Overlay::None;
+        return;
+    };
+    if let Some(store) = state.store.as_ref() {
+        let request = store.delete_bookmark(id.clone());
+        state.delete_request = Some((request, id));
+    }
+    state.overlay = Overlay::None;
+}
+
+fn toggle_favorite(state: &mut State) {
+    let Some(post) = state.posts.get_mut(state.selected) else {
+        return;
+    };
+    let id = post.id.clone();
+    post.favorite = !post.favorite;
+    let value = post.favorite;
+    if let Some(store) = state.store.as_ref() {
+        let request = store.toggle_favorite(id.clone());
+        state.favorite_request = Some((request, id));
+    } else {
+        let _ = value;
+    }
+}
+
+fn request_all_media(state: &mut State) {
+    if !state.auto_media {
+        return;
+    }
+    for index in 0..state.posts.len() {
+        load_media(state, index);
+    }
+}
+
+fn carousel_pages(post: &Post) -> usize {
+    if post.media.len() <= 4 {
+        1
+    } else {
+        post.media.len().div_ceil(4)
+    }
+}
+
+fn carousel_page(post: &Post) -> usize {
+    post.media_page.min(carousel_pages(post).saturating_sub(1))
+}
+
+fn turn_carousel(state: &mut State, index: usize, delta: isize) {
+    let Some(post) = state.posts.get_mut(index) else {
+        return;
+    };
+    let pages = carousel_pages(post);
+    if pages <= 1 {
+        return;
+    }
+    let next = (carousel_page(post) as isize + delta).clamp(0, pages as isize - 1) as usize;
+    if next == post.media_page {
+        return;
+    }
+    post.media_page = next;
+    stop_video(state);
+}
+
+fn load_media(state: &mut State, index: usize) {
+    let Some(post) = state.posts.get_mut(index) else {
+        return;
+    };
+    if post.media_loaded {
+        return;
+    }
+    post.media_loaded = true;
+    let mut requests = Vec::new();
+    for item in &post.media {
+        requests.push((
+            item.key.clone(),
+            if item.video {
+                ImageKind::Poster
+            } else {
+                ImageKind::Image
+            },
+        ));
+    }
+    if let Some(quote) = &post.quote {
+        if let Some(key) = &quote.thumb_key {
+            requests.push((key.clone(), ImageKind::Image));
+        }
+    }
+    for (key, kind) in requests {
+        state.images.request(&key, kind);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// View
+// ---------------------------------------------------------------------------
+
+fn view(state: &State, cx: &mut Cx<State>) -> El {
+    let dark = state.dark.unwrap_or_else(|| cx.system_dark());
+    let reduced = state
+        .motion_reduced
+        .unwrap_or_else(|| cx.system_reduced_motion());
+    let p = if dark { theme::night() } else { theme::light() };
+    let header = header(state, p, dark).motion(crate::motion::HEADER);
+    let body = if !state.booted {
+        col().w_full().grow(1.0)
+    } else {
+        match state.route {
+            Route::Onboarding => onboarding(state, p),
+            Route::Detail => detail_view(state, p),
+            Route::Authors => authors_view(state, p),
+            Route::Topics => topics_view(state, p),
+            Route::Graph => graph_view(state, p),
+            Route::Calendar => calendar_view(state, p),
+            Route::Import => import_view(state, p),
+            Route::History => history_view(state, p),
+            Route::Settings => settings_view(state, p),
+            _ => feed_view(state, p),
+        }
+    };
+    let body = body
+        .key(format!("route-{:?}", state.route))
+        .motion(crate::motion::spring(reduced, crate::motion::DETAIL))
+        .transition(crate::motion::route_enter(reduced, crate::motion::DETAIL));
+    let body = col()
+        .w_full()
+        .grow(1.0)
+        .min_h(0.0)
+        .clip_rounded(0.0)
+        .child(body);
+    let mut root = col()
+        .key("window")
+        .role("window")
+        .w_full()
+        .h_full()
+        .fill(p.bg)
+        .on_drop_files(|state: &mut State, files: &[PathBuf], _tx: &mut Tx| {
+            state.drop_import_paths(files);
+        })
+        .accepts_extensions(&["csv", "json", "js"])
+        .on_drop_hover(|state: &mut State, over: bool, _tx: &mut Tx| {
+            state.import_drop = over;
+        })
+        .child(header)
+        .child(body);
+    if state.selection.mode {
+        root = root.child(selection_bar(state, p).motion(crate::motion::SELECTION));
+    }
+    if let Some(status) = &state.status {
+        root = root.child(status_line(status, p).motion(crate::motion::STATUS));
+    }
+    if state.overlay != Overlay::None {
+        root = root.child(overlay_view(state, p).transition(crate::motion::overlay_enter(reduced)));
+    }
+    root
+}
+
+fn header(state: &State, p: Palette, dark: bool) -> El {
+    let active = |route: Route| {
+        state.route == route || (route == Route::Feed && state.route == Route::Detail)
+    };
+    let nav = [
+        ("feed", Route::Feed),
+        ("authors", Route::Authors),
+        ("topics", Route::Topics),
+        ("graph", Route::Graph),
+        ("calendar", Route::Calendar),
+        ("import", Route::Import),
+        ("history", Route::History),
+        ("settings", Route::Settings),
+    ];
+    let mut links = row().gap(26.0).center_y();
+    for (label, route) in nav {
+        links = links.child(
+            text(label)
+                .font(theme::ui(12.5, 400.0))
+                .color(if active(route) { p.ink } else { p.muted })
+                .on_press(move |state: &mut State| state.open_route(route)),
+        );
+    }
+    let brand = row()
+        .gap(9.0)
+        .center_y()
+        .child(
+            match if dark {
+                state.logo_light.as_ref()
+            } else {
+                state.logo.as_ref()
+            } {
+                Some(image) => el().key("brand").size(20.0, 20.0).pixels(image.pixels()),
+                None => el().size(20.0, 20.0),
+            },
+        )
+        .child(
+            text("eterea")
+                .font(theme::serif(20.0))
+                .color(p.ink)
+                .on_press(|state: &mut State| state.open_route(Route::Feed)),
+        );
+
+    if state.mode == Mode::Search {
+        return row()
+            .h(56.0)
+            .w_full()
+            .px(52.0)
+            .center_y()
+            .justify_between()
+            .child(brand)
+            .child(
+                row()
+                    .w(360.0)
+                    .gap(16.0)
+                    .center_y()
+                    .child(
+                        text(format!("{}|", state.search))
+                            .font(theme::ui(13.0, 400.0))
+                            .color(p.ink)
+                            .grow(1.0),
+                    )
+                    .child(text("esc").font(theme::mono(10.5)).color(p.muted)),
+            );
+    }
+
+    row()
+        .h(56.0)
+        .w_full()
+        .px(52.0)
+        .center_y()
+        .justify_between()
+        .child(brand)
+        .child(links)
+}
+
+fn status_line(status: &Status, p: Palette) -> El {
+    row().w_full().h(24.0).px(52.0).center_y().fill(p.bg).child(
+        text(status.text.clone())
+            .font(theme::ui(11.5, 400.0))
+            .color(p.muted),
+    )
+}
+
+fn onboarding(state: &State, p: Palette) -> El {
+    let mut lines = col()
+        .w_full()
+        .h_full()
+        .justify_center()
+        .items_center()
+        .gap(10.0);
+    if state.status.is_some() {
+        return lines;
+    } else {
+        lines = lines.child(
+            text("nothing here yet")
+                .font(theme::serif(24.0))
+                .color(p.ink),
+        );
+        lines = lines.child(
+            text("import a bookmarks export")
+                .font(theme::ui(13.0, 400.0))
+                .color(p.muted)
+                .on_press(|state: &mut State| state.route = Route::Import),
+        );
+    }
+    lines
+}
+
+fn feed_view(state: &State, p: Palette) -> El {
+    if state.posts.is_empty() {
+        return col()
+            .w_full()
+            .h_full()
+            .justify_center()
+            .items_center()
+            .child(text("no matches").font(theme::serif(24.0)).color(p.muted));
+    }
+    let mut list = col().w_full().pt(64.0).pb(200.0);
+    for (index, post) in state.posts.iter().enumerate() {
+        if index > 0 && post.date != state.posts[index - 1].date {
+            list = list.child(
+                row()
+                    .w_full()
+                    .justify_center()
+                    .mt(32.0)
+                    .mb(32.0)
+                    .child(el().w(CONTENT).h(1.0).fill(p.line)),
+            );
+        }
+        list = list.child(post_view(state, post, index, p, false));
+    }
+    list.scroll(ScrollSpec {
+        stick_bottom: false,
+    })
+    .grow(1.0)
+    .min_h(0.0)
+}
+
+fn detail_view(state: &State, p: Palette) -> El {
+    let Some(post) = state.posts.get(state.selected) else {
+        return feed_view(state, p);
+    };
+    col()
+        .w_full()
+        .grow(1.0)
+        .min_h(0.0)
+        .pt(56.0)
+        .pb(200.0)
+        .child(post_view(state, post, state.selected, p, true))
+        .scroll(ScrollSpec {
+            stick_bottom: false,
+        })
+        .grow(1.0)
+        .min_h(0.0)
+}
+
+fn authors_view(state: &State, p: Palette) -> El {
+    let mut list = col().w(720.0).gap(2.0);
+    for (index, author) in state.authors.iter().enumerate() {
+        let handle = author.handle.clone();
+        let selected = index == state.directory_index;
+        list = list.child(
+            row()
+                .key(format!("author-{}", index))
+                .w(720.0)
+                .h(44.0)
+                .center_y()
+                .gap(11.0)
+                .on_press(move |state: &mut State| state.filter_author(&handle))
+                .child(
+                    el().w(2.0)
+                        .h(20.0)
+                        .fill(if selected { p.accent } else { p.bg }),
+                )
+                .child(avatar(
+                    state,
+                    author.profile_image.as_deref(),
+                    &author.name,
+                    24.0,
+                    p,
+                ))
+                .child(
+                    text(author.name.clone())
+                        .font(theme::ui(13.0, 500.0))
+                        .color(p.ink),
+                )
+                .child(
+                    text(format!("@{}", author.handle))
+                        .font(theme::ui(12.0, 400.0))
+                        .color(p.muted),
+                )
+                .child(el().grow(1.0))
+                .child(
+                    text(author.bookmark_count.to_string())
+                        .font(theme::mono(10.5))
+                        .color(p.muted),
+                ),
+        );
+    }
+    directory_shell(
+        col()
+            .w_full()
+            .pt(64.0)
+            .pb(200.0)
+            .child(row().w_full().justify_center().child(list)),
+    )
+    .on_at_bottom(|state: &mut State, at| {
+        if at {
+            state.load_more_authors();
+        }
+    })
+}
+
+fn topics_view(state: &State, p: Palette) -> El {
+    let mut list = col().w(720.0).gap(2.0);
+    for (index, topic) in state.topics.iter().enumerate() {
+        let tag = topic.tag.clone();
+        let selected = index == state.directory_index;
+        list = list.child(
+            row()
+                .key(format!("topic-{}", index))
+                .w(720.0)
+                .h(40.0)
+                .center_y()
+                .gap(11.0)
+                .on_press(move |state: &mut State| state.filter_topic(&tag))
+                .child(
+                    el().w(2.0)
+                        .h(18.0)
+                        .fill(if selected { p.accent } else { p.bg }),
+                )
+                .child(
+                    text(topic.tag.clone())
+                        .font(theme::ui(13.0, 400.0))
+                        .color(p.ink),
+                )
+                .child(el().grow(1.0))
+                .child(
+                    text(topic.bookmark_count.to_string())
+                        .font(theme::mono(10.5))
+                        .color(p.muted),
+                ),
+        );
+    }
+    directory_shell(
+        col()
+            .w_full()
+            .pt(64.0)
+            .pb(200.0)
+            .child(row().w_full().justify_center().child(list)),
+    )
+    .on_at_bottom(|state: &mut State, at| {
+        if at {
+            state.load_more_topics();
+        }
+    })
+}
+
+fn directory_shell(content: El) -> El {
+    col()
+        .w_full()
+        .grow(1.0)
+        .min_h(0.0)
+        .child(content)
+        .scroll(ScrollSpec {
+            stick_bottom: false,
+        })
+        .grow(1.0)
+        .min_h(0.0)
+}
+
+fn graph_center(pan: (f32, f32)) -> (f32, f32) {
+    (360.0 + pan.0, 360.0 + pan.1)
+}
+
+fn graph_screen(state: &State, x: f32, y: f32) -> (f32, f32) {
+    let (cx, cy) = graph_center(state.graph_pan);
+    (
+        cx + x * 300.0 * state.graph_zoom,
+        cy + y * 300.0 * state.graph_zoom,
+    )
+}
+
+fn graph_zoom_at(state: &mut State, pointer: (f32, f32), factor: f32) {
+    let before = state.graph_zoom;
+    let after = (before * factor).clamp(0.5, 4.0);
+    if (after - before).abs() < f32::EPSILON {
+        return;
+    }
+    let (cx, cy) = graph_center(state.graph_pan);
+    state.graph_pan = (
+        (pointer.0 - 360.0 - (pointer.0 - cx) * after / before).clamp(-900.0, 900.0),
+        (pointer.1 - 360.0 - (pointer.1 - cy) * after / before).clamp(-900.0, 900.0),
+    );
+    state.graph_zoom = after;
+}
+
+fn graph_pan_by(state: &mut State, dx: f32, dy: f32) {
+    state.graph_pan = (
+        (state.graph_pan.0 + dx).clamp(-900.0, 900.0),
+        (state.graph_pan.1 + dy).clamp(-900.0, 900.0),
+    );
+}
+
+fn tag_color(state: &State, tag: &str, p: Palette) -> Color {
+    if let Some(hex) = state.tag_colors.get(tag) {
+        if let Some(color) = rune::color::hex(hex) {
+            return color;
+        }
+    }
+    const DEFAULT: [&str; 8] = [
+        "#2447b8", "#6b4fbb", "#8a5a9e", "#2f6f6a", "#9a5a3c", "#5f6b3a", "#8a3f58", "#3f5f8a",
+    ];
+    let hash = tag.bytes().fold(0u64, |hash, byte| {
+        hash.wrapping_mul(1099511628211).wrapping_add(byte as u64)
+    });
+    let index = (hash % DEFAULT.len() as u64) as usize;
+    rune::color::hex(DEFAULT[index]).unwrap_or(p.accent)
+}
+
+fn graph_view(state: &State, p: Palette) -> El {
+    let Some(graph) = &state.graph else {
+        return col().w_full().h_full();
+    };
+    let mut edges = Shape::new();
+    let points: Vec<(f32, f32)> = graph
+        .nodes
+        .iter()
+        .map(|node| graph_screen(state, node.x, node.y))
+        .collect();
+    for edge in &graph.edges {
+        let Some(from) = points.get(edge.source) else {
+            continue;
+        };
+        let Some(to) = points.get(edge.target) else {
+            continue;
+        };
+        let focused =
+            state.graph_focus == Some(edge.source) || state.graph_focus == Some(edge.target);
+        edges = edges.line(
+            [from.0, from.1],
+            [to.0, to.1],
+            if focused { 1.4 } else { 1.0 },
+            LineCap::Butt,
+            if focused {
+                p.accent.alpha(0.55)
+            } else {
+                p.line
+            },
+        );
+    }
+    let mut field = col()
+        .size(720.0, 720.0)
+        .clip_rounded(0.0)
+        .motion(crate::motion::GRAPH)
+        .child(canvas(edges).key("graph-edges").size(720.0, 720.0))
+        .on_wheel(|state: &mut State, event: WheelEvent, _tx: &mut Tx| {
+            if event.mods.shift {
+                graph_pan_by(state, event.dx, event.dy);
+            } else {
+                let factor = (1.0 - event.dy * 0.0015).clamp(0.8, 1.25);
+                graph_zoom_at(state, (event.x, event.y), factor);
+            }
+            true
+        })
+        .on_magnify(|state: &mut State, event: MagnifyEvent, _tx: &mut Tx| {
+            graph_zoom_at(state, (event.x, event.y), 1.0 + event.delta);
+            true
+        })
+        .on_drag(
+            |state: &mut State, drag: &mut Drag, _tx: &mut Tx| match drag.phase {
+                Phase::Down => state.graph_drag_pan = Some(state.graph_pan),
+                Phase::Move => {
+                    if let Some(start) = state.graph_drag_pan {
+                        state.graph_pan = (
+                            (start.0 + drag.dx).clamp(-900.0, 900.0),
+                            (start.1 + drag.dy).clamp(-900.0, 900.0),
+                        );
+                    }
+                }
+                Phase::Up => state.graph_drag_pan = None,
+            },
+        )
+        .on_double_press(|state: &mut State| {
+            state.graph_zoom = 1.0;
+            state.graph_pan = (0.0, 0.0);
+        });
+    for (index, node) in graph.nodes.iter().enumerate() {
+        let (x, y) = points[index];
+        let tag = node.tag.clone();
+        let focused = state.graph_focus == Some(index);
+        let node_color = tag_color(state, &node.tag, p);
+        let dot = el()
+            .size(
+                if focused { 8.0 } else { 6.0 },
+                if focused { 8.0 } else { 6.0 },
+            )
+            .radius(4.0)
+            .fill(if focused { p.accent } else { node_color });
+        field = field.child(
+            row()
+                .absolute(x, y - 8.0)
+                .center_y()
+                .gap(5.0)
+                .on_hover(move |state: &mut State| state.graph_focus = Some(index))
+                .on_press(move |state: &mut State| {
+                    state.graph_focus = Some(index);
+                    state.filter_topic(&tag);
+                })
+                .child(dot)
+                .child(
+                    text(node.tag.clone())
+                        .font(theme::ui(12.5, 400.0))
+                        .color(if focused { p.accent } else { p.ink }),
+                ),
+        );
+    }
+    col()
+        .w_full()
+        .h_full()
+        .justify_center()
+        .items_center()
+        .child(field)
+}
+
+fn graph_key(state: &mut State, event: &KeyEvent) -> Option<bool> {
+    if state.route != Route::Graph {
+        return None;
+    }
+    match &event.key {
+        Key::Left => {
+            graph_pan_by(state, 32.0, 0.0);
+            Some(true)
+        }
+        Key::Right => {
+            graph_pan_by(state, -32.0, 0.0);
+            Some(true)
+        }
+        Key::Up => {
+            graph_pan_by(state, 0.0, 32.0);
+            Some(true)
+        }
+        Key::Down => {
+            graph_pan_by(state, 0.0, -32.0);
+            Some(true)
+        }
+        Key::Text(t) if t.as_str() == "+" || t.as_str() == "=" => {
+            graph_zoom_at(state, (360.0, 360.0), 1.15);
+            Some(true)
+        }
+        Key::Text(t) if t.as_str() == "-" => {
+            graph_zoom_at(state, (360.0, 360.0), 1.0 / 1.15);
+            Some(true)
+        }
+        Key::Text(t) if t.as_str() == "0" => {
+            state.graph_zoom = 1.0;
+            state.graph_pan = (0.0, 0.0);
+            Some(true)
+        }
+        Key::Text(t) if t.as_str() == "c" => {
+            if let (Some(index), Some(graph)) = (state.graph_focus, state.graph.as_ref()) {
+                if let Some(node) = graph.nodes.get(index) {
+                    state.graph_color_tag = Some(node.tag.clone());
+                    state.overlay = Overlay::GraphColor;
+                }
+            }
+            Some(true)
+        }
+        Key::Tab => {
+            let len = state.graph.as_ref().map_or(0, |graph| graph.nodes.len());
+            if len > 0 {
+                state.graph_focus = Some(match state.graph_focus {
+                    Some(index) => (index + 1) % len,
+                    None => 0,
+                });
+            }
+            Some(true)
+        }
+        Key::Enter => {
+            if let (Some(index), Some(graph)) = (state.graph_focus, state.graph.as_ref()) {
+                if let Some(node) = graph.nodes.get(index) {
+                    let tag = node.tag.clone();
+                    state.filter_topic(&tag);
+                }
+            }
+            Some(true)
+        }
+        Key::Escape => {
+            state.open_route(Route::Feed);
+            Some(true)
+        }
+        _ => None,
+    }
+}
+
+fn calendar_view(state: &State, p: Palette) -> El {
+    let Some(calendar) = &state.calendar else {
+        return col().w_full().h_full();
+    };
+    let month = calendar_month(&calendar.month);
+    let mut head = row().w(710.0).gap(4.0);
+    for day in ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] {
+        head = head.child(
+            text(day)
+                .w(98.0)
+                .align(Align::End)
+                .font(theme::ui(11.5, 400.0))
+                .color(p.muted),
+        );
+    }
+    let mut grid = col().w(710.0).gap(4.0).child(head);
+    for week in calendar.days.chunks(7) {
+        let mut row_view = row().w(710.0).gap(4.0);
+        for day in week {
+            let date = day.date.clone();
+            let mut cell = col()
+                .w(98.0)
+                .h(64.0)
+                .gap(5.0)
+                .padding(6.0)
+                .on_press(move |state: &mut State| state.filter_day(&date));
+            if let Some(number) = day.date.get(8..10) {
+                cell = cell.child(
+                    text(number.trim_start_matches('0').to_string())
+                        .font(theme::mono(11.0))
+                        .color(if day.bookmark_count > 0 {
+                            p.ink
+                        } else {
+                            p.muted
+                        }),
+                );
+            }
+            let mut dots = row().gap(3.0);
+            for _ in 0..day.bookmark_count.min(4) {
+                dots = dots.child(el().size(4.0, 4.0).radius(2.0).fill(p.accent));
+            }
+            cell = cell.child(dots);
+            row_view = row_view.child(cell);
+        }
+        grid = grid.child(row_view);
+    }
+    col()
+        .w_full()
+        .h_full()
+        .justify_center()
+        .items_center()
+        .gap(18.0)
+        .child(text(month).font(theme::serif(24.0)).color(p.ink))
+        .child(grid)
+}
+
+fn calendar_month(value: &str) -> String {
+    let Some((year, month)) = value.split_once('-') else {
+        return value.to_string();
+    };
+    let name = match month {
+        "01" => "January",
+        "02" => "February",
+        "03" => "March",
+        "04" => "April",
+        "05" => "May",
+        "06" => "June",
+        "07" => "July",
+        "08" => "August",
+        "09" => "September",
+        "10" => "October",
+        "11" => "November",
+        "12" => "December",
+        _ => month,
+    };
+    format!("{name} {year}")
+}
+
+fn overlay_view(state: &State, p: Palette) -> El {
+    let scrim = el().fill(p.scrim).absolute(0.0, 0.0).w_full().h_full();
+    match state.overlay {
+        Overlay::Palette => {
+            let commands = state.filtered_commands();
+            let mut panel = col()
+                .w(560.0)
+                .fill(p.bg)
+                .border(1.0, p.line)
+                .radius(2.0)
+                .child(
+                    row().h(42.0).px(14.0).center_y().child(
+                        text(format!("{}|", state.palette))
+                            .font(theme::ui(13.0, 400.0))
+                            .color(p.ink),
+                    ),
+                );
+            for (index, (name, item)) in commands.iter().enumerate() {
+                let item = *item;
+                panel = panel.child(
+                    row()
+                        .h(30.0)
+                        .px(14.0)
+                        .center_y()
+                        .on_press_tx(move |state: &mut State, tx| {
+                            state.close_overlay();
+                            state.run_command(item, tx);
+                        })
+                        .child(text(*name).font(theme::ui(12.5, 400.0)).color(
+                            if index == state.palette_index {
+                                p.ink
+                            } else {
+                                p.muted
+                            },
+                        )),
+                );
+            }
+            el().w_full()
+                .h_full()
+                .absolute(0.0, 0.0)
+                .child(scrim)
+                .child(
+                    row()
+                        .w_full()
+                        .h_full()
+                        .items_start()
+                        .justify_center()
+                        .pt(80.0)
+                        .child(panel),
+                )
+        }
+        Overlay::Keys => {
+            let rows = [
+                "j k move",
+                "enter open",
+                "esc close",
+                "/ search",
+                ": commands",
+                "? keys",
+                "f favorite",
+                "c copy link",
+                "o open on x",
+                "m media / sound",
+                "← → carousel",
+                "space play",
+                "x select",
+                "shift j k extend",
+                "cmd a page · cmd shift a all",
+                "t tags",
+                "d delete",
+                "u read · r unread",
+                "h history",
+                "e export",
+            ];
+            let mut panel = col().w(300.0).fill(p.bg).border(1.0, p.line).radius(2.0);
+            for row_text in rows {
+                panel = panel.child(
+                    row()
+                        .h(28.0)
+                        .px(14.0)
+                        .center_y()
+                        .child(text(row_text).font(theme::mono(10.5)).color(p.muted)),
+                );
+            }
+            el().w_full()
+                .h_full()
+                .absolute(0.0, 0.0)
+                .child(scrim)
+                .child(
+                    row()
+                        .w_full()
+                        .h_full()
+                        .items_start()
+                        .justify_end()
+                        .pt(80.0)
+                        .pr(52.0)
+                        .child(panel),
+                )
+        }
+        Overlay::Lightbox => {
+            let mut image_slot = el()
+                .size(1100.0, 700.0)
+                .radius(2.0)
+                .clip_rounded(2.0)
+                .motion(crate::motion::LIGHTBOX);
+            if let Some((post_index, media_index)) = state.lightbox {
+                if let Some(post) = state.posts.get(post_index) {
+                    if let Some(item) = post.media.get(media_index) {
+                        let frame = if state.video_target == Some((post_index, media_index)) {
+                            state.video_image.as_ref()
+                        } else {
+                            None
+                        };
+                        image_slot = match frame.or_else(|| state.images.resolve(&item.key)) {
+                            Some(image) => image_slot.pixels_fit(image.pixels(), SurfaceFit::Fit),
+                            None => image_slot.fill(p.band),
+                        };
+                    }
+                }
+            }
+            el().w_full()
+                .h_full()
+                .absolute(0.0, 0.0)
+                .child(el().fill(p.scrim).absolute(0.0, 0.0).w_full().h_full())
+                .child(
+                    row()
+                        .w_full()
+                        .h_full()
+                        .justify_center()
+                        .center_y()
+                        .child(image_slot),
+                )
+                .child(
+                    text("close")
+                        .font(theme::ui(12.5, 400.0))
+                        .color(Color::WHITE)
+                        .pin(None, Some(28.0), Some(52.0), None)
+                        .on_press(|state: &mut State| {
+                            state.lightbox = None;
+                            state.overlay = Overlay::None;
+                        }),
+                )
+        }
+        Overlay::GraphColor => {
+            let Some(tag) = state.graph_color_tag.clone() else {
+                return el();
+            };
+            const SWATCHES: [&str; 8] = [
+                "#2447b8", "#6b4fbb", "#8a5a9e", "#2f6f6a", "#9a5a3c", "#5f6b3a", "#8a3f58",
+                "#3f5f8a",
+            ];
+            let mut grid = col().w(320.0).gap(10.0);
+            let mut swatches = row().w_full().gap(10.0).flex_wrap();
+            for hex in SWATCHES {
+                let value = hex.to_string();
+                let tag_value = tag.clone();
+                swatches = swatches.child(
+                    el().size(26.0, 26.0)
+                        .radius(13.0)
+                        .fill(rune::color::hex(hex).unwrap_or(p.accent))
+                        .on_press(move |state: &mut State| {
+                            if let Some(store) = state.store.as_ref() {
+                                store.set_tag_color(tag_value.clone(), value.clone());
+                            }
+                            state.tag_colors.insert(tag_value.clone(), value.clone());
+                            state.overlay = Overlay::None;
+                            state.graph_color_tag = None;
+                        }),
+                );
+            }
+            grid = grid
+                .child(
+                    text(format!("#{tag}"))
+                        .font(theme::mono(11.0))
+                        .color(p.muted),
+                )
+                .child(swatches)
+                .child(
+                    text("reset")
+                        .font(theme::ui(12.0, 400.0))
+                        .color(p.muted)
+                        .on_press(|state: &mut State| {
+                            state
+                                .tag_colors
+                                .remove(state.graph_color_tag.as_deref().unwrap_or_default());
+                            state.overlay = Overlay::None;
+                            state.graph_color_tag = None;
+                        }),
+                );
+            let panel = col()
+                .w(360.0)
+                .gap(14.0)
+                .padding(20.0)
+                .fill(p.bg)
+                .border(1.0, p.line)
+                .radius(2.0)
+                .child(text("color").font(theme::serif(20.0)).color(p.ink))
+                .child(grid);
+            el().w_full()
+                .h_full()
+                .absolute(0.0, 0.0)
+                .child(scrim)
+                .child(
+                    row()
+                        .w_full()
+                        .h_full()
+                        .justify_center()
+                        .center_y()
+                        .child(panel),
+                )
+        }
+        Overlay::BulkTag => {
+            let count = selection_count(state);
+            let panel = col()
+                .w(460.0)
+                .gap(14.0)
+                .padding(18.0)
+                .fill(p.bg)
+                .border(1.0, p.line)
+                .radius(2.0)
+                .child(
+                    text(format!("{} selected", count))
+                        .font(theme::serif(20.0))
+                        .color(p.ink),
+                )
+                .child(
+                    text_input(&state.tag_buffer, theme::ui(15.0, 400.0))
+                        .key("bulk-tag-input")
+                        .w_full()
+                        .h(34.0)
+                        .px(8.0)
+                        .radius(2.0)
+                        .fill(p.band)
+                        .border(1.0, p.line)
+                        .color(p.ink)
+                        .placeholder("tag", p.muted)
+                        .single_line()
+                        .on_edit(|state: &mut State| &mut state.tag_buffer)
+                        .on_submit(|state: &mut State, _tx| apply_bulk_tag(state)),
+                )
+                .child(
+                    row()
+                        .w_full()
+                        .gap(18.0)
+                        .center_y()
+                        .child(
+                            text("add")
+                                .font(theme::ui(12.5, 500.0))
+                                .color(if !state.bulk_tag_remove {
+                                    p.accent
+                                } else {
+                                    p.muted
+                                })
+                                .on_press(|state: &mut State| {
+                                    state.bulk_tag_remove = false;
+                                    apply_bulk_tag(state);
+                                }),
+                        )
+                        .child(
+                            text("remove")
+                                .font(theme::ui(12.5, 500.0))
+                                .color(if state.bulk_tag_remove {
+                                    p.accent
+                                } else {
+                                    p.muted
+                                })
+                                .on_press(|state: &mut State| {
+                                    state.bulk_tag_remove = true;
+                                    apply_bulk_tag(state);
+                                }),
+                        )
+                        .child(el().grow(1.0))
+                        .child(
+                            text("cancel")
+                                .font(theme::ui(12.5, 400.0))
+                                .color(p.muted)
+                                .on_press(|state: &mut State| state.overlay = Overlay::None),
+                        ),
+                );
+            el().w_full()
+                .h_full()
+                .absolute(0.0, 0.0)
+                .child(scrim)
+                .child(
+                    row()
+                        .w_full()
+                        .h_full()
+                        .justify_center()
+                        .center_y()
+                        .child(panel),
+                )
+        }
+        Overlay::Export => {
+            let sheet = state.export_sheet.unwrap_or(ExportSheet {
+                scope: ExportScopeChoice::All,
+                format: ExportKind::Csv,
+            });
+            let choice = |label: &str, current: bool, p: Palette| {
+                text(label.to_string())
+                    .font(theme::ui(13.0, 400.0))
+                    .color(if current { p.ink } else { p.muted })
+            };
+            let scope_row = row()
+                .w_full()
+                .gap(18.0)
+                .center_y()
+                .child(
+                    text("scope")
+                        .w(72.0)
+                        .font(theme::ui(12.0, 400.0))
+                        .color(p.muted),
+                )
+                .child(
+                    choice("all", sheet.scope == ExportScopeChoice::All, p).on_press(
+                        |state: &mut State| {
+                            if let Some(sheet) = state.export_sheet.as_mut() {
+                                sheet.scope = ExportScopeChoice::All;
+                            }
+                        },
+                    ),
+                )
+                .child(
+                    choice("filter", sheet.scope == ExportScopeChoice::Filter, p).on_press(
+                        |state: &mut State| {
+                            if let Some(sheet) = state.export_sheet.as_mut() {
+                                sheet.scope = ExportScopeChoice::Filter;
+                            }
+                        },
+                    ),
+                );
+            let format_row = row()
+                .w_full()
+                .gap(18.0)
+                .center_y()
+                .child(
+                    text("format")
+                        .w(72.0)
+                        .font(theme::ui(12.0, 400.0))
+                        .color(p.muted),
+                )
+                .child(choice("csv", sheet.format == ExportKind::Csv, p).on_press(
+                    |state: &mut State| {
+                        if let Some(sheet) = state.export_sheet.as_mut() {
+                            sheet.format = ExportKind::Csv;
+                        }
+                    },
+                ))
+                .child(
+                    choice("json", sheet.format == ExportKind::Json, p).on_press(
+                        |state: &mut State| {
+                            if let Some(sheet) = state.export_sheet.as_mut() {
+                                sheet.format = ExportKind::Json;
+                            }
+                        },
+                    ),
+                );
+            let panel = col()
+                .w(420.0)
+                .gap(16.0)
+                .padding(20.0)
+                .fill(p.bg)
+                .border(1.0, p.line)
+                .radius(2.0)
+                .child(text("export").font(theme::serif(20.0)).color(p.ink))
+                .child(scope_row)
+                .child(format_row)
+                .child(
+                    row()
+                        .w_full()
+                        .justify_end()
+                        .gap(18.0)
+                        .child(
+                            text("cancel")
+                                .font(theme::ui(12.5, 400.0))
+                                .color(p.muted)
+                                .on_press(|state: &mut State| {
+                                    state.overlay = Overlay::None;
+                                    state.export_sheet = None;
+                                }),
+                        )
+                        .child(
+                            text("export")
+                                .font(theme::ui(12.5, 500.0))
+                                .color(p.accent)
+                                .on_press_tx(|state: &mut State, tx| state.export_now(tx)),
+                        ),
+                );
+            el().w_full()
+                .h_full()
+                .absolute(0.0, 0.0)
+                .child(scrim)
+                .child(
+                    row()
+                        .w_full()
+                        .h_full()
+                        .justify_center()
+                        .center_y()
+                        .child(panel),
+                )
+        }
+        Overlay::Tags => {
+            let edit = state.tag_edit.as_ref();
+            let mut panel = col()
+                .w(460.0)
+                .gap(14.0)
+                .padding(18.0)
+                .fill(p.bg)
+                .border(1.0, p.line)
+                .radius(2.0)
+                .child(text("tags").font(theme::serif(20.0)).color(p.ink));
+            let mut tags = row().w_full().gap(8.0).flex_wrap();
+            if let Some(edit) = edit {
+                for (index, tag) in edit.tags.iter().enumerate() {
+                    tags = tags.child(
+                        row()
+                            .center_y()
+                            .gap(6.0)
+                            .child(text(format!("#{tag}")).font(theme::mono(11.0)).color(p.ink))
+                            .child(
+                                text("×")
+                                    .font(theme::ui(13.0, 400.0))
+                                    .color(p.muted)
+                                    .on_press(move |state: &mut State| remove_tag(state, index)),
+                            ),
+                    );
+                }
+            }
+            panel = panel.child(tags);
+            panel = panel.child(
+                text_input(&state.tag_buffer, theme::ui(15.0, 400.0))
+                    .key("tag-input")
+                    .w_full()
+                    .h(34.0)
+                    .px(8.0)
+                    .radius(2.0)
+                    .fill(p.band)
+                    .border(1.0, p.line)
+                    .color(p.ink)
+                    .placeholder("add tag", p.muted)
+                    .single_line()
+                    .on_edit(|state: &mut State| &mut state.tag_buffer)
+                    .on_submit(|state: &mut State, _tx| add_tag(state)),
+            );
+            panel = panel.child(
+                row().w_full().justify_end().gap(16.0).child(
+                    text("done")
+                        .font(theme::ui(12.5, 500.0))
+                        .color(p.accent)
+                        .on_press(|state: &mut State| {
+                            state.overlay = Overlay::None;
+                            state.tag_edit = None;
+                        }),
+                ),
+            );
+            el().w_full()
+                .h_full()
+                .absolute(0.0, 0.0)
+                .child(scrim)
+                .child(
+                    row()
+                        .w_full()
+                        .h_full()
+                        .justify_center()
+                        .center_y()
+                        .child(panel),
+                )
+        }
+        Overlay::ConfirmDelete => {
+            let panel = col()
+                .w(420.0)
+                .gap(18.0)
+                .padding(20.0)
+                .fill(p.bg)
+                .border(1.0, p.line)
+                .radius(2.0)
+                .child(
+                    text(if state.bulk_delete {
+                        format!("delete {} posts?", selection_count(state))
+                    } else {
+                        "delete this post?".to_string()
+                    })
+                    .font(theme::serif(20.0))
+                    .color(p.ink),
+                )
+                .child(
+                    row()
+                        .w_full()
+                        .justify_end()
+                        .gap(18.0)
+                        .child(
+                            text("cancel")
+                                .font(theme::ui(12.5, 400.0))
+                                .color(p.muted)
+                                .on_press(|state: &mut State| {
+                                    state.delete_target = None;
+                                    state.overlay = Overlay::None;
+                                }),
+                        )
+                        .child(
+                            text("delete")
+                                .font(theme::ui(12.5, 500.0))
+                                .color(p.accent)
+                                .on_press(|state: &mut State| confirm_delete(state)),
+                        ),
+                );
+            el().w_full()
+                .h_full()
+                .absolute(0.0, 0.0)
+                .child(scrim)
+                .child(
+                    row()
+                        .w_full()
+                        .h_full()
+                        .justify_center()
+                        .center_y()
+                        .child(panel),
+                )
+        }
+        Overlay::None => el(),
+    }
+}
+
+fn import_view(state: &State, p: Palette) -> El {
+    let mut content = col().w(720.0).gap(18.0);
+    match &state.import {
+        ImportState::Idle => {
+            content = content
+                .child(
+                    text("drop files or choose them")
+                        .font(theme::serif(24.0))
+                        .color(p.ink),
+                )
+                .child(
+                    text("CSV, JSON or X archive")
+                        .font(theme::mono(10.5))
+                        .color(p.muted),
+                )
+                .child(
+                    text("choose files")
+                        .font(theme::ui(13.0, 500.0))
+                        .color(p.accent)
+                        .on_press(|state: &mut State| state.choose_import_files()),
+                );
+            if state.import_picker.is_some() {
+                content = content.child(
+                    text("choosing files")
+                        .font(theme::ui(12.0, 400.0))
+                        .color(p.muted),
+                );
+            }
+        }
+        ImportState::Previewing { paths } => {
+            content = content
+                .child(text("reading files").font(theme::serif(24.0)).color(p.ink))
+                .child(
+                    text(format!("{} file{}", paths.len(), plural(paths.len())))
+                        .font(theme::mono(10.5))
+                        .color(p.muted),
+                );
+        }
+        ImportState::Preview { paths, preview } => {
+            content = content
+                .child(
+                    text(format!(
+                        "{} post{} from {} file{}",
+                        preview.total_parsed,
+                        plural(preview.total_parsed),
+                        paths.len(),
+                        plural(paths.len())
+                    ))
+                    .font(theme::serif(24.0))
+                    .color(p.ink),
+                )
+                .child(
+                    text(format!(
+                        "{} duplicate{}",
+                        preview.total_duplicates,
+                        plural(preview.total_duplicates)
+                    ))
+                    .font(theme::mono(10.5))
+                    .color(p.muted),
+                );
+            for file in &preview.files {
+                content = content.child(
+                    row()
+                        .w_full()
+                        .gap(10.0)
+                        .child(
+                            text(file.source_label.clone())
+                                .font(theme::ui(13.0, 500.0))
+                                .color(p.ink),
+                        )
+                        .child(el().grow(1.0))
+                        .child(
+                            text(format!("{} · {}", file.format, file.bookmark_count))
+                                .font(theme::mono(10.5))
+                                .color(p.muted),
+                        ),
+                );
+            }
+            content = content.child(
+                text(format!("import {} posts", preview.total_parsed))
+                    .font(theme::ui(13.0, 500.0))
+                    .color(p.accent)
+                    .on_press(|state: &mut State| state.start_import()),
+            );
+            content = content.child(
+                text("choose another file")
+                    .font(theme::ui(12.0, 400.0))
+                    .color(p.muted)
+                    .on_press(|state: &mut State| state.choose_import_files()),
+            );
+        }
+        ImportState::Importing { paths } => {
+            content = content
+                .child(text("importing").font(theme::serif(24.0)).color(p.ink))
+                .child(
+                    text(format!("{} file{}", paths.len(), plural(paths.len())))
+                        .font(theme::mono(10.5))
+                        .color(p.muted),
+                );
+        }
+        ImportState::Done { summary } => {
+            content = content
+                .child(
+                    text(format!("{} posts imported", summary.inserted))
+                        .font(theme::serif(24.0))
+                        .color(p.ink),
+                )
+                .child(
+                    text(format!(
+                        "{} duplicate{}",
+                        summary.duplicates,
+                        plural(summary.duplicates)
+                    ))
+                    .font(theme::mono(10.5))
+                    .color(p.muted),
+                );
+            content = content.child(
+                text("import another file")
+                    .font(theme::ui(13.0, 500.0))
+                    .color(p.accent)
+                    .on_press(|state: &mut State| {
+                        state.import = ImportState::Idle;
+                        state.import_paths.clear();
+                        state.choose_import_files();
+                    }),
+            );
+            content = content.child(
+                text("back to feed")
+                    .font(theme::ui(12.0, 400.0))
+                    .color(p.muted)
+                    .on_press(|state: &mut State| state.open_route(Route::Feed)),
+            );
+        }
+        ImportState::Error { message, paths } => {
+            content = content.child(
+                text(truncate(message, 180))
+                    .font(theme::ui(13.0, 400.0))
+                    .color(p.ink),
+            );
+            if !paths.is_empty() {
+                content = content.child(
+                    text(format!("{} file{}", paths.len(), plural(paths.len())))
+                        .font(theme::mono(10.5))
+                        .color(p.muted),
+                );
+            }
+            content = content.child(
+                text("choose files")
+                    .font(theme::ui(13.0, 500.0))
+                    .color(p.accent)
+                    .on_press(|state: &mut State| {
+                        state.import = ImportState::Idle;
+                        state.choose_import_files();
+                    }),
+            );
+        }
+    }
+    let panel = col()
+        .w(720.0)
+        .gap(18.0)
+        .padding(24.0)
+        .fill(if state.import_drop { p.band } else { p.bg })
+        .border(1.0, if state.import_drop { p.accent } else { p.line })
+        .on_drop_files(|state: &mut State, files: &[PathBuf], _tx: &mut Tx| {
+            state.drop_import_paths(files);
+        })
+        .accepts_extensions(&["csv", "json", "js"])
+        .on_drop_hover(|state: &mut State, over: bool, _tx: &mut Tx| {
+            state.import_drop = over;
+        })
+        .child(content);
+    col()
+        .w_full()
+        .h_full()
+        .pt(120.0)
+        .child(row().w_full().justify_center().child(panel))
+}
+
+fn plural(count: usize) -> &'static str {
+    if count == 1 {
+        ""
+    } else {
+        "s"
+    }
+}
+
+fn truncate(text: &str, max: usize) -> String {
+    let mut out = String::new();
+    for ch in text.chars() {
+        if out.chars().count() >= max {
+            out.push('…');
+            break;
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn selection_count(state: &State) -> usize {
+    state
+        .selection
+        .affected
+        .map(|count| count.max(0) as usize)
+        .unwrap_or(state.selection.ids.len())
+}
+
+fn selection_bar(state: &State, p: Palette) -> El {
+    let count = selection_count(state);
+    row()
+        .key("selection-bar")
+        .w_full()
+        .h(36.0)
+        .px(52.0)
+        .center_y()
+        .gap(18.0)
+        .border(1.0, p.line)
+        .child(
+            text(format!("{count} selected"))
+                .font(theme::mono(10.5))
+                .color(p.ink),
+        )
+        .child(
+            text("tag")
+                .font(theme::ui(11.5, 500.0))
+                .color(p.accent)
+                .on_press(|state: &mut State| begin_bulk_tag(state)),
+        )
+        .child(
+            text("delete")
+                .font(theme::ui(11.5, 400.0))
+                .color(p.muted)
+                .on_press(|state: &mut State| begin_bulk_delete(state)),
+        )
+        .child(
+            text("read")
+                .font(theme::ui(11.5, 400.0))
+                .color(p.muted)
+                .on_press(|state: &mut State| bulk_read(state, true)),
+        )
+        .child(
+            text("unread")
+                .font(theme::ui(11.5, 400.0))
+                .color(p.muted)
+                .on_press(|state: &mut State| bulk_read(state, false)),
+        )
+        .child(el().grow(1.0))
+        .child(
+            text("clear")
+                .font(theme::ui(11.5, 400.0))
+                .color(p.muted)
+                .on_press(|state: &mut State| clear_selection(state)),
+        )
+}
+
+fn history_label(label: &str) -> String {
+    label.replace(" 1 posts", " 1 post")
+}
+
+fn history_view(state: &State, p: Palette) -> El {
+    let mut list = col().w(720.0).gap(2.0);
+    if state.history.is_empty() {
+        list = list.child(
+            text("no actions yet")
+                .font(theme::ui(13.0, 400.0))
+                .color(p.muted),
+        );
+    }
+    for event in &state.history {
+        let id = event.id;
+        let selected = state.history_selected == Some(id);
+        let kind = match event.kind {
+            HistoryKind::Import => "import",
+            HistoryKind::Delete => "delete",
+            HistoryKind::Tag => "tags",
+        };
+        let when = event
+            .created_at
+            .with_timezone(&chrono::Local)
+            .format("%d %b %H:%M")
+            .to_string();
+        list = list.child(
+            row()
+                .key(format!("history-{id}"))
+                .w(720.0)
+                .h(44.0)
+                .center_y()
+                .gap(12.0)
+                .on_press(move |state: &mut State| state.select_history(id))
+                .child(
+                    el().w(2.0)
+                        .h(20.0)
+                        .fill(if selected { p.accent } else { p.bg }),
+                )
+                .child(text(kind).w(48.0).font(theme::mono(10.5)).color(p.muted))
+                .child(
+                    text(history_label(&event.summary.label))
+                        .font(theme::ui(13.0, 400.0))
+                        .color(if selected { p.ink } else { p.muted })
+                        .grow(1.0),
+                )
+                .child(
+                    text(if event.undone_at.is_some() {
+                        "undone".to_string()
+                    } else {
+                        when
+                    })
+                    .font(theme::mono(10.5))
+                    .color(p.muted),
+                ),
+        );
+    }
+
+    let mut detail = col().w(720.0).gap(14.0);
+    if let Some(detail_view) = &state.history_detail {
+        let event = &detail_view.event;
+        detail = detail.child(
+            text(history_label(&event.summary.label))
+                .font(theme::serif(22.0))
+                .color(p.ink),
+        );
+        if !event.summary.files.is_empty() {
+            detail = detail.child(
+                text(event.summary.files.join(" · "))
+                    .font(theme::mono(10.5))
+                    .color(p.muted),
+            );
+        }
+        if !event.summary.tags.is_empty() {
+            detail = detail.child(
+                text(
+                    event
+                        .summary
+                        .tags
+                        .iter()
+                        .map(|tag| format!("#{tag}"))
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                )
+                .font(theme::mono(10.5))
+                .color(p.muted),
+            );
+        }
+        for item in detail_view.items.iter().take(40) {
+            let mut row_view = col().w_full().gap(3.0).child(
+                row()
+                    .gap(8.0)
+                    .child(
+                        text(format!("@{}", item.author_handle))
+                            .font(theme::ui(11.5, 400.0))
+                            .color(p.muted),
+                    )
+                    .child(
+                        text(truncate(&item.content, 92))
+                            .font(theme::ui(12.5, 400.0))
+                            .color(p.ink),
+                    ),
+            );
+            match (&item.before, &item.after) {
+                (Some(HistoryState::Tags(before)), Some(HistoryState::Tags(after))) => {
+                    row_view = row_view.child(
+                        text(format!("{} -> {}", tag_list(before), tag_list(after)))
+                            .font(theme::mono(10.0))
+                            .color(p.muted),
+                    );
+                }
+                (Some(HistoryState::Bookmark(bookmark)), _) => {
+                    row_view = row_view.child(
+                        text(format!(
+                            "restores {}",
+                            bookmark.tweeted_at.format("%d %b %Y")
+                        ))
+                        .font(theme::mono(10.0))
+                        .color(p.muted),
+                    );
+                }
+                _ => {}
+            }
+            detail = detail.child(row_view);
+        }
+        if detail_view.items.len() > 40 {
+            detail = detail.child(
+                text(format!("{} more", detail_view.items.len() - 40))
+                    .font(theme::mono(10.0))
+                    .color(p.muted),
+            );
+        }
+        if event.can_undo {
+            detail = detail.child(
+                row()
+                    .w_full()
+                    .gap(18.0)
+                    .child(
+                        text("undo")
+                            .font(theme::ui(13.0, 500.0))
+                            .color(p.accent)
+                            .on_press(|state: &mut State| state.undo_latest()),
+                    )
+                    .child(
+                        text("export")
+                            .font(theme::ui(12.0, 400.0))
+                            .color(p.muted)
+                            .on_press(|state: &mut State| state.open_export()),
+                    ),
+            );
+        } else if event.undone_at.is_none() {
+            detail = detail.child(
+                text("undo newer actions first")
+                    .font(theme::ui(11.5, 400.0))
+                    .color(p.muted),
+            );
+        }
+    }
+    directory_shell(
+        col()
+            .w_full()
+            .pt(64.0)
+            .pb(200.0)
+            .gap(28.0)
+            .child(row().w_full().justify_center().child(list))
+            .child(row().w_full().justify_center().child(detail))
+            .child(
+                row().w_full().justify_center().child(
+                    text("export archive")
+                        .font(theme::ui(12.5, 400.0))
+                        .color(p.muted)
+                        .on_press(|state: &mut State| state.open_export()),
+                ),
+            ),
+    )
+}
+
+fn tag_list(tags: &[String]) -> String {
+    if tags.is_empty() {
+        "no tags".into()
+    } else {
+        tags.iter()
+            .map(|tag| format!("#{tag}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
+fn settings_view(state: &State, p: Palette) -> El {
+    let mut rows = col().w(720.0).gap(18.0);
+    rows = rows.child(
+        row()
+            .gap(22.0)
+            .center_y()
+            .child(
+                text("appearance")
+                    .w(140.0)
+                    .font(theme::ui(12.0, 400.0))
+                    .color(p.muted),
+            )
+            .child(setting_choice(
+                "system",
+                state.dark.is_none(),
+                p,
+                theme_system,
+            ))
+            .child(setting_choice(
+                "light",
+                state.dark == Some(false),
+                p,
+                theme_light,
+            ))
+            .child(setting_choice(
+                "dark",
+                state.dark == Some(true),
+                p,
+                theme_dark,
+            )),
+    );
+    rows = rows.child(
+        row()
+            .gap(22.0)
+            .center_y()
+            .child(
+                text("avatars")
+                    .w(140.0)
+                    .font(theme::ui(12.0, 400.0))
+                    .color(p.muted),
+            )
+            .child(setting_choice("on", state.avatars, p, avatars_on))
+            .child(setting_choice("off", !state.avatars, p, avatars_off)),
+    );
+    rows = rows.child(
+        row()
+            .gap(22.0)
+            .center_y()
+            .child(
+                text("media")
+                    .w(140.0)
+                    .font(theme::ui(12.0, 400.0))
+                    .color(p.muted),
+            )
+            .child(setting_choice(
+                "load automatically",
+                state.auto_media,
+                p,
+                media_on,
+            ))
+            .child(setting_choice(
+                "load on demand",
+                !state.auto_media,
+                p,
+                media_off,
+            )),
+    );
+    rows = rows.child(
+        row()
+            .gap(22.0)
+            .center_y()
+            .child(
+                text("motion")
+                    .w(140.0)
+                    .font(theme::ui(12.0, 400.0))
+                    .color(p.muted),
+            )
+            .child(setting_choice(
+                "system",
+                state.motion_reduced != Some(true),
+                p,
+                motion_system,
+            ))
+            .child(setting_choice(
+                "reduced",
+                state.motion_reduced == Some(true),
+                p,
+                motion_reduced,
+            )),
+    );
+    rows = rows.child(
+        row()
+            .gap(22.0)
+            .center_y()
+            .child(
+                text("cache")
+                    .w(140.0)
+                    .font(theme::ui(12.0, 400.0))
+                    .color(p.muted),
+            )
+            .child(
+                text(format!(
+                    "{} images",
+                    format_bytes(
+                        state
+                            .images
+                            .cache_stats()
+                            .map(|stats| stats.bytes)
+                            .unwrap_or(0)
+                    )
+                ))
+                .font(theme::mono(10.5))
+                .color(p.muted),
+            )
+            .child(
+                text(
+                    state
+                        .video_cache
+                        .as_ref()
+                        .map(|cache| format_bytes(cache.stats().bytes))
+                        .unwrap_or_else(|| "0 B video".to_string()),
+                )
+                .font(theme::mono(10.5))
+                .color(p.muted),
+            )
+            .child(
+                text("clear")
+                    .font(theme::ui(12.0, 400.0))
+                    .color(p.accent)
+                    .on_press_tx(|state: &mut State, tx| clear_caches(state, tx.clock())),
+            ),
+    );
+    rows = rows.child(
+        row()
+            .gap(22.0)
+            .center_y()
+            .child(
+                text("text")
+                    .w(140.0)
+                    .font(theme::ui(12.0, 400.0))
+                    .color(p.muted),
+            )
+            .child(setting_choice(
+                "regular",
+                state.text_size == 0,
+                p,
+                text_regular,
+            ))
+            .child(setting_choice(
+                "larger",
+                state.text_size == 1,
+                p,
+                text_larger,
+            ))
+            .child(setting_choice(
+                "largest",
+                state.text_size == 2,
+                p,
+                text_largest,
+            )),
+    );
+    if let Some(stats) = &state.stats {
+        rows = rows
+            .child(
+                row()
+                    .gap(22.0)
+                    .center_y()
+                    .child(
+                        text("posts")
+                            .w(140.0)
+                            .font(theme::ui(12.0, 400.0))
+                            .color(p.muted),
+                    )
+                    .child(
+                        text(stats.total_bookmarks.to_string())
+                            .font(theme::mono(10.5))
+                            .color(p.muted),
+                    ),
+            )
+            .child(
+                row()
+                    .gap(22.0)
+                    .center_y()
+                    .child(
+                        text("authors")
+                            .w(140.0)
+                            .font(theme::ui(12.0, 400.0))
+                            .color(p.muted),
+                    )
+                    .child(
+                        text(stats.unique_authors.to_string())
+                            .font(theme::mono(10.5))
+                            .color(p.muted),
+                    ),
+            )
+            .child(
+                row()
+                    .gap(22.0)
+                    .center_y()
+                    .child(
+                        text("tags")
+                            .w(140.0)
+                            .font(theme::ui(12.0, 400.0))
+                            .color(p.muted),
+                    )
+                    .child(
+                        text(stats.unique_tags.to_string())
+                            .font(theme::mono(10.5))
+                            .color(p.muted),
+                    ),
+            );
+    }
+    rows = rows.child(
+        row()
+            .gap(22.0)
+            .center_y()
+            .child(
+                text("version")
+                    .w(140.0)
+                    .font(theme::ui(12.0, 400.0))
+                    .color(p.muted),
+            )
+            .child(text("0.1.0").font(theme::mono(10.5)).color(p.muted)),
+    );
+    col()
+        .w_full()
+        .h_full()
+        .pt(120.0)
+        .child(row().w_full().justify_center().child(rows))
+}
+
+fn theme_system(state: &mut State) {
+    state.dark = None;
+    settings::save(
+        state.dark,
+        state.avatars,
+        state.auto_media,
+        state.text_size,
+        state.motion_reduced,
+    );
+}
+
+fn theme_light(state: &mut State) {
+    state.dark = Some(false);
+    settings::save(
+        state.dark,
+        state.avatars,
+        state.auto_media,
+        state.text_size,
+        state.motion_reduced,
+    );
+}
+
+fn theme_dark(state: &mut State) {
+    state.dark = Some(true);
+    settings::save(
+        state.dark,
+        state.avatars,
+        state.auto_media,
+        state.text_size,
+        state.motion_reduced,
+    );
+}
+
+fn avatars_on(state: &mut State) {
+    state.avatars = true;
+    request_avatars(state);
+    settings::save(
+        state.dark,
+        state.avatars,
+        state.auto_media,
+        state.text_size,
+        state.motion_reduced,
+    );
+}
+
+fn media_on(state: &mut State) {
+    state.auto_media = true;
+    request_all_media(state);
+    settings::save(
+        state.dark,
+        state.avatars,
+        state.auto_media,
+        state.text_size,
+        state.motion_reduced,
+    );
+}
+
+fn media_off(state: &mut State) {
+    state.auto_media = false;
+    settings::save(
+        state.dark,
+        state.avatars,
+        state.auto_media,
+        state.text_size,
+        state.motion_reduced,
+    );
+}
+
+fn motion_system(state: &mut State) {
+    state.motion_reduced = None;
+    settings::save(
+        state.dark,
+        state.avatars,
+        state.auto_media,
+        state.text_size,
+        state.motion_reduced,
+    );
+}
+
+fn motion_reduced(state: &mut State) {
+    state.motion_reduced = Some(true);
+    settings::save(
+        state.dark,
+        state.avatars,
+        state.auto_media,
+        state.text_size,
+        state.motion_reduced,
+    );
+}
+
+fn clear_caches(state: &mut State, now: f64) {
+    state.images.clear_cache();
+    if let Some(cache) = state.video_cache.as_ref() {
+        let _ = cache.clear();
+    }
+    state.set_status("cache cleared", now);
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const MIB: f64 = 1024.0 * 1024.0;
+    if bytes as f64 >= MIB {
+        format!("{:.1} MiB", bytes as f64 / MIB)
+    } else if bytes >= 1024 {
+        format!("{:.0} KiB", bytes as f64 / 1024.0)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+fn avatars_off(state: &mut State) {
+    state.avatars = false;
+    settings::save(
+        state.dark,
+        state.avatars,
+        state.auto_media,
+        state.text_size,
+        state.motion_reduced,
+    );
+}
+
+fn text_regular(state: &mut State) {
+    set_text_size(state, 0);
+}
+
+fn text_larger(state: &mut State) {
+    set_text_size(state, 1);
+}
+
+fn text_largest(state: &mut State) {
+    set_text_size(state, 2);
+}
+
+fn set_text_size(state: &mut State, text_size: u8) {
+    state.text_size = text_size;
+    theme::set_text_scale(match text_size {
+        1 => 1.12,
+        2 => 1.24,
+        _ => 1.0,
+    });
+    settings::save(
+        state.dark,
+        state.avatars,
+        state.auto_media,
+        state.text_size,
+        state.motion_reduced,
+    );
+}
+
+fn setting_choice(label: &str, current: bool, p: Palette, action: fn(&mut State)) -> El {
+    text(label.to_string())
+        .key(format!("setting-{label}"))
+        .font(theme::ui(13.0, 400.0))
+        .color(if current { p.ink } else { p.muted })
+        .on_press(move |state: &mut State| action(state))
+}
+
+fn post_url(state: &State, index: usize) -> Option<String> {
+    state.posts.get(index).map(|post| post.tweet_url.clone())
+}
+
+fn post_text(_state: &State, post: &Post, p: Palette, width: f32, detail: bool) -> El {
+    let (body, pieces) = body_text(post);
+    let mut view = text(body)
+        .w(width)
+        .wrap()
+        .font(theme::serif(if detail { 22.0 } else { 21.0 }))
+        .color(p.ink);
+    let mut spans = Vec::new();
+    let mut at = 0usize;
+    for piece in &pieces {
+        let start = at;
+        at += piece.text.len();
+        let end = at;
+        if let Some(target) = &piece.target {
+            spans.push(Span::new(start, end).color(p.accent));
+            view = view.link(Link::new(start..end, format!("url:{target}")));
+        } else if let Some(tag) = &piece.tag {
+            spans.push(Span::new(start, end).color(p.accent));
+            view = view.link(Link::new(start..end, format!("tag:{tag}")));
+        } else if let Some(handle) = &piece.mention {
+            spans.push(Span::new(start, end).color(p.accent));
+            view = view.link(Link::new(start..end, format!("mention:{handle}")));
+        }
+    }
+    if !spans.is_empty() {
+        view = view.spans(spans);
+    }
+    if !detail {
+        view = view.on_press(|state: &mut State| open_detail(state));
+    }
+    view.on_link(|state: &mut State, id: &str, tx: &mut Tx| {
+        if let Some(tag) = id.strip_prefix("tag:") {
+            state.filter_topic(tag);
+        } else if let Some(handle) = id.strip_prefix("mention:") {
+            state.filter_author(handle);
+        } else if let Some(url) = id.strip_prefix("url:") {
+            if eterea_logic::is_safe_https_url(url) {
+                let _ = tx.open_url(url);
+            }
+        }
+    })
+}
+
+#[derive(Debug, Default)]
+struct BodyPiece {
+    text: String,
+    target: Option<String>,
+    tag: Option<String>,
+    mention: Option<String>,
+}
+
+fn body_text(post: &Post) -> (String, Vec<BodyPiece>) {
+    let source = post.text.as_str();
+    let mut pieces = Vec::new();
+    let mut plain = String::new();
+    let mut index = 0;
+    while index < source.len() {
+        let rest = &source[index..];
+        if rest.starts_with("https://") {
+            let mut end = rest
+                .find(|ch: char| ch.is_whitespace())
+                .map(|offset| index + offset)
+                .unwrap_or(source.len());
+            while end > index
+                && matches!(
+                    source.as_bytes()[end - 1],
+                    b'.' | b',' | b')' | b']' | b';' | b'!' | b'?'
+                )
+            {
+                end -= 1;
+            }
+            let raw = &source[index..end];
+            if let Some(link) = post.links.iter().find(|link| link.url == raw) {
+                match link.kind {
+                    eterea_core::LinkKind::External => {
+                        push_plain(&mut pieces, &mut plain);
+                        let target = link
+                            .expanded_url
+                            .clone()
+                            .filter(|_| true)
+                            .or_else(|| Some(raw.to_string()));
+                        let display = link
+                            .display_url
+                            .clone()
+                            .or_else(|| target.as_deref().and_then(link_label))
+                            .unwrap_or_else(|| "link".to_string());
+                        pieces.push(BodyPiece {
+                            text: display,
+                            target,
+                            ..BodyPiece::default()
+                        });
+                    }
+                    eterea_core::LinkKind::Tweet | eterea_core::LinkKind::Media => {
+                        // The quote card or the media carousel carries this; the
+                        // URL itself is noise in the reading surface.
+                    }
+                }
+            } else if is_tweet_url(raw) {
+                // No entity was exported, but the shape is unambiguous.
+            } else if raw.contains("://t.co/") {
+                push_plain(&mut pieces, &mut plain);
+                pieces.push(BodyPiece {
+                    text: "link".into(),
+                    target: Some(raw.into()),
+                    ..BodyPiece::default()
+                });
+            } else {
+                push_plain(&mut pieces, &mut plain);
+                pieces.push(BodyPiece {
+                    text: raw.into(),
+                    target: Some(raw.into()),
+                    ..BodyPiece::default()
+                });
+            }
+            index = end;
+            if source[index..].starts_with(' ') {
+                index += 1;
+            }
+            continue;
+        }
+        if (rest.starts_with('#') || rest.starts_with('@'))
+            && (index == 0
+                || source.as_bytes()[index - 1].is_ascii_whitespace()
+                || source.as_bytes()[index - 1] == b'(')
+        {
+            let marker = rest.as_bytes()[0];
+            let mut end = index + 1;
+            while end < source.len()
+                && (source.as_bytes()[end].is_ascii_alphanumeric()
+                    || source.as_bytes()[end] == b'_')
+            {
+                end += 1;
+            }
+            if end > index + 1 {
+                push_plain(&mut pieces, &mut plain);
+                let text = source[index..end].to_string();
+                let value = text[1..].to_string();
+                if marker == b'#' {
+                    pieces.push(BodyPiece {
+                        text,
+                        tag: Some(value),
+                        ..BodyPiece::default()
+                    });
+                } else {
+                    pieces.push(BodyPiece {
+                        text,
+                        mention: Some(value),
+                        ..BodyPiece::default()
+                    });
+                }
+                index = end;
+                continue;
+            }
+        }
+        let ch = source[index..].chars().next().expect("char boundary");
+        plain.push(ch);
+        index += ch.len_utf8();
+    }
+    push_plain(&mut pieces, &mut plain);
+    let mut body = String::new();
+    for piece in &pieces {
+        body.push_str(&piece.text);
+    }
+    (tidy_spaces(&body), pieces)
+}
+
+fn push_plain(pieces: &mut Vec<BodyPiece>, plain: &mut String) {
+    if !plain.is_empty() {
+        pieces.push(BodyPiece {
+            text: std::mem::take(plain),
+            ..BodyPiece::default()
+        });
+    }
+}
+
+fn tidy_spaces(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut space = false;
+    for ch in value.chars() {
+        if ch == ' ' {
+            if !space {
+                out.push(ch);
+            }
+            space = true;
+        } else {
+            space = false;
+            out.push(ch);
+        }
+    }
+    out.trim().to_string()
+}
+
+fn is_tweet_url(value: &str) -> bool {
+    (value.contains("://x.com/") || value.contains("://twitter.com/")) && value.contains("/status/")
+}
+
+fn link_label(value: &str) -> Option<String> {
+    let rest = value
+        .strip_prefix("https://")
+        .or_else(|| value.strip_prefix("http://"))?;
+    let host = rest.split('/').next()?;
+    Some(host.to_string())
+}
+
+fn post_view(state: &State, post: &Post, index: usize, p: Palette, detail: bool) -> El {
+    let content_w = if detail { DETAIL_CONTENT } else { CONTENT };
+    let selected = state.selected == index && !detail;
+    let marked = state.selection.mode
+        && (state.selection.predicate.is_some() || state.selection.ids.contains(&post.id));
+
+    let rail = col()
+        .w(RAIL)
+        .items_end()
+        .child(
+            row()
+                .w(RAIL)
+                .justify_end()
+                .center_y()
+                .child(
+                    text(post.date.clone())
+                        .font(theme::ui(11.5, 400.0))
+                        .color(p.muted),
+                )
+                .child(if post.favorite {
+                    el().ml(7.0).size(6.0, 6.0).fill(p.accent)
+                } else {
+                    el().size(0.0, 0.0)
+                })
+                .child(if post.is_read {
+                    el().size(0.0, 0.0)
+                } else {
+                    el().ml(7.0).size(4.0, 4.0).radius(2.0).fill(p.muted)
+                }),
+        )
+        .child(
+            text(post.time.clone())
+                .w(RAIL)
+                .align(Align::End)
+                .font(theme::mono(10.5))
+                .color(p.muted),
+        );
+
+    let mut content = col().w(content_w).gap(14.0);
+
+    let handle = post.handle.trim_start_matches('@').to_string();
+    let mut byline = row()
+        .center_y()
+        .on_press(move |state: &mut State| state.filter_author(&handle))
+        .child(avatar(
+            state,
+            post.avatar_key.as_deref(),
+            &post.name,
+            30.0,
+            p,
+        ))
+        .child(
+            text(post.name.clone())
+                .ml(11.0)
+                .font(theme::ui(13.0, 500.0))
+                .color(p.ink),
+        );
+    if !post.handle.is_empty() {
+        byline = byline.child(
+            text(post.handle.clone())
+                .ml(7.0)
+                .font(theme::ui(12.0, 400.0))
+                .color(p.muted),
+        );
+    }
+    content = content.child(byline);
+    content = content.child(post_text(state, post, p, content_w, detail));
+
+    if detail && !post.tags.is_empty() {
+        let mut tags = row().w(content_w).gap(10.0).flex_wrap();
+        for tag in &post.tags {
+            let tag_value = tag.clone();
+            tags = tags.child(
+                text(format!("#{tag}"))
+                    .font(theme::mono(10.5))
+                    .color(p.muted)
+                    .on_press(move |state: &mut State| state.filter_topic(&tag_value)),
+            );
+        }
+        content = content.child(tags);
+    }
+
+    if let Some(quote) = &post.quote {
+        content = content.child(quote_view(state, quote, post, p, content_w));
+    } else if post
+        .links
+        .iter()
+        .any(|link| link.kind == eterea_core::LinkKind::Tweet)
+    {
+        content = content.child(
+            row()
+                .w(content_w)
+                .gap(12.0)
+                .child(el().w(2.0).h(32.0).fill(p.quote_rule))
+                .child(
+                    text("quoted post not in archive")
+                        .font(theme::ui(12.5, 400.0))
+                        .color(p.muted),
+                ),
+        );
+    }
+
+    if !post.media.is_empty() && !post.media_loaded {
+        content = content.child(
+            el().w(content_w)
+                .h(180.0)
+                .fill(p.band)
+                .on_press(move |s: &mut State| load_media(s, index))
+                .child(
+                    row()
+                        .w_full()
+                        .h_full()
+                        .justify_center()
+                        .center_y()
+                        .child(text("load media").font(theme::ui(13.0, 500.0)).color(p.ink)),
+                ),
+        );
+    } else if !post.media.is_empty() {
+        content = content.child(media_view(state, post, p, content_w, index));
+    }
+
+    if detail {
+        let target = post.tweet_url.clone();
+        content = content.child(
+            row()
+                .gap(18.0)
+                .center_y()
+                .child(
+                    text(if post.favorite {
+                        "favorited"
+                    } else {
+                        "favorite"
+                    })
+                    .font(theme::ui(11.5, 400.0))
+                    .color(if post.favorite { p.accent } else { p.muted })
+                    .on_press(|state: &mut State| toggle_favorite(state)),
+                )
+                .child(
+                    text("copy link")
+                        .font(theme::ui(11.5, 400.0))
+                        .color(p.muted)
+                        .on_press_tx(move |state: &mut State, tx| {
+                            tx.copy(post_url(state, state.selected).unwrap_or_default());
+                            let now = tx.clock();
+                            state.set_status("link copied", now);
+                        }),
+                )
+                .child(
+                    text("open on x")
+                        .font(theme::ui(11.5, 400.0))
+                        .color(p.muted)
+                        .on_press_tx(move |_state: &mut State, tx| {
+                            if eterea_logic::is_safe_https_url(&target) {
+                                let _ = tx.open_url(&target);
+                            }
+                        }),
+                )
+                .child(
+                    text("edit tags")
+                        .font(theme::ui(11.5, 400.0))
+                        .color(p.muted)
+                        .on_press_tx(|state: &mut State, tx| begin_tag_edit(state, tx)),
+                )
+                .child(
+                    text("delete")
+                        .font(theme::ui(11.5, 400.0))
+                        .color(p.muted)
+                        .on_press(|state: &mut State| begin_delete(state)),
+                ),
+        );
+    }
+
+    let mut group = col().w(content_w).child(content);
+    group = group.child(rail.absolute(-(RAIL + GAP), 0.0));
+    if selected || marked {
+        group = group.child(el().w(2.0).fill(if marked { p.accent } else { p.ink }).pin(
+            Some(-14.0),
+            Some(0.0),
+            None,
+            Some(0.0),
+        ));
+    }
+
+    row()
+        .w_full()
+        .justify_center()
+        .key(format!("post-{index}"))
+        .child(group)
+}
+
+fn avatar(state: &State, key: Option<&str>, name: &str, size: f32, p: Palette) -> El {
+    if let Some(image) = state
+        .avatars
+        .then_some(())
+        .and_then(|_| key.and_then(|key| state.images.resolve(key)))
+    {
+        return el()
+            .size(size, size)
+            .radius(size / 2.0)
+            .clip_rounded(size / 2.0)
+            .pixels_fit(image.pixels(), SurfaceFit::Fill);
+    }
+    let initial = name
+        .chars()
+        .next()
+        .unwrap_or('?')
+        .to_uppercase()
+        .to_string();
+    el().size(size, size)
+        .radius(size / 2.0)
+        .fill(p.band)
+        .center()
+        .child(
+            text(initial)
+                .font(theme::ui(size * 0.4, 500.0))
+                .color(p.muted),
+        )
+}
+
+fn quote_view(state: &State, quote: &model::Quote, post: &Post, p: Palette, content_w: f32) -> El {
+    if quote.unavailable {
+        return text("quoted post not in archive")
+            .font(theme::ui(12.0, 400.0))
+            .color(p.muted);
+    }
+    let width = content_w - 18.0;
+    let block = col()
+        .gap(6.0)
+        .pl(18.0)
+        .border_sides([0.0, 0.0, 0.0, 1.0], p.quote_rule)
+        .child(
+            row()
+                .center_y()
+                .gap(7.0)
+                .child(avatar(
+                    state,
+                    quote.avatar_key.as_deref(),
+                    &quote.name,
+                    18.0,
+                    p,
+                ))
+                .child(
+                    text(quote.name.clone())
+                        .font(theme::ui(13.0, 500.0))
+                        .color(p.ink),
+                )
+                .child(
+                    text(quote.handle.clone())
+                        .font(theme::ui(12.0, 400.0))
+                        .color(p.muted),
+                )
+                .child(
+                    text(quote.date.clone())
+                        .font(theme::mono(10.5))
+                        .color(p.muted),
+                ),
+        )
+        .child(
+            text(quote.text.clone())
+                .w(width)
+                .wrap()
+                .font(theme::ui(14.0, 400.0))
+                .color(p.ink),
+        );
+    if post.media_loaded {
+        if let Some(thumb) = quote
+            .thumb_key
+            .as_deref()
+            .and_then(|key| state.images.resolve(key))
+        {
+            return row()
+                .w(content_w)
+                .items_start()
+                .gap(14.0)
+                .child(block)
+                .child(
+                    el().size(72.0, 72.0)
+                        .radius(2.0)
+                        .clip_rounded(2.0)
+                        .pixels_fit(thumb.pixels(), SurfaceFit::Fill),
+                );
+        }
+    }
+    block
+}
+
+fn media_view(state: &State, post: &Post, p: Palette, width: f32, post_index: usize) -> El {
+    let pages = carousel_pages(post);
+    let page = carousel_page(post);
+    let start = if pages <= 1 { 0 } else { page * 4 };
+    let end = (start + 4).min(post.media.len());
+    let items = &post.media[start..end];
+    let mut view = match items.len() {
+        1 => {
+            let item = &items[0];
+            let aspect = (item.width / item.height).clamp(0.5, 2.5);
+            let height = (width / aspect).clamp(240.0, 560.0);
+            media_tile(state, item, p, post_index, start, width, height)
+        }
+        2 => row()
+            .w(width)
+            .gap(3.0)
+            .child(media_tile(
+                state,
+                &items[0],
+                p,
+                post_index,
+                start,
+                (width - 3.0) / 2.0,
+                252.0,
+            ))
+            .child(media_tile(
+                state,
+                &items[1],
+                p,
+                post_index,
+                start + 1,
+                (width - 3.0) / 2.0,
+                252.0,
+            )),
+        3 => col()
+            .w(width)
+            .gap(3.0)
+            .child(media_tile(
+                state, &items[0], p, post_index, start, width, 360.0,
+            ))
+            .child(
+                row()
+                    .w(width)
+                    .gap(3.0)
+                    .child(media_tile(
+                        state,
+                        &items[1],
+                        p,
+                        post_index,
+                        start + 1,
+                        (width - 3.0) / 2.0,
+                        252.0,
+                    ))
+                    .child(media_tile(
+                        state,
+                        &items[2],
+                        p,
+                        post_index,
+                        start + 2,
+                        (width - 3.0) / 2.0,
+                        252.0,
+                    )),
+            ),
+        _ => {
+            let half = (width - 3.0) / 2.0;
+            col()
+                .w(width)
+                .gap(3.0)
+                .child(
+                    row()
+                        .w(width)
+                        .gap(3.0)
+                        .child(media_tile(
+                            state, &items[0], p, post_index, start, half, 252.0,
+                        ))
+                        .child(media_tile(
+                            state,
+                            &items[1],
+                            p,
+                            post_index,
+                            start + 1,
+                            half,
+                            252.0,
+                        )),
+                )
+                .child(
+                    row()
+                        .w(width)
+                        .gap(3.0)
+                        .child(media_tile(
+                            state,
+                            &items[2],
+                            p,
+                            post_index,
+                            start + 2,
+                            half,
+                            252.0,
+                        ))
+                        .child(media_tile(
+                            state,
+                            &items[3],
+                            p,
+                            post_index,
+                            start + 3,
+                            half,
+                            252.0,
+                        )),
+                )
+        }
+    };
+
+    if pages > 1 {
+        let previous = page.saturating_sub(1);
+        let next = (page + 1).min(pages - 1);
+        let back = text("‹")
+            .font(theme::ui(16.0, 500.0))
+            .color(if page > 0 { p.ink } else { p.line })
+            .px(8.0)
+            .on_press(move |state: &mut State| {
+                if let Some(post) = state.posts.get_mut(post_index) {
+                    post.media_page = previous;
+                    stop_video(state);
+                }
+            });
+        let forward = text("›")
+            .font(theme::ui(16.0, 500.0))
+            .color(if page + 1 < pages { p.ink } else { p.line })
+            .px(8.0)
+            .on_press(move |state: &mut State| {
+                if let Some(post) = state.posts.get_mut(post_index) {
+                    post.media_page = next;
+                    stop_video(state);
+                }
+            });
+        let controls = row()
+            .w(width)
+            .justify_end()
+            .center_y()
+            .gap(2.0)
+            .child(back)
+            .child(
+                text(format!("{}/{}", page + 1, pages))
+                    .font(theme::mono(10.5))
+                    .color(p.muted)
+                    .px(4.0),
+            )
+            .child(forward);
+        let controls = controls.motion(crate::motion::CAROUSEL);
+        view = col().w(width).gap(4.0).child(view).child(controls);
+    }
+    view
+}
+
+fn media_tile(
+    state: &State,
+    item: &model::MediaItem,
+    p: Palette,
+    post_index: usize,
+    media_index: usize,
+    width: f32,
+    height: f32,
+) -> El {
+    let is_video = item.video;
+    let mut tile = el()
+        .w(width)
+        .h(height)
+        .motion(crate::motion::MEDIA)
+        .radius(2.0)
+        .clip_rounded(2.0)
+        .fill(p.band)
+        .role("image")
+        .label(item.alt.clone())
+        .on_press_tx(move |state: &mut State, tx: &mut Tx| {
+            if is_video && state.route == Route::Detail {
+                start_video_at(state, tx, post_index, media_index);
+            } else {
+                state.lightbox = Some((post_index, media_index));
+                state.overlay = Overlay::Lightbox;
+            }
+        });
+    let playing = if state.video_target == Some((post_index, media_index)) {
+        state.video_image.as_ref()
+    } else {
+        None
+    };
+    if let Some(image) = playing.or_else(|| state.images.resolve(&item.key)) {
+        tile = tile.pixels_fit(image.pixels(), SurfaceFit::Fill);
+        if item.video && playing.is_none() {
+            tile = tile
+                .child(
+                    el().size(44.0, 44.0)
+                        .radius(22.0)
+                        .fill(Color::BLACK.alpha(0.35))
+                        .center()
+                        .absolute(width / 2.0 - 22.0, height / 2.0 - 22.0)
+                        .child(text("▶").font(theme::ui(14.0, 500.0)).color(Color::WHITE)),
+                )
+                .child(
+                    el().size(38.0, 18.0)
+                        .radius(2.0)
+                        .fill(Color::BLACK.alpha(0.55))
+                        .center()
+                        .absolute(width - 50.0, height - 28.0)
+                        .child(
+                            text(model::duration_label(item.duration))
+                                .font(theme::mono(10.5))
+                                .color(Color::WHITE),
+                        ),
+                );
+        }
+    }
+    tile
+}
+
+pub fn spec() -> AppSpec<State> {
+    AppSpec {
+        fonts: FONTS,
+        families: FAMILIES,
+        size: (1280.0, 820.0),
+        min_size: Some((960.0, 640.0)),
+        setup: Some(setup),
+        poll: Some(poll),
+        on_key: Some(on_key),
+        scenes: &[
+            ("detail", |s: &mut State| {
+                s.selected = 1;
+                s.route = Route::Detail;
+            }),
+            ("selected", |s: &mut State| {
+                s.selected = 1;
+            }),
+            ("quote", |s: &mut State| {
+                s.selected = 3;
+                s.route = Route::Detail;
+            }),
+            ("video", |s: &mut State| {
+                s.selected = 4;
+                s.route = Route::Detail;
+            }),
+            ("hidden", |s: &mut State| {
+                s.selected = 5;
+                s.route = Route::Detail;
+            }),
+            ("palette", |s: &mut State| {
+                s.overlay = Overlay::Palette;
+            }),
+            ("keys", |s: &mut State| {
+                s.overlay = Overlay::Keys;
+            }),
+            ("searching", |s: &mut State| {
+                s.mode = Mode::Search;
+                s.search = "barbican".to_string();
+                s.route = Route::Feed;
+            }),
+            ("lightbox", |s: &mut State| {
+                s.selected = 1;
+                s.route = Route::Feed;
+                s.lightbox = Some((1, 0));
+                s.overlay = Overlay::Lightbox;
+            }),
+        ],
+        ..AppSpec::new("eterea", (1440.0, 900.0), State::new, view)
+    }
+}

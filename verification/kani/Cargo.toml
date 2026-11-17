@@ -1,0 +1,42 @@
+# Standalone Kani harness crate.
+#
+# The empty `[workspace]` table makes this directory its own workspace, so the
+# repository root's `cargo build --workspace` and `cargo test --workspace`
+# never try to build it and Kani's compiler never touches the Rune desktop
+# workspace. It is deliberately NOT listed in the root Cargo.toml members.
+#
+# Dependencies are path dependencies on the two pure crates only. Adding a
+# dependency on the app, backend, media or desktop crates would make model
+# checking slow and would break the "pure logic only" boundary.
+[workspace]
+
+[package]
+name = "eterea-verification-kani"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Kani model-checking harnesses for eterea pure crates"
+
+[lib]
+name = "eterea_verification_kani"
+path = "src/lib.rs"
+
+[dependencies]
+eterea-logic = { path = "../../src/logic" }
+eterea-ui-model = { path = "../../src/ui-model" }
+
+[features]
+# Opt-in proofs that encode the URL policy as *specified* (docs/design/SPEC.md
+# §7). They currently fail against src/logic; see verification/FINDINGS.md.
+# Run with: scripts/verify/kani.sh --gaps
+known-gaps = []
+
+# `cfg(kani)` is set by `cargo kani`, not by Cargo, so rustc needs to be told
+# it is an expected cfg to avoid the unexpected_cfgs lint under plain cargo.
+[lints.rust]
+unexpected_cfgs = { level = "allow", check-cfg = ["cfg(kani)"] }
+
+[profile.dev]
+# Kani verifies the dev profile by default. Keep panic unwind information
+# (Kani needs it) and symbols used in counterexample traces.
+debug = true

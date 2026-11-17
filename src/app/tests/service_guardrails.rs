@@ -414,3 +414,127 @@ fn local_fixture_parity_locks_import_search_filters_stats_and_reopen() {
         .iter()
         .any(|bookmark| bookmark.id == bea_id && bookmark.is_favorite));
 }
+
+const QUOTE_SAMPLE_JSON: &str = r#"[
+  {
+    "tweet_url": "https://x.com/ada_dev/status/5001",
+    "full_text": "the archive now carries quotes #design",
+    "tweeted_at": "2026-05-10T10:00:00.000Z",
+    "screen_name": "ada_dev",
+    "name": "Ada Developer",
+    "quoted_status": {
+      "id_str": "5000",
+      "full_text": "the quoted post",
+      "created_at": "2026-05-09T09:00:00.000Z",
+      "user": {
+        "screen_name": "quoted_author",
+        "name": "Quoted Author",
+        "profile_image_url_https": "https://example.com/quoted.png"
+      },
+      "extended_entities": {
+        "media": [{
+          "type": "video",
+          "media_url_https": "https://example.com/poster.jpg",
+          "video_info": {
+            "duration_millis": 9000,
+            "variants": [{ "url": "https://example.com/q.mp4", "bit_rate": 832000 }]
+          }
+        }]
+      }
+    }
+  },
+  {
+    "tweet_url": "https://x.com/bea_design/status/5002",
+    "full_text": "quoting something that is not in the archive",
+    "tweeted_at": "2026-05-11T10:00:00.000Z",
+    "screen_name": "bea_design",
+    "name": "Bea Design",
+    "quoted_status_id_str": "5999"
+  }
+]"#;
+
+#[test]
+fn quotes_hydrate_honestly_and_stay_out_of_the_media_table() {
+    let file = NamedTempFile::new().expect("temp db file should exist");
+    let path = file.path().to_path_buf();
+    drop(file);
+
+    let (ada_id, bea_id) = {
+        let services = AppServices::open(&path).expect("disk-backed services should open");
+        let imported = services
+            .import_content("quotes.json", QUOTE_SAMPLE_JSON)
+            .expect("quote fixture should import");
+        assert_eq!(imported, 2);
+
+        let page = services
+            .list_bookmarks(0, 10)
+            .expect("quote page should load");
+        assert_eq!(page.total, 2);
+
+        let ada = page
+            .items
+            .iter()
+            .find(|bookmark| bookmark.author_handle == "ada_dev")
+            .expect("ada bookmark should exist")
+            .clone();
+        let quote = ada.quoted.as_ref().expect("quoted body should parse");
+        assert!(!quote.unavailable);
+        assert_eq!(quote.tweet_url, "https://x.com/quoted_author/status/5000");
+        assert_eq!(quote.content, "the quoted post");
+        assert_eq!(quote.author_handle, "quoted_author");
+        assert_eq!(
+            quote.author_profile_image.as_deref(),
+            Some("https://example.com/quoted.png")
+        );
+        assert_eq!(quote.media.len(), 1);
+        assert_eq!(quote.media[0].duration_ms, Some(9000));
+        assert_eq!(
+            quote.media[0].poster_url.as_deref(),
+            Some("https://example.com/poster.jpg")
+        );
+        assert!(
+            ada.media.is_empty(),
+            "quote media must not become bookmark media"
+        );
+
+        let bea = page
+            .items
+            .iter()
+            .find(|bookmark| bookmark.author_handle == "bea_design")
+            .expect("bea bookmark should exist")
+            .clone();
+        let unavailable = bea.quoted.as_ref().expect("quote id should parse");
+        assert!(unavailable.unavailable, "missing quote body is honest");
+        assert_eq!(unavailable.tweet_url, "https://x.com/i/web/status/5999");
+        assert!(unavailable.content.is_empty(), "no invented quote text");
+
+        // Quotes are display-only: the media filter stays false for both posts.
+        let with_media = services
+            .query_bookmarks(&BookmarkQuery {
+                has_media: Some(true),
+                limit: 10,
+                ..BookmarkQuery::default()
+            })
+            .expect("media filter should load");
+        assert_eq!(with_media.total, 0);
+
+        (ada.id, bea.id)
+    };
+
+    let reopened = AppServices::open(&path).expect("reopened services should open");
+    let ada = reopened
+        .bookmark_detail(&ada_id)
+        .expect("detail should load")
+        .expect("ada bookmark should persist");
+    assert!(ada.quoted.is_some(), "quote should persist across reopen");
+    let bea = reopened
+        .bookmark_detail(&bea_id)
+        .expect("detail should load")
+        .expect("bea bookmark should persist");
+    assert!(
+        bea.quoted
+            .as_ref()
+            .expect("unavailable quote should persist")
+            .unavailable
+    );
+}

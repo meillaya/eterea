@@ -1,68 +1,65 @@
 # Architecture
 
-eterea is organized as a small Rust workspace with one active desktop runtime and
-one shared application/service boundary.
+eterea is a Rust workspace with one GPU-drawn desktop shell and a shared service boundary. There is no webview.
 
-![eterea desktop architecture](figures/eterea-architecture.png)
-
-## Workspace crates
+## Crates
 
 | Path | Crate | Responsibility |
 | --- | --- | --- |
-| `src/backend` | `eterea-core` | Core domain models, import parsers, SQLite persistence, search, statistics, and CLI/migration binaries. |
-| `src/app` | `eterea-app` | Product-facing service API used by the UI and integration tests. UI code should call this layer instead of reaching directly into storage. |
-| `src/dioxus-app` | `eterea-dioxus` | Active Dioxus desktop shell, route/state/action helpers, reusable components, and CSS. |
+| `src/backend` | `eterea-core` | Domain models, CSV/JSON/X archive parsers, SQLite storage and migrations, FTS5 search, statistics, CLI. |
+| `src/app` | `eterea-app` | `AppServices` product operations and the background `StoreHandle` actor. The only data boundary the UI uses. |
+| `src/logic` | `eterea-logic` | Pure functions: URL policy, MIME policy, text/media helpers. No I/O. Verus/Kani target. |
+| `src/ui-model` | `eterea-ui-model` | Pure route, mode, selection and keymap state. No I/O or framework types. Verus/Kani target. |
+| `src/media` | `eterea-media` | Bounded HTTPS image workers, optional byte cache, validated video download and local ffmpeg playback. No UI dependency. |
+| `src/desktop` | `eterea-desktop` | Rune shell: theme, views, input, media slots, window. Binary `eterea`. |
+| `verification/` | harnesses | Kani proofs, Miri tests, Verus reference models and coverage/SPEC docs. |
 
 ## Runtime flow
 
-```text
-Dioxus UI
-  -> src/app AppServices
-    -> src/backend ingestion/search/storage
-      -> local SQLite database
-```
-
-The UI owns presentation state such as active route, selected layout, filters,
-expanded cards, import progress, and session-only appearance/media choices. The
-service layer owns product operations such as importing, dry-run previews,
-querying bookmarks, favorites, deletion, detail lookups, and directory data.
-
-## Source layout conventions
-
-- Keep product operations in `src/app/src/services/app.rs` unless a new module is
-  justified by clear growth.
-- Keep Dioxus route/state/action helpers under `src/dioxus-app/src/app/` so the
-  root `app.rs` stays composition-focused.
-- Keep backend storage SQL in `src/backend/src/storage/` and parser-specific
-  logic in `src/backend/src/ingestion/`.
-- Keep generated screenshots, local runtime databases, OMX state, and standalone
-  design exports out of the repository root.
-
-## Persistence
-
-The default database path is resolved with `dirs::data_local_dir()` and stored
-under `eterea/bookmarks.db`. Tests use temporary databases and fixtures so they
-remain isolated from a developer's local archive.
+The Rune view sends typed requests to the `StoreHandle` actor; the actor owns
+SQLite through `AppServices` and replies with a `RequestId`. Image requests go
+to the bounded media workers, which fetch HTTPS bytes for Rune's image cache.
+Media bytes never reach SQLite.
 
 ## Trust boundaries
 
-Imported bookmark archives are untrusted input. Parse CSV, JSON, and X archive
-JavaScript exports at the ingestion/service boundary before storage, and keep
-their fields untrusted when rendering or opening them later: `tweet_url`,
-`content`, `note_text`, `author_handle`, `author_name`, `tags`, `comments`,
-profile URLs, and media URLs may contain attacker-controlled text. Dioxus views
-must render these values as text nodes, never raw HTML, and backend debug paths
-must log counts, durations, and policy decisions instead of raw bookmark fields.
+Imported archives are untrusted: post text, handles, tags, URLs, alt text, quotes and media URLs are rendered as text and never as HTML. Remote media is fetched only over safe HTTPS (no credentials, fragments, private hosts or non-canonical numeric addresses), without cookies or referrer, with byte and time caps. Opening a stored link requires an explicit action. Quote posts without a body stay marked unavailable rather than invented.
 
-Remote media is a second trust boundary. The default UI state hides remote image
-previews, media preview URLs must be HTTPS, and opening an external URL requires
-an explicit user action that passes the HTTPS-only opening policy. Generated
-artifacts such as `.omo/`, `.omx/`, `target/`, and screenshot/preview scratch
-outputs are untrusted build evidence until reviewed and copied into
-`docs/assets/previews/` with synthetic/local-fixture provenance.
+## Source layout
 
-## Deferred surfaces
+- SQL stays in `src/backend/src/storage/`; parsers stay in `src/backend/src/ingestion/`.
+- Product operations stay in `src/app/src/services/app.rs`; the actor lives in `src/app/src/store.rs`.
+- Pure UI decisions belong in `src/ui-model`; Rune elements stay in `src/desktop/src/`.
+- Design tokens and screen contracts live in `docs/design/SPEC.md`.
+- Verification invariants live in `verification/SPEC.md`; coverage is in `verification/COVERAGE.md`.
 
-Direct X sync, browser companion/server mode, signed installers, and persisted
-appearance preferences are future product surfaces. Do not represent them as
-shipped runtime behavior until they have implementation and verification evidence.
+## Persistence
+
+The default database is `<platform data dir>/eterea/bookmarks.db`. SQLite runs in WAL mode. Schema version is `PRAGMA user_version = 1`; migrations are idempotent and reject newer versions without mutation. Media bytes and settings are not stored in the database. Appearance and media preferences live in `settings.json` under the platform config directory.
+
+## Deferred
+
+Live X sync, multiple accounts, server mode and signed installers are not shipped. Do not describe them as runtime behavior until implemented and verified.
+
+## v2 reader state, history and media
+
+Schema v2 adds `bookmarks.is_read`, `bookmarks.links_json`, `media.playback_url`,
+`tag_colors` and `history_events`. The backend owns the data and round-trip CSV/
+JSON formats; the app store actor owns typed commands for read/tag/bulk/history/
+export operations; the desktop shell owns presentation and pending UI state.
+Journaled actions (import, delete, tag) write their inverse payload in the same
+SQLite transaction and keep only the latest five events. Only the newest
+non-undone event is undoable.
+
+The media crate resolves best progressive MP4 variants, stores played videos in
+a bounded content-addressed cache, and spawns external `ffmpeg`/`ffplay` for
+frames and audio. Image workers use the same cache directory for image bytes.
+The desktop never stores media bytes in SQLite and never sends a remote URL to
+ffmpeg/ffplay. URL entities are imported with the bookmark so the reader can
+suppress own/quote tweet links, render external display URLs and show honest
+quote cards.
+
+The Linux release packager collects Rune's runtime-loaded display/font/Vulkan
+libraries, sets `$ORIGIN/lib`, installs desktop-entry icons and smoke-tests the
+bundle under Xvfb/lavapipe. A bare `target/release/eterea` still expects the
+development shell's library path and is not the distributable.

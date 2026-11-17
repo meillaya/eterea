@@ -89,7 +89,7 @@ CI_SPEC: Final = WorkflowSpec(
         LiteralRequirement("format command mirrors local QA", "devenv shell -- cargo fmt --all -- --check"),
         LiteralRequirement("clippy command mirrors local QA", "devenv shell -- cargo clippy --workspace --all-targets -- -D warnings"),
         LiteralRequirement("test command mirrors local QA", "devenv shell -- cargo test --workspace"),
-        LiteralRequirement("Dioxus release build command", "devenv shell -- cargo build -p eterea-dioxus --release"),
+        LiteralRequirement("Rune release build command", "devenv shell -- cargo build -p eterea-desktop --release"),
         LiteralRequirement("performance baseline command", "devenv shell -- scripts/perf-baseline.sh"),
     ),
     regexes=(
@@ -116,7 +116,7 @@ DRAFT_RELEASE_SPEC: Final = WorkflowSpec(
         LiteralRequirement("devenv install command", "nix profile add nixpkgs#devenv"),
         LiteralRequirement("Cargo cache action pinned to T2 major", "actions/cache@v5"),
         LiteralRequirement("artifact upload action pinned to T2 major", "actions/upload-artifact@v7"),
-        LiteralRequirement("Dioxus release build command", "devenv shell -- cargo build -p eterea-dioxus --release"),
+        LiteralRequirement("Rune release build command", "devenv shell -- cargo build -p eterea-desktop --release"),
         LiteralRequirement("artifact retention is explicit", "retention-days:"),
         LiteralRequirement("checksums are generated", "sha256sum"),
         LiteralRequirement("artifact provenance is included", "PROVENANCE.md"),

@@ -2,121 +2,107 @@
 
 ## Environment
 
-Use the devenv shell as the canonical environment:
+Use the devenv shell. It pins Rust 1.99.1 (Rune's pinned revision needs the
+stabilized language features), supplies the native libraries Rune needs, and
+`ffmpeg` for video playback:
 
 ```bash
 devenv shell
 ```
 
-With direnv installed, entering the repository activates the same shell through
-`.envrc`.
+With direnv, entering the checkout activates the same shell through `.envrc`.
+The host in this workspace also has a workspace-local Rust cache at
+`.work/cargo-home` and a target directory at `.work/rune-spike/target`; they are
+not part of the repository.
 
-The shell provides the native libraries needed by the Rust workspace. Running
-plain `cargo test --workspace` outside the shell can fail on hosts without
-OpenSSL pkg-config metadata.
-
-## Common commands
+## Commands
 
 ```bash
 # Run the desktop app
-devenv shell -- cargo run -p eterea-dioxus
+devenv shell -- cargo run -p eterea-desktop
 
-# Optional developer/QA fullscreen smoke check
-ETEREA_WINDOW_MODE=fullscreen devenv shell -- cargo run -p eterea-dioxus
-
-# Fast compile check
+# Check the workspace
 devenv shell -- cargo check --workspace
 
-# Formatting, linting, and tests
-devenv shell -- cargo fmt --all -- --check
-devenv shell -- cargo clippy --workspace --all-targets -- -D warnings
+# Tests
 devenv shell -- cargo test --workspace
 
-# Release build smoke check
-devenv shell -- cargo build -p eterea-dioxus --release
+# Release build
+devenv shell -- cargo build -p eterea-desktop --release
+
+# Verification gate (pinned tools in .tools/)
+bash scripts/verify/all.sh --strict --fast
+FUZZ_TIME=10 bash scripts/verify/fuzz.sh
 ```
 
-## Change hygiene
+`verification/kani` and `verification/miri` are standalone crates with their own
+lockfiles and are intentionally not workspace members. Run them through the
+scripts above or `scripts/verify/ci.sh`.
 
-- Prefer small, reversible changes.
-- Add or update tests before changing behavior.
-- Do not add dependencies without a clear reason and review.
-- Keep `Cargo.lock` committed because this workspace ships binaries.
-- Keep `.omx/`, `.omc/`, local databases, and generated standalone exports out
-  of version control.
+Formatting and clippy require rustfmt and clippy in the active toolchain. This
+host's rustup-free toolchain does not include them; devenv's toolchain does.
 
-## Manual smoke checks
+## Live checks
 
-Before a public release, run the desktop app and verify:
+Run the app on a graphical session and check:
 
-- the default desktop window is decorated, resizable, 1280x820, and has no
-  native app menu where the platform/Dioxus host supports menu removal
-- web content reaches the webview client-area edges inside the window frame
-- `ETEREA_WINDOW_MODE=fullscreen` (or its `kiosk` alias) enters the explicit
-  fullscreen path and can be exited/restored with the platform window controls
-  or window-manager shortcut
-- first launch and empty/onboarding state
-- import dry-run and committed import paths
-- search, author/topic filters, favorites, deletion, and detail routes
-- all library views
-- remote media preview opt-in/off behavior
+- the window opens decorated at 1280x820 and resizes to the 960x640 minimum
+- an empty data directory shows the onboarding state and a real file picker
+- CSV, JSON and X archive imports preview before writing and skip duplicates
+- search filters while typing; Enter opens the first result
+- `j`/`k`, `Enter`, `Esc`, `/`, `:`, `?`, `f`, `c`, `o`, `m` and `Space` work
+- author and tag filters return to the feed and clear with `Esc`
+- the graph and calendar routes use the archive data
+- light, dark and text-size choices survive a restart
+- remote images stay hidden until `m`, and images open in the lightbox
+- video downloads through the app and plays with the system `ffmpeg`
 
-## Live desktop QA harness
+## Test-only switches
 
-Real release desktop QA must launch the Dioxus desktop app, not a unit test or
-web-only surrogate. Use the harness below from a graphical desktop session:
+These environment variables exist for headless captures and tests; they are not
+user settings:
+
+| Variable | Effect |
+|:---|:---|
+| `ETEREA_DEMO=1` | Use the local eight-post deck and bundle assets; no database or network. |
+| `ETEREA_ROUTE=feed\|authors\|topics\|graph\|calendar\|import\|settings\|detail` | Start on a route. |
+| `ETEREA_SELECTED=N` | Select a feed index after the first page loads. |
+| `ETEREA_LOAD_MEDIA=1` | Load every post's media after the feed arrives. |
+| `ETEREA_PLAY=1` | Start the selected post's video after the feed arrives. |
+| `ETEREA_IMPORT=PATH` | Preview a file without opening the picker. |
+| `ETEREA_DB=PATH` | Open a specific SQLite database instead of the platform default. |
+| `ETEREA_CONFIG_DIR=PATH` | Keep `settings.json` in a test directory. |
+
+Headless rendering needs a Vulkan adapter. Without a GPU, Mesa lavapipe works:
 
 ```bash
-scripts/desktop-qa.sh
+export VK_ICD_FILENAMES=/nix/store/1vkzwrp4ny20iljfnv9valq0bfn8czlv-mesa-26.2.3/share/vulkan/icd.d/lvp_icd.x86_64.json
+export LD_LIBRARY_PATH=/nix/store/1vkzwrp4ny20iljfnv9valq0bfn8czlv-mesa-26.2.3/lib
 ```
 
-The script starts the app in tmux with the real command
-`tmux new-session -d -s eterea-desktop-qa 'cd "$PWD" && devenv shell -- cargo run -p eterea-dioxus'`,
-captures live logs with
-`tmux capture-pane -pt eterea-desktop-qa -S -2000 > .omo/evidence/production-grade-project/desktop-tmux.log`,
-records launch timing for the first usable desktop shell in
-`.omo/evidence/production-grade-project/desktop-first-usable.txt`, and captures
-a desktop screenshot with `gnome-screenshot -f .omo/evidence/production-grade-project/live-desktop.png`
-or `import -window root .omo/evidence/production-grade-project/live-desktop.png`.
+## UI captures
 
-If neither `DISPLAY` nor `WAYLAND_DISPLAY` is set, the result is
-`BLOCKED: live desktop screenshot unavailable`. The harness writes
-`.omo/evidence/production-grade-project/desktop-display-blocker.md`; that
-no-display blocker is not a pass and must keep production approval open until a
-live desktop screenshot and first usable timing are captured on a real display.
-
-## Desktop window modes
-
-The Dioxus shell launches with an explicit desktop window configuration instead
-of relying on framework defaults. The default mode is a decorated, resizable
-1280x820 window with the native menu disabled where supported.
-
-Fullscreen is deliberately opt-in and intended as a developer/QA smoke-check
-surface, not a packaged user preference:
+The Rune compositor can render without a window:
 
 ```bash
-ETEREA_WINDOW_MODE=fullscreen devenv shell -- cargo run -p eterea-dioxus
+.work/rune-spike/target/debug/eterea \
+  --snap docs/assets/previews/feed-light.png \
+  --theme light --size 1280x820 --at 2
 ```
 
-The `kiosk` value is accepted as a fullscreen smoke-check alias for test
-scripts. Both values use borderless fullscreen on the current monitor. This is a
-manual smoke-check surface, not the default release mode; verify exit/restore
-behavior on every target OS/window manager before presenting it as supported.
+Scenes are listed with `--list-scenes`. The headless UI harness runs the full
+scene and route matrix; see
+[`verification/ui-harness.md`](verification/ui-harness.md).
 
-## Screenshot and state overrides
+## Build storage
 
-Docs screenshots and UI QA can start on a specific route, layout, and window
-position. These overrides apply once at startup and do not persist:
+The workspace carries an `.mbx.toml` policy for
+[mbx](https://mr-boxington.jdx.dev). With mbx installed:
 
 ```bash
-ETEREA_INITIAL_ROUTE=library \
-ETEREA_INITIAL_LAYOUT=dashboard \
-ETEREA_WINDOW_X=40 \
-ETEREA_WINDOW_Y=40 \
-devenv shell -- cargo run -p eterea-dioxus
+mbx build -p eterea-desktop --release
+mbx stats
 ```
 
-`ETEREA_INITIAL_ROUTE` accepts the route ids parsed by the shell: `library`,
-`authors`, `topics`, `search`, `import`, `settings`, and `onboarding`.
-`ETEREA_INITIAL_LAYOUT` accepts `table`, `tree`, `dashboard`, `graph`, and
-`calendar`. Inside the shell, `Enter` opens detail for the highlighted entry.
+Do not commit machine-specific mbx paths or cache budgets. The repository policy
+contains only workspace-wide build settings.

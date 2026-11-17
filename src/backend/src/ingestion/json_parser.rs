@@ -1,17 +1,33 @@
-//! JSON parsing for Twitter bookmark exports
+//! JSON parsing for Twitter bookmark exports.
+//!
+//! Three JSON shapes are supported:
+//!
+//! - Flat bookmark arrays (`[{ "tweet_url": ..., "full_text": ... }]`).
+//! - Generic JSON/archive-JS wrappers (`window.YTD... = [...]`) with
+//!   `quoted_status` / `quoted_status_id_str` quote data when present.
+//! - X API v2 responses: root `data` plus `includes.tweets`, `includes.users`,
+//!   and `includes.media`, with `referenced_tweets` entries of type `quoted`.
 
+use super::date_parse::{fill_extracted_hashtags, parse_date_candidates, tweet_url_for};
+use super::export_parser::parse_eterea_export_json;
 use super::media_metadata::{extract_media, media_from_value};
-use crate::models::{Bookmark, BookmarkBuilder, Media};
+use super::quote_metadata::{
+    bare_quoted_id, embedded_quoted_object, media_from_media_keys, quoted_reference_id,
+    quoted_tweet_from_object, quoted_tweet_from_v2,
+};
+use super::url_entities::extract_links;
+use crate::models::{Bookmark, BookmarkBuilder, Media, QuotedTweet};
 use crate::{Error, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
 use tracing::{debug, warn};
 
-/// Parser for JSON bookmark exports
+/// Parser for JSON bookmark exports.
 pub struct JsonParser;
 
 impl JsonParser {
@@ -50,6 +66,22 @@ impl JsonParser {
         }
 
         let root: Value = serde_json::from_str(payload)?;
+
+        // eterea's own export format carries full bookmark values (tags,
+        // media, quote, links, read/favorite flags) and must round-trip.
+        if let Some(bookmarks) = parse_eterea_export_json(&root)? {
+            debug!(
+                "Parsed {} bookmarks from eterea JSON export",
+                bookmarks.len()
+            );
+            return Ok(bookmarks);
+        }
+
+        if let Some(bookmarks) = self.parse_v2(&root)? {
+            debug!("Parsed {} bookmarks from X API v2 payload", bookmarks.len());
+            return Ok(bookmarks);
+        }
+
         let raw_bookmarks = self.collect_entries(&root);
 
         let mut bookmarks = Vec::new();
@@ -67,7 +99,27 @@ impl JsonParser {
         Ok(bookmarks)
     }
 
+    /// Parse an X API v2 response (`data` + `includes`), returning `None` when
+    /// the payload is not shaped like one.
+    fn parse_v2(&self, root: &Value) -> Result<Option<Vec<Bookmark>>> {
+        let Some((entries, includes_value)) = v2_sections(root) else {
+            return Ok(None);
+        };
+        let includes = V2Includes::from_value(includes_value);
+
+        let mut bookmarks = Vec::new();
+        for (idx, entry) in entries.iter().enumerate() {
+            match self.convert_v2_tweet(entry, &includes) {
+                Ok(bookmark) => bookmarks.push(bookmark),
+                Err(error) => warn!("Skipping v2 data entry {idx}: {error}"),
+            }
+        }
+
+        Ok(Some(bookmarks))
+    }
+
     fn from_flat_bookmark(raw: FlatJsonBookmark) -> Result<Bookmark> {
+        let flat_links = flat_bookmark_links(&raw);
         let tweet_url = raw
             .tweet_url
             .or_else(|| {
@@ -102,14 +154,22 @@ impl JsonParser {
             }
         }
 
-        let mut bookmark = builder.build().map_err(|e| Error::Other(e.to_string()))?;
-        if bookmark.tags.is_empty() {
-            for tag in bookmark.extract_hashtags() {
-                if !bookmark.tags.contains(&tag) {
-                    bookmark.tags.push(tag);
-                }
-            }
+        for link in flat_links {
+            builder = builder.add_link(link);
         }
+
+        if let Some(quote) = quote_from_flat_fields(
+            raw.quoted_status,
+            raw.quoted_status_id_str.or_else(|| {
+                raw.quoted_status_id
+                    .and_then(|id| value_to_scalar_string(&id))
+            }),
+        ) {
+            builder = builder.quoted(quote);
+        }
+
+        let mut bookmark = builder.build().map_err(|e| Error::Other(e.to_string()))?;
+        fill_extracted_hashtags(&mut bookmark);
 
         Ok(bookmark)
     }
@@ -136,6 +196,11 @@ impl JsonParser {
                 Error::InvalidFormat("Could not locate end of JSON payload in archive JS".into())
             })?;
 
+            if end < start {
+                return Err(Error::InvalidFormat(
+                    "Archive JS has a closing bracket before its JSON payload".into(),
+                ));
+            }
             return Ok(trimmed[start..=end].trim());
         }
 
@@ -168,6 +233,7 @@ impl JsonParser {
                     &["author_handle"],
                     &["username"],
                     &["user", "screen_name"],
+                    &["user", "legacy", "screen_name"],
                     &["core", "user_results", "result", "legacy", "screen_name"],
                 ],
             )
@@ -193,6 +259,7 @@ impl JsonParser {
                     &["author_name"],
                     &["display_name"],
                     &["user", "name"],
+                    &["user", "legacy", "name"],
                     &["core", "user_results", "result", "legacy", "name"],
                 ],
             )
@@ -213,13 +280,9 @@ impl JsonParser {
                 ],
             )
             .or_else(|| {
-                tweet_id.as_ref().map(|id| {
-                    if author_handle.is_empty() {
-                        format!("https://x.com/i/web/status/{id}")
-                    } else {
-                        format!("https://x.com/{author_handle}/status/{id}")
-                    }
-                })
+                tweet_id
+                    .as_deref()
+                    .map(|id| tweet_url_for(&author_handle, id))
             })
             .ok_or_else(|| Error::Other("Missing tweet URL".into()))?;
 
@@ -236,7 +299,14 @@ impl JsonParser {
             )
             .unwrap_or_default();
 
-        let note_text = self.extract_string(raw, &[&["note_tweet_text"], &["noteTweetText"]]);
+        let note_text = self.extract_string(
+            raw,
+            &[
+                &["note_tweet_text"],
+                &["noteTweetText"],
+                &["note_tweet", "text"],
+            ],
+        );
         let tweeted_at = self.parse_date(raw)?;
 
         let mut builder = BookmarkBuilder::new()
@@ -253,6 +323,7 @@ impl JsonParser {
                 &["profile_image_url_https"],
                 &["profile_image"],
                 &["user", "profile_image_url_https"],
+                &["user", "legacy", "profile_image_url_https"],
                 &[
                     "core",
                     "user_results",
@@ -281,17 +352,172 @@ impl JsonParser {
             builder = builder.add_media_metadata(media);
         }
 
-        let mut bookmark = builder.build().map_err(|e| Error::Other(e.to_string()))?;
+        for link in extract_links(raw) {
+            builder = builder.add_link(link);
+        }
 
-        if bookmark.tags.is_empty() {
-            for tag in bookmark.extract_hashtags() {
-                if !bookmark.tags.contains(&tag) {
-                    bookmark.tags.push(tag);
-                }
+        if let Some(quote) = self.extract_quote(raw) {
+            builder = builder.quoted(quote);
+        }
+
+        let mut bookmark = builder.build().map_err(|e| Error::Other(e.to_string()))?;
+        fill_extracted_hashtags(&mut bookmark);
+
+        Ok(bookmark)
+    }
+
+    /// Convert one X API v2 tweet entry, resolving authors, media, and quotes
+    /// through the root `includes` payload.
+    fn convert_v2_tweet(&self, raw: &Value, includes: &V2Includes<'_>) -> Result<Bookmark> {
+        let raw = self.unwrap_entry(raw);
+
+        let tweet_id =
+            self.extract_string(raw, &[&["id_str"], &["id"], &["tweet_id"], &["tweetId"]]);
+        let author_id = self.extract_string(raw, &[&["author_id"]]);
+        let author = author_id
+            .as_deref()
+            .and_then(|id| includes.users_by_id.get(id).copied());
+
+        let author_handle = author
+            .and_then(|user| self.extract_string(user, &[&["username"], &["screen_name"]]))
+            .or_else(|| {
+                self.extract_string(
+                    raw,
+                    &[
+                        &["screen_name"],
+                        &["author_handle"],
+                        &["username"],
+                        &["user", "screen_name"],
+                    ],
+                )
+            })
+            .unwrap_or_default();
+
+        let author_name = author
+            .and_then(|user| self.extract_string(user, &[&["name"]]))
+            .or_else(|| self.extract_string(raw, &[&["name"], &["author_name"], &["display_name"]]))
+            .unwrap_or_else(|| author_handle.clone());
+
+        let tweet_url = self
+            .extract_string(raw, &[&["tweet_url"], &["expanded_url"], &["expandedUrl"]])
+            .filter(|url| url.contains("/status/"))
+            .or_else(|| {
+                tweet_id
+                    .as_deref()
+                    .map(|id| tweet_url_for(&author_handle, id))
+            })
+            .ok_or_else(|| Error::Other("Missing tweet URL".into()))?;
+
+        let content = self
+            .extract_string(raw, &[&["text"], &["full_text"], &["content"]])
+            .unwrap_or_default();
+        let note_text = self.extract_string(
+            raw,
+            &[
+                &["note_tweet", "text"],
+                &["note_tweet_text"],
+                &["noteTweetText"],
+            ],
+        );
+        let tweeted_at = self.parse_date(raw)?;
+
+        let mut builder = BookmarkBuilder::new()
+            .tweet_url(tweet_url)
+            .content(content)
+            .note_text(note_text.unwrap_or_default())
+            .tweeted_at(tweeted_at)
+            .author_handle(author_handle)
+            .author_name(author_name);
+
+        if let Some(img) = author
+            .and_then(|user| {
+                self.extract_string(
+                    user,
+                    &[
+                        &["profile_image_url"],
+                        &["profile_image_url_https"],
+                        &["profile_image"],
+                    ],
+                )
+            })
+            .or_else(|| {
+                self.extract_string(
+                    raw,
+                    &[
+                        &["profile_image_url_https"],
+                        &["profile_image"],
+                        &["user", "profile_image_url_https"],
+                    ],
+                )
+            })
+        {
+            builder = builder.author_profile_image(img);
+        }
+
+        if let Some(tags) = self.extract_tags(raw) {
+            for tag in tags {
+                builder = builder.add_tag(tag);
             }
         }
 
+        let media = if has_media_keys(raw) {
+            media_from_media_keys(raw, &includes.media_by_key)
+        } else {
+            extract_media(raw)
+        };
+        for item in media {
+            builder = builder.add_media_metadata(item);
+        }
+
+        for link in extract_links(raw) {
+            builder = builder.add_link(link);
+        }
+
+        if let Some(quote) = self.v2_quote(raw, includes) {
+            builder = builder.quoted(quote);
+        }
+
+        let mut bookmark = builder.build().map_err(|e| Error::Other(e.to_string()))?;
+        fill_extracted_hashtags(&mut bookmark);
+
         Ok(bookmark)
+    }
+
+    /// Resolve the quoted post of a v2 tweet: embedded body first, then a bare
+    /// id, then `referenced_tweets` through `includes.tweets`.
+    fn v2_quote(&self, raw: &Value, includes: &V2Includes<'_>) -> Option<QuotedTweet> {
+        if let Some(quote) = embedded_quoted_object(raw).and_then(quoted_tweet_from_object) {
+            return Some(quote);
+        }
+
+        if let Some(id) = bare_quoted_id(raw) {
+            return Some(QuotedTweet::unavailable(tweet_url_for("", &id)));
+        }
+
+        let quoted_id = quoted_reference_id(raw)?;
+        includes
+            .tweets_by_id
+            .get(&quoted_id)
+            .copied()
+            .and_then(|quoted| {
+                quoted_tweet_from_v2(quoted, &includes.users_by_id, &includes.media_by_key)
+            })
+            .or_else(|| Some(QuotedTweet::unavailable(tweet_url_for("", &quoted_id))))
+    }
+
+    /// Extract the quote attached to a generic (archive/v1.1-ish) entry.
+    ///
+    /// An embedded quote body is preferred; a bare quoted id becomes an
+    /// unavailable quote that keeps its URL.
+    fn extract_quote(&self, raw: &Value) -> Option<QuotedTweet> {
+        embedded_quoted_object(raw)
+            .and_then(quoted_tweet_from_object)
+            .or_else(|| {
+                bare_quoted_id(raw).map(|id| QuotedTweet::unavailable(tweet_url_for("", &id)))
+            })
+            .or_else(|| {
+                quoted_reference_id(raw).map(|id| QuotedTweet::unavailable(tweet_url_for("", &id)))
+            })
     }
 
     fn unwrap_entry<'a>(&self, raw: &'a Value) -> &'a Value {
@@ -339,6 +565,7 @@ impl JsonParser {
         for item in items {
             if let Some(tag) = Self::value_to_string(item)
                 .or_else(|| Self::value_at_path(item, &["text"]).and_then(Self::value_to_string))
+                .or_else(|| Self::value_at_path(item, &["tag"]).and_then(Self::value_to_string))
             {
                 let normalized = tag.trim().trim_start_matches('#').to_lowercase();
                 if !normalized.is_empty() && !result.contains(&normalized) {
@@ -399,22 +626,78 @@ impl JsonParser {
     }
 }
 
-fn parse_date_candidates(candidates: [Option<&str>; 3]) -> Result<DateTime<Utc>> {
-    for candidate in candidates.into_iter().flatten() {
-        let s = candidate.trim().trim_matches('"');
-        if let Ok(epoch) = s.parse::<i64>() {
-            if let Some(dt) = DateTime::<Utc>::from_timestamp(epoch, 0) {
-                return Ok(dt);
-            }
-        }
-        if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
-            return Ok(dt.with_timezone(&Utc));
-        }
-        if let Ok(dt) = DateTime::parse_from_str(s, "%a %b %d %H:%M:%S %z %Y") {
-            return Ok(dt.with_timezone(&Utc));
+/// Build the quote of a flat fast-path bookmark from its optional fields.
+fn quote_from_flat_fields(
+    quoted_status: Option<Value>,
+    quoted_id: Option<String>,
+) -> Option<QuotedTweet> {
+    quoted_status
+        .as_ref()
+        .and_then(quoted_tweet_from_object)
+        .or_else(|| quoted_id.map(|id| QuotedTweet::unavailable(tweet_url_for("", &id))))
+}
+
+/// `(data rows, includes object)` when the root looks like an X API v2 response.
+fn v2_sections(root: &Value) -> Option<(&Vec<Value>, &Value)> {
+    let includes = root.get("includes")?;
+    if !includes.is_object() {
+        return None;
+    }
+
+    for key in ["data", "bookmarks", "items", "tweets"] {
+        if let Some(Value::Array(items)) = root.get(key) {
+            return Some((items, includes));
         }
     }
-    Err(Error::Other("Could not parse date".into()))
+
+    None
+}
+
+fn has_media_keys(raw: &Value) -> bool {
+    matches!(
+        JsonParser::value_at_path(raw, &["attachments", "media_keys"]),
+        Some(Value::Array(keys)) if !keys.is_empty()
+    )
+}
+
+/// Lookup indexes over an X API v2 `includes` object.
+struct V2Includes<'a> {
+    tweets_by_id: HashMap<String, &'a Value>,
+    users_by_id: HashMap<String, &'a Value>,
+    media_by_key: HashMap<String, &'a Value>,
+}
+
+impl<'a> V2Includes<'a> {
+    fn from_value(includes: &'a Value) -> Self {
+        Self {
+            tweets_by_id: index_array(includes, "tweets", "id"),
+            users_by_id: index_array(includes, "users", "id"),
+            media_by_key: index_array(includes, "media", "media_key"),
+        }
+    }
+}
+
+fn index_array<'a>(value: &'a Value, key: &str, id_key: &str) -> HashMap<String, &'a Value> {
+    let mut index = HashMap::new();
+    let Some(Value::Array(items)) = value.get(key) else {
+        return index;
+    };
+
+    for item in items {
+        if let Some(id) = item.get(id_key).and_then(value_to_scalar_string) {
+            index.insert(id, item);
+        }
+    }
+
+    index
+}
+
+fn value_to_scalar_string(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => Some(text.clone()),
+        Value::Number(number) => Some(number.to_string()),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -443,6 +726,31 @@ struct FlatJsonBookmark {
     extended_media: Option<Vec<FlatMedia>>,
     #[serde(default)]
     media: Option<Vec<FlatMedia>>,
+    #[serde(default)]
+    quoted_status: Option<Value>,
+    #[serde(default)]
+    quoted_status_id_str: Option<String>,
+    #[serde(default)]
+    quoted_status_id: Option<Value>,
+    #[serde(default)]
+    entities: Option<Value>,
+    #[serde(default)]
+    links: Option<Value>,
+    #[serde(default)]
+    urls: Option<Value>,
+}
+
+/// URL entities from the flat fast-path fields, in any supported shape.
+fn flat_bookmark_links(raw: &FlatJsonBookmark) -> Vec<crate::models::LinkEntity> {
+    if raw.entities.is_none() && raw.links.is_none() && raw.urls.is_none() {
+        return Vec::new();
+    }
+    let composite = serde_json::json!({
+        "entities": raw.entities.clone(),
+        "links": raw.links.clone(),
+        "urls": raw.urls.clone(),
+    });
+    extract_links(&composite)
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -471,6 +779,10 @@ struct FlatMedia {
     variants: Option<Vec<Value>>,
     #[serde(default)]
     video_info: Option<Value>,
+    #[serde(default)]
+    duration_ms: Option<i64>,
+    #[serde(default)]
+    duration_millis: Option<i64>,
 }
 
 impl FlatMedia {
@@ -498,7 +810,7 @@ mod tests {
     fn parses_flat_json_fast_path() {
         let bookmarks = JsonParser::new()
             .parse_str(
-                r#"[{"bookmark_date":"2025-08-25T17:25:01.047Z","profile_image_url_https":"https://pbs.twimg.com/profile.jpg","screen_name":"cinesansar","name":"persona","full_text":"hello #rust","tweeted_at":"2025-08-25T10:52:35.000Z","extended_media":[{"media_url_https":"https://pbs.twimg.com/media/test.jpg"}],"tweet_url":"https://x.com/cinesansar/status/123"}]"#,
+                r#"[{"bookmark_date":"2025-08-25T17:25:01.047Z","profile_image_url_https":"https://pbs.twimg.com/profile.jpg","screen_name":"cinesansar","name":"persona","full_text":"hello #rust","tweeted_at":"2025-08-25T10:52:35.000Z","extended_media":[{"media_url_https":"https://pbs.twimg.com/media/test.jpg","type":"photo"}],"tweet_url":"https://x.com/cinesansar/status/123"}]"#,
             )
             .unwrap();
         assert_eq!(bookmarks.len(), 1);
@@ -511,7 +823,7 @@ mod tests {
     fn parses_flat_media_metadata_fast_path() {
         let bookmarks = JsonParser::new()
             .parse_str(
-                r#"[{"bookmark_date":"2025-08-25T17:25:01.047Z","screen_name":"media","name":"Media","full_text":"hello","tweeted_at":"2025-08-25T10:52:35.000Z","extended_media":[{"media_key":"7_fast","type":"video","preview_image_url":"https://pbs.twimg.com/media/preview.jpg","alt_text":"Alt from export","width":640,"height":480,"video_info":{"variants":[{"url":"https://video.twimg.com/fast/360.mp4","bit_rate":832000,"content_type":"video/mp4"},{"url":"https://video.twimg.com/fast/hls.m3u8","content_type":"application/x-mpegURL"}]} }],"tweet_url":"https://x.com/media/status/123"}]"#,
+                r#"[{"bookmark_date":"2025-08-25T17:25:01.047Z","screen_name":"media","name":"Media","full_text":"hello","tweeted_at":"2025-08-25T10:52:35.000Z","extended_media":[{"media_key":"7_fast","type":"video","preview_image_url":"https://pbs.twimg.com/media/preview.jpg","alt_text":"Alt from export","width":640,"height":480,"video_info":{"duration_millis":42000,"variants":[{"url":"https://video.twimg.com/fast/360.mp4","bit_rate":832000,"content_type":"video/mp4"},{"url":"https://video.twimg.com/fast/hls.m3u8","content_type":"application/x-mpegURL"}]} }],"tweet_url":"https://x.com/media/status/123"}]"#,
             )
             .unwrap();
 
@@ -533,13 +845,18 @@ mod tests {
             media.preview_url.as_deref(),
             Some("https://pbs.twimg.com/media/preview.jpg")
         );
+        assert_eq!(
+            media.poster_url.as_deref(),
+            Some("https://pbs.twimg.com/media/preview.jpg")
+        );
+        assert_eq!(media.duration_ms, Some(42000));
     }
 
     #[test]
     fn parses_included_x_media_metadata_fallback_path() {
         let bookmarks = JsonParser::new()
             .parse_str(
-                r#"{"bookmarks":[{"tweet_id":"123","created_at":"2025-08-25T10:52:35.000Z","username":"media","full_text":"video bookmark","attachments":{"media_keys":["7_video"]},"includes":{"media":[{"media_key":"7_video","type":"video","preview_image_url":"https://pbs.twimg.com/ext_tw_video/thumb.jpg","variants":[{"url":"https://video.twimg.com/ext_tw_video/360.mp4","bit_rate":832000},{"url":"https://video.twimg.com/ext_tw_video/720.mp4","bit_rate":2176000}],"width":1280,"height":720}]}}]}"#,
+                r#"{"bookmarks":[{"tweet_id":"123","created_at":"2025-08-25T10:52:35.000Z","username":"media","full_text":"video bookmark","attachments":{"media_keys":["7_video"]},"includes":{"media":[{"media_key":"7_video","type":"video","preview_image_url":"https://pbs.twimg.com/ext_tw_video/thumb.jpg","duration_ms":9000,"variants":[{"url":"https://video.twimg.com/ext_tw_video/360.mp4","bit_rate":832000},{"url":"https://video.twimg.com/ext_tw_video/720.mp4","bit_rate":2176000}],"width":1280,"height":720}]}}]}"#,
             )
             .unwrap();
 
@@ -593,5 +910,215 @@ mod tests {
         assert_eq!(bookmarks[0].tweet_url, "https://x.com/sveltejs/status/999");
         assert_eq!(bookmarks[0].author_name, "Svelte");
         assert_eq!(bookmarks[0].author_handle, "sveltejs");
+    }
+
+    #[test]
+    fn malformed_archive_wrapper_is_an_error_not_a_panic() {
+        let error = JsonParser::new()
+            .parse_str("window.YTD.tweets.part0 = K];[\n")
+            .expect_err("malformed archive wrapper must be rejected");
+        assert!(matches!(error, Error::InvalidFormat(_)));
+    }
+
+    #[test]
+    fn parses_archive_quoted_status_body() {
+        let bookmarks = JsonParser::new()
+            .parse_str(
+                r#"[{"tweet_url":"https://x.com/ada_dev/status/1","full_text":"worth quoting #rust","tweeted_at":"2026-05-04T10:00:00Z","screen_name":"ada_dev","name":"Ada","quoted_status":{"id_str":"9001","full_text":"the quoted original","created_at":"2026-05-03T09:00:00Z","user":{"screen_name":"quoted_author","name":"Quoted Author","profile_image_url_https":"https://example.com/q.png"},"extended_entities":{"media":[{"type":"photo","media_url_https":"https://example.com/quote.png","alt_text":"quote alt"}]}}}]"#,
+            )
+            .unwrap();
+
+        let quote = bookmarks[0].quoted.as_ref().expect("quote should parse");
+        assert!(!quote.unavailable);
+        assert_eq!(quote.tweet_url, "https://x.com/quoted_author/status/9001");
+        assert_eq!(quote.content, "the quoted original");
+        assert_eq!(quote.author_handle, "quoted_author");
+        assert_eq!(quote.author_name, "Quoted Author");
+        assert_eq!(
+            quote.author_profile_image.as_deref(),
+            Some("https://example.com/q.png")
+        );
+        assert_eq!(
+            quote.tweeted_at,
+            Some(
+                DateTime::parse_from_rfc3339("2026-05-03T09:00:00Z")
+                    .unwrap()
+                    .with_timezone(&Utc)
+            )
+        );
+        assert_eq!(quote.media.len(), 1);
+        assert_eq!(quote.media[0].alt_text.as_deref(), Some("quote alt"));
+        assert!(bookmarks[0].media.is_empty(), "quote media stays separate");
+    }
+
+    #[test]
+    fn missing_archive_quote_body_becomes_unavailable_with_url() {
+        let bookmarks = JsonParser::new()
+            .parse_str(
+                r#"[{"tweet_url":"https://x.com/ada_dev/status/2","full_text":"quoting a deleted post","tweeted_at":"2026-05-04T10:00:00Z","screen_name":"ada_dev","name":"Ada","quoted_status_id_str":"9002"}]"#,
+            )
+            .unwrap();
+
+        let quote = bookmarks[0].quoted.as_ref().expect("quote should parse");
+        assert!(quote.unavailable);
+        assert_eq!(quote.tweet_url, "https://x.com/i/web/status/9002");
+        assert!(quote.content.is_empty());
+        assert_eq!(quote.author_handle, "");
+        assert_eq!(quote.tweeted_at, None);
+        assert!(quote.media.is_empty());
+    }
+
+    #[test]
+    fn flat_archive_row_with_numeric_quoted_status_id_stays_unavailable() {
+        let bookmarks = JsonParser::new()
+            .parse_str(
+                r#"[{"tweet_url":"https://x.com/ada_dev/status/3","full_text":"quoting by numeric id","tweeted_at":"2026-05-04T10:00:00Z","screen_name":"ada_dev","name":"Ada","quoted_status_id":9003}]"#,
+            )
+            .unwrap();
+
+        let quote = bookmarks[0].quoted.as_ref().expect("quote should parse");
+        assert!(quote.unavailable);
+        assert_eq!(quote.tweet_url, "https://x.com/i/web/status/9003");
+    }
+
+    #[test]
+    fn parses_x_api_v2_payload_with_quoted_post_and_includes() {
+        let payload = r#"{
+          "data": [{
+            "id": "2001",
+            "text": "quoting a post #rust",
+            "created_at": "2026-05-04T10:00:00.000Z",
+            "author_id": "u1",
+            "attachments": { "media_keys": ["3_img"] },
+            "referenced_tweets": [{ "type": "quoted", "id": "9001" }],
+            "entities": { "hashtags": [{ "tag": "rust" }] }
+          }],
+          "includes": {
+            "users": [
+              { "id": "u1", "name": "Ada Developer", "username": "ada_dev", "profile_image_url": "https://example.com/ada.png" },
+              { "id": "u2", "name": "Quoted Author", "username": "quoted_author", "profile_image_url": "https://example.com/q.png" }
+            ],
+            "tweets": [{
+              "id": "9001",
+              "text": "the quoted original",
+              "created_at": "2026-05-03T09:00:00.000Z",
+              "author_id": "u2",
+              "attachments": { "media_keys": ["7_vid"] }
+            }],
+            "media": [
+              { "media_key": "3_img", "type": "photo", "url": "https://example.com/img.png", "width": 1200, "height": 800, "alt_text": "A diagram" },
+              { "media_key": "7_vid", "type": "video", "preview_image_url": "https://example.com/poster.jpg", "duration_ms": 42000, "variants": [{ "url": "https://example.com/v.mp4", "content_type": "video/mp4", "bit_rate": 832000 }] }
+            ]
+          }
+        }"#;
+
+        let bookmarks = JsonParser::new().parse_str(payload).unwrap();
+        assert_eq!(bookmarks.len(), 1);
+        let bookmark = &bookmarks[0];
+
+        assert_eq!(bookmark.tweet_url, "https://x.com/ada_dev/status/2001");
+        assert_eq!(bookmark.author_handle, "ada_dev");
+        assert_eq!(bookmark.author_name, "Ada Developer");
+        assert_eq!(
+            bookmark.author_profile_image.as_deref(),
+            Some("https://example.com/ada.png")
+        );
+        assert_eq!(bookmark.tags, vec!["rust"]);
+        assert_eq!(bookmark.media.len(), 1);
+        assert_eq!(
+            bookmark.media[0].url.as_str(),
+            "https://example.com/img.png"
+        );
+        assert_eq!(bookmark.media[0].alt_text.as_deref(), Some("A diagram"));
+
+        let quote = bookmark.quoted.as_ref().expect("v2 quote should resolve");
+        assert!(!quote.unavailable);
+        assert_eq!(quote.tweet_url, "https://x.com/quoted_author/status/9001");
+        assert_eq!(quote.content, "the quoted original");
+        assert_eq!(quote.author_handle, "quoted_author");
+        assert_eq!(quote.author_name, "Quoted Author");
+        assert_eq!(
+            quote.author_profile_image.as_deref(),
+            Some("https://example.com/q.png")
+        );
+        assert_eq!(quote.media.len(), 1);
+        assert_eq!(quote.media[0].media_type, MediaType::Video);
+        assert_eq!(quote.media[0].duration_ms, Some(42000));
+        assert_eq!(
+            quote.media[0].poster_url.as_deref(),
+            Some("https://example.com/poster.jpg")
+        );
+    }
+
+    #[test]
+    fn v2_quote_missing_from_includes_is_unavailable_with_url() {
+        let bookmarks = JsonParser::new()
+            .parse_str(
+                r#"{
+                  "data": [{
+                    "id": "2002",
+                    "text": "quoting a post that is not included",
+                    "created_at": "2026-05-04T10:00:00.000Z",
+                    "author_id": "u1",
+                    "referenced_tweets": [{ "type": "quoted", "id": "9002" }]
+                  }],
+                  "includes": {
+                    "users": [{ "id": "u1", "name": "Ada", "username": "ada_dev" }]
+                  }
+                }"#,
+            )
+            .unwrap();
+
+        let quote = bookmarks[0].quoted.as_ref().expect("quote should parse");
+        assert!(quote.unavailable);
+        assert_eq!(quote.tweet_url, "https://x.com/i/web/status/9002");
+        assert!(quote.content.is_empty());
+    }
+
+    #[test]
+    fn plain_v2_payload_survives_round_trip_through_graph_and_calendar_shape() {
+        // A v2 payload without a quote is still parsed through the v2 path and
+        // keeps import parity with the archive parsers.
+        let bookmarks = JsonParser::new()
+            .parse_str(
+                r#"{
+                  "data": [{
+                    "id": "3001",
+                    "text": "plain v2 post #design",
+                    "created_at": "2026-05-05T12:00:00.000Z",
+                    "author_id": "u9",
+                    "entities": { "hashtags": [{ "tag": "design" }] }
+                  }],
+                  "includes": {
+                    "users": [{ "id": "u9", "name": "Bea", "username": "bea_design" }]
+                  }
+                }"#,
+            )
+            .unwrap();
+
+        assert_eq!(bookmarks.len(), 1);
+        assert_eq!(
+            bookmarks[0].tweet_url,
+            "https://x.com/bea_design/status/3001"
+        );
+        assert_eq!(bookmarks[0].author_name, "Bea");
+        assert_eq!(bookmarks[0].tags, vec!["design"]);
+        assert!(bookmarks[0].media.is_empty());
+        assert!(bookmarks[0].quoted.is_none());
+    }
+
+    #[test]
+    fn v2_payload_quoting_an_archive_style_embedded_status_keeps_the_body() {
+        let bookmarks = JsonParser::new()
+            .parse_str(
+                r#"{"data":[{"id":"4001","text":"v2 entry with legacy quote","created_at":"2026-05-06T12:00:00Z","author_id":"u4","quoted_status_id_str":"not-used-because-embedded","quoted_status":{"id_str":"7001","full_text":"legacy quoted body","created_at":"2026-05-01T08:00:00Z","user":{"screen_name":"legacy_quote","name":"Legacy Quote"}}}],"includes":{"users":[{"id":"u4","name":"Cy","username":"cy_ops"}]}}"#,
+            )
+            .unwrap();
+
+        let quote = bookmarks[0].quoted.as_ref().expect("quote should resolve");
+        assert!(!quote.unavailable);
+        assert_eq!(quote.content, "legacy quoted body");
+        assert_eq!(quote.author_handle, "legacy_quote");
+        assert_eq!(quote.tweet_url, "https://x.com/legacy_quote/status/7001");
     }
 }

@@ -2,7 +2,11 @@ use crate::types::{ImportPreview, ImportPreviewItem};
 use eterea_core::Bookmark;
 use std::path::Path;
 
-pub(super) fn build_import_preview(path: &Path, bookmarks: &[Bookmark]) -> ImportPreview {
+pub(super) fn build_import_preview_with_duplicates(
+    path: &Path,
+    bookmarks: &[Bookmark],
+    duplicate_count: usize,
+) -> ImportPreview {
     let source_label = path
         .file_name()
         .and_then(|value| value.to_str())
@@ -30,6 +34,7 @@ pub(super) fn build_import_preview(path: &Path, bookmarks: &[Bookmark]) -> Impor
         source_label,
         format,
         bookmark_count: bookmarks.len(),
+        duplicate_count,
         sample,
         duplicate_policy:
             "Existing tweet URLs are skipped; a failed parse or write leaves the archive unchanged."

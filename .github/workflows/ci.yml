@@ -54,8 +54,121 @@ jobs:
       - name: Rust tests
         run: devenv shell -- cargo test --workspace
 
-      - name: Dioxus release build
-        run: devenv shell -- cargo build -p eterea-dioxus --release
+      # The two verification crates are standalone workspaces (their Cargo.toml
+      # has an empty [workspace] table), so the root workspace commands above
+      # never build them. These steps run their plain-Rust contract tests on the
+      # devenv toolchain. Budget: 2 minutes each; observed locally under 5 s.
+      # If a step hangs, timeout fails the job instead of stalling CI.
+      - name: Verification harness crate tests (standalone crates)
+        run: |
+          set -euo pipefail
+          timeout 120 bash -c 'cd verification/kani && cargo test'
+          timeout 120 bash -c 'cd verification/miri && cargo test'
+
+      - name: Rune desktop release build
+        run: devenv shell -- cargo build -p eterea-desktop --release
 
       - name: Performance baseline
         run: devenv shell -- scripts/perf-baseline.sh
+
+  verification:
+    name: Formal verification (Verus, Kani, Miri)
+    runs-on: ubuntu-latest
+    # Reference-host budget (see docs/verification/formal-verification.md):
+    # cache miss ~5 min tool install + ~1 min Kani fast gate + ~1 min Miri,
+    # Verus seconds. Worst-case arithmetic: 20 min install + 55 min of layer
+    # budgets = 75 min; the job hard stop below is the backstop, and every layer
+    # also has its own timeout budget enforced by scripts/verify/ci.sh.
+    timeout-minutes: 80
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      # The pinned toolchain is workspace-local (.tools/), sha256-verified by
+      # scripts/verify/install.sh, and never installed system-wide. Cache it so
+      # repeat runs skip ~450 MB of downloads and rustup toolchain installs.
+      # The key changes when any pin in scripts/verify/versions.env changes.
+      - name: Restore pinned verification tools
+        uses: actions/cache@v5
+        with:
+          path: |
+            .tools/downloads
+            .tools/verus
+            .tools/kani
+            .tools/rustup
+            .tools/cargo-home
+            .tools/cargo-home-rustup
+            .tools/cargo-fuzz
+          key: verification-tools-${{ runner.os }}-${{ hashFiles('scripts/verify/versions.env') }}
+          restore-keys: |
+            verification-tools-${{ runner.os }}-
+
+      # Budget: hard stop 20 min for the step. On a cache hit this only
+      # re-verifies installed tool versions; on a cache miss it downloads and
+      # sha256-verifies the pinned Verus/Kani/Miri artifacts.
+      - name: Install pinned verification tools
+        timeout-minutes: 20
+        run: timeout 1200 bash scripts/verify/install.sh verus kani miri fuzz
+
+      # Time budgets live in scripts/verify/ci.sh (overridable above). The
+      # gate runs: Verus reference proofs, the Kani fast harness set with an
+      # explicit 20 min budget, and Miri on verification/miri only. On manual
+      # workflow_dispatch runs it also attempts the 7 expensive Kani harnesses
+      # as ADVISORY output (they may exceed CBMC budgets; never a pass/fail
+      # gate and never reported as verified).
+      - name: Run verification layers with explicit budgets
+        env:
+          VERUS_BUDGET_SECONDS: "300"
+          KANI_FAST_BUDGET_SECONDS: "900"
+          KANI_FULL_BUDGET_SECONDS: "900"
+          MIRI_BUDGET_SECONDS: "900"
+        run: |
+          set -euo pipefail
+          # 2400 s covers the mandatory layer budgets (300+900+900=2100 s);
+          # the dispatch path adds the 900 s advisory layer, so it gets 3300 s.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            timeout 3300 bash scripts/verify/ci.sh --full
+          else
+            timeout 2400 bash scripts/verify/ci.sh
+          fi
+
+      # LibFuzzer smoke gate: URL policy and both import parser families, with
+      # committed seeds. Short wall budget; crashes write to fuzz/artifacts and
+      # fail the step. Longer local runs use FUZZ_TIME=30.
+      - name: Fuzz URL policy and import parsers
+        env:
+          FUZZ_TIME: "5"
+        run: |
+          set -o pipefail
+          timeout 420 bash scripts/verify/fuzz.sh 2>&1 | tee .tools/logs/ci-fuzz.log
+
+      - name: Assemble verification evidence
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p verification-evidence
+          cp .tools/logs/ci-*.log verification-evidence/ 2>/dev/null || true
+          cp .tools/logs/ci-status.txt verification-evidence/ 2>/dev/null || true
+          cp .tools/logs/install-status.txt verification-evidence/ 2>/dev/null || true
+          cp .tools/logs/ci-fuzz.log verification-evidence/ 2>/dev/null || true
+          {
+            echo "### Formal verification evidence"
+            echo ""
+            echo "- Verus: reference-model proofs (\`verus\` layer)"
+            echo "- Kani: bounded harnesses, fast gate; expensive harnesses advisory on workflow_dispatch"
+            echo "- Miri: \`verification/miri\` only (pure crates); no desktop/Rune/GPU scope"
+            echo "- Fuzz: URL policy and import parser targets, 5 s each in CI; crashes fail the job"
+            echo "- This is not a whole-app verification claim; see docs/verification/formal-verification.md"
+            echo ""
+            echo '```'
+            cat .tools/logs/ci-status.txt 2>/dev/null || echo "ci status file missing"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload verification evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: verification-evidence-${{ github.run_id }}
+          path: verification-evidence
+          retention-days: 14

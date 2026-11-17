@@ -5,7 +5,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use super::{Media, MediaType};
+use super::{LinkEntity, Media, MediaType, QuotedTweet, MAX_MEDIA_PER_BOOKMARK};
 use uuid::Uuid;
 
 /// Represents a single Twitter/X bookmark with all associated metadata.
@@ -44,8 +44,22 @@ pub struct Bookmark {
     /// Media attachments (images, videos)
     pub media: Vec<Media>,
 
+    /// Quoted post attached to this bookmark, if any. Quotes are display-only:
+    /// their media lives inside [`QuotedTweet::media`] and never joins the
+    /// bookmark `media` table.
+    #[serde(default)]
+    pub quoted: Option<QuotedTweet>,
+
     /// Whether this bookmark is marked as favorite
     pub is_favorite: bool,
+
+    /// Whether the reader has marked this saved post as read.
+    #[serde(default)]
+    pub is_read: bool,
+
+    /// URL entities found in the post text, deduplicated and sorted by URL.
+    #[serde(default)]
+    pub links: Vec<LinkEntity>,
 }
 
 /// Author information (denormalized for speed)
@@ -80,7 +94,10 @@ impl Bookmark {
             tags: Vec::new(),
             comments: None,
             media: Vec::new(),
+            quoted: None,
             is_favorite: false,
+            is_read: false,
+            links: Vec::new(),
         }
     }
 
@@ -143,6 +160,9 @@ pub struct BookmarkBuilder {
     tags: Vec<String>,
     comments: Option<String>,
     media: Vec<Media>,
+    quoted: Option<QuotedTweet>,
+    links: Vec<LinkEntity>,
+    is_read: bool,
 }
 
 impl BookmarkBuilder {
@@ -221,7 +241,25 @@ impl BookmarkBuilder {
     }
 
     pub fn media(mut self, media: Vec<Media>) -> Self {
-        self.media = media;
+        self.media = media.into_iter().take(MAX_MEDIA_PER_BOOKMARK).collect();
+        self
+    }
+
+    /// Replace the URL entities. They are deduplicated and sorted by URL.
+    pub fn links(mut self, links: Vec<LinkEntity>) -> Self {
+        self.links = super::normalize_links(links);
+        self
+    }
+
+    /// Add one URL entity; duplicates are merged when the bookmark is built.
+    pub fn add_link(mut self, link: LinkEntity) -> Self {
+        self.links.push(link);
+        self
+    }
+
+    /// Mark the bookmark as read at import time.
+    pub fn is_read(mut self, is_read: bool) -> Self {
+        self.is_read = is_read;
         self
     }
 
@@ -235,9 +273,17 @@ impl BookmarkBuilder {
     }
 
     pub fn add_media_metadata(mut self, media: Media) -> Self {
-        if !media.url.is_empty() {
+        // Data keeps up to 20 attachments per bookmark; the UI decides how
+        // many of them to show. Beyond the cap the extras are dropped rather
+        // than silently corrupting a gallery.
+        if !media.url.is_empty() && self.media.len() < MAX_MEDIA_PER_BOOKMARK {
             self.media.push(media);
         }
+        self
+    }
+
+    pub fn quoted(mut self, quoted: QuotedTweet) -> Self {
+        self.quoted = Some(quoted);
         self
     }
 
@@ -257,7 +303,10 @@ impl BookmarkBuilder {
         bookmark.tags = self.tags;
         bookmark.comments = self.comments;
         bookmark.media = self.media;
+        bookmark.quoted = self.quoted;
         bookmark.is_favorite = false;
+        bookmark.is_read = self.is_read;
+        bookmark.links = super::normalize_links(self.links);
 
         Ok(bookmark)
     }

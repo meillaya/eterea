@@ -15,9 +15,9 @@ concurrency:
 
 jobs:
   release:
-    name: Build artifacts and create draft release
+    name: Package Linux bundle and create draft release
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     permissions:
       contents: write
     steps:
@@ -54,14 +54,56 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Build release binary
-        run: devenv shell -- cargo build -p eterea-dioxus --release
+        run: devenv shell -- cargo build -p eterea-desktop --release
 
-      - name: Assemble artifact bundle
+      # Collects the runtime libraries winit/wgpu/fontconfig dlopen into
+      # dist/<bundle>/lib, rewrites RUNPATH to $ORIGIN/lib, and adds the desktop
+      # entry, hicolor icons, PROVENANCE.md, SHA256SUMS and the tarball.
+      # --skip-build is safe here: the step above just built, and the packager
+      # refuses a binary older than the sources.
+      - name: Package Linux bundle
+        run: devenv shell -- bash scripts/package-linux-release.sh --skip-build
+
+      # Runs the real packaged ELF (RUNPATH=$ORIGIN/lib) for 3 seconds under a
+      # virtual X server with Mesa's software Vulkan driver. Fails if the process
+      # exits or reports that it could not create its window.
+      - name: Smoke-test packaged bundle (Xvfb + Mesa lavapipe)
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb mesa-vulkan-drivers libvulkan1
+          bundle_dir="$(find dist -maxdepth 1 -mindepth 1 -type d -name 'eterea-*-linux-x86_64' | head -1)"
+          if [ -z "${bundle_dir}" ]; then
+            echo "::error::no packaged bundle directory under dist/"
+            exit 1
+          fi
+          test -x "${bundle_dir}/eterea"
+          test -x "${bundle_dir}/eterea-launcher"
+          test -f "${bundle_dir}/share/applications/eterea.desktop"
+          test -f "${bundle_dir}/share/icons/hicolor/1024x1024/apps/eterea.png"
+          ( cd "${bundle_dir}" && sha256sum -c SHA256SUMS > /dev/null )
+          icd="/usr/share/vulkan/icd.d/lvp_icd.x86_64.json"
+          if [ ! -f "${icd}" ]; then
+            echo "::error::Mesa lavapipe ICD not found at ${icd}"
+            exit 1
+          fi
+          # Stronger than "process is alive": render a real frame at --at 1 and
+          # require a non-empty PNG (and tree) from the packaged app. This fails
+          # when the bundle cannot create a GPU surface.
+          mkdir -p release-artifacts/smoke
+          scripts/smoke-linux-bundle.sh "${bundle_dir}" --snap --tree --at 1 \
+            --icd "${icd}" \
+            --log release-artifacts/smoke/smoke-direct.log
+          scripts/smoke-linux-bundle.sh "${bundle_dir}" --seconds 3 \
+            --icd "${icd}" \
+            --log release-artifacts/smoke/smoke-direct-process.log
+
+      - name: Assemble release artifacts
         run: |
           set -eu
           artifact_dir="release-artifacts/eterea-${GITHUB_REF_NAME}-${RUNNER_OS}-${RUNNER_ARCH}"
           mkdir -p "${artifact_dir}"
-          cp target/release/eterea-dioxus "${artifact_dir}/"
+          cp dist/*.tar.gz dist/*.tar.gz.sha256 "${artifact_dir}/"
           cat > "${artifact_dir}/PROVENANCE.md" <<EOF
           # eterea draft release artifact provenance
 
@@ -69,12 +111,13 @@ jobs:
           - Source commit: ${GITHUB_SHA}
           - Workflow run: ${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}
           - Runner: ${RUNNER_OS}/${RUNNER_ARCH}
-          - Build command: devenv shell -- cargo build -p eterea-dioxus --release
+          - Build command: devenv shell -- cargo build -p eterea-desktop --release
+          - Package command: devenv shell -- bash scripts/package-linux-release.sh --skip-build
+          - Bundle: collected runtime libraries (lib/), RUNPATH=\$ORIGIN/lib, desktop entry and hicolor icons
+          - Smoke check: scripts/smoke-linux-bundle.sh under Xvfb with Mesa lavapipe (3 s)
           - Signing/notarization: not performed by this draft workflow
           EOF
-          (cd "${artifact_dir}" && sha256sum eterea-dioxus PROVENANCE.md > SHA256SUMS.txt)
-          tar -C release-artifacts -czf "${artifact_dir}.tar.gz" "$(basename "${artifact_dir}")"
-          (cd release-artifacts && sha256sum "$(basename "${artifact_dir}").tar.gz" > "$(basename "${artifact_dir}").tar.gz.sha256")
+          (cd "${artifact_dir}" && sha256sum * > SHA256SUMS.txt)
 
       - name: Upload release artifacts
         uses: actions/upload-artifact@v7
@@ -83,6 +126,8 @@ jobs:
           path: |
             release-artifacts/*.tar.gz
             release-artifacts/*.sha256
+            release-artifacts/*.txt
+            release-artifacts/*.md
           if-no-files-found: error
           retention-days: 14
 
@@ -93,6 +138,52 @@ jobs:
           gh release create "${GITHUB_REF_NAME}" \
             release-artifacts/*.tar.gz \
             release-artifacts/*.sha256 \
+            release-artifacts/SHA256SUMS.txt \
             --draft \
             --title "eterea ${GITHUB_REF_NAME}" \
-            --notes "Draft release generated from ${GITHUB_SHA}. See artifact PROVENANCE.md and SHA256SUMS.txt inside the archive."
+            --notes "Draft release generated from ${GITHUB_SHA}. The bundle contains collected runtime libraries, a desktop entry, hicolor icons, PROVENANCE.md and SHA256SUMS. Packaging: scripts/package-linux-release.sh. Smoke: scripts/smoke-linux-bundle.sh under Xvfb with Mesa lavapipe. Not a whole-app verification artifact."
+
+  smoke:
+    name: Release smoke (uploaded artifact, Xvfb + lavapipe)
+    needs: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Download packaged artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: eterea-${{ github.ref_name }}-${{ runner.os }}-${{ runner.arch }}
+          path: downloaded
+
+      - name: Install Xvfb and Mesa lavapipe
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb mesa-vulkan-drivers libvulkan1
+
+      # Re-tests exactly what was uploaded, through the portable launcher. The
+      # launcher uses the bundle's own loader and glibc, so this job needs no
+      # Nix/devenv store paths.
+      - name: Smoke-test uploaded bundle (portable launcher)
+        run: |
+          set -euo pipefail
+          ls -lh downloaded
+          tar -xzf downloaded/*.tar.gz -C downloaded
+          bundle_dir="$(find downloaded -maxdepth 2 -mindepth 1 -type d -name 'eterea-*-linux-x86_64' | head -1)"
+          if [ -z "${bundle_dir}" ]; then
+            echo "::error::downloaded artifact does not contain a bundle directory"
+            exit 1
+          fi
+          test -x "${bundle_dir}/eterea-launcher"
+          test -f "${bundle_dir}/share/applications/eterea.desktop"
+          ( cd "${bundle_dir}" && sha256sum -c SHA256SUMS > /dev/null )
+          icd="/usr/share/vulkan/icd.d/lvp_icd.x86_64.json"
+          if [ ! -f "${icd}" ]; then
+            echo "::error::Mesa lavapipe ICD not found at ${icd}"
+            exit 1
+          fi
+          scripts/smoke-linux-bundle.sh "${bundle_dir}" --launcher --snap --tree --at 1 \
+            --icd "${icd}" \
+            --log smoke-launcher.log

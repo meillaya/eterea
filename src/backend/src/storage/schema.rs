@@ -15,7 +15,9 @@ CREATE TABLE IF NOT EXISTS bookmarks (
     author_profile_image TEXT,
     comments TEXT,
     is_favorite INTEGER DEFAULT 0,  -- Boolean as integer (0/1)
-    has_media INTEGER DEFAULT 0     -- Denormalized: 1 if any media rows exist (avoids JOIN on filter)
+    has_media INTEGER DEFAULT 0,    -- Denormalized: 1 if any media rows exist (avoids JOIN on filter)
+    is_read INTEGER NOT NULL DEFAULT 0,  -- Reader state: 1 once the post is read
+    links_json TEXT NOT NULL DEFAULT '[]' -- URL entities from the export, sorted JSON
 );
 
 -- Materialized author directory. The Authors screen must not GROUP BY the
@@ -57,7 +59,44 @@ CREATE TABLE IF NOT EXISTS media (
     preview_url TEXT,
     variant_url TEXT,
     variants_json TEXT,
+    duration_ms INTEGER,          -- Video/GIF duration for the mono duration label
+    poster_url TEXT,              -- Remote poster image for a video/GIF frame
+    playback_url TEXT,            -- Best progressive MP4 URL (never an HLS playlist)
     FOREIGN KEY (bookmark_id) REFERENCES bookmarks(id) ON DELETE CASCADE
+);
+
+-- Bookmarks can quote another post. Quotes are display-only and keyed 1:1 to a
+-- bookmark, so quote media is serialized here instead of joining the media
+-- table. An unavailable quote keeps the URL and the unavailable flag; no text
+-- is invented for a missing body.
+CREATE TABLE IF NOT EXISTS quoted_tweets (
+    bookmark_id TEXT PRIMARY KEY,
+    tweet_url TEXT NOT NULL,
+    content TEXT NOT NULL DEFAULT '',
+    tweeted_at INTEGER,           -- NULL when the export omitted the quoted date
+    author_handle TEXT NOT NULL DEFAULT '',
+    author_name TEXT NOT NULL DEFAULT '',
+    author_profile_image TEXT,
+    media_json TEXT NOT NULL DEFAULT '[]',
+    unavailable INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (bookmark_id) REFERENCES bookmarks(id) ON DELETE CASCADE
+);
+
+-- Reader-chosen tag colors. One row per tag; colors are validated #rrggbb.
+CREATE TABLE IF NOT EXISTS tag_colors (
+    tag TEXT PRIMARY KEY COLLATE NOCASE,
+    color TEXT NOT NULL
+);
+
+-- Undo journal. Payloads are JSON blobs; only the newest five events are kept
+-- and only the newest non-undone event can be undone.
+CREATE TABLE IF NOT EXISTS history_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    summary_json TEXT NOT NULL DEFAULT '{}',
+    undo_json TEXT NOT NULL DEFAULT '{}',
+    undone_at INTEGER
 );
 
 -- App metadata (sync status, feature state, lightweight preferences)
@@ -99,9 +138,13 @@ CREATE INDEX IF NOT EXISTS idx_author_stats_count_handle ON author_stats(bookmar
 CREATE INDEX IF NOT EXISTS idx_bookmarks_imported_at ON bookmarks(imported_at DESC);
 CREATE INDEX IF NOT EXISTS idx_bookmarks_favorite ON bookmarks(is_favorite) WHERE is_favorite = 1;
 CREATE INDEX IF NOT EXISTS idx_bookmarks_fav_date ON bookmarks(is_favorite, tweeted_at DESC) WHERE is_favorite = 1;
+CREATE INDEX IF NOT EXISTS idx_bookmarks_unread_date ON bookmarks(tweeted_at DESC, id DESC) WHERE is_read = 0;
+CREATE INDEX IF NOT EXISTS idx_history_events_created ON history_events(created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_bookmark_tags_bookmark ON bookmark_tags(bookmark_id);
 CREATE INDEX IF NOT EXISTS idx_bookmark_tags_tag ON bookmark_tags(tag_id);
 CREATE INDEX IF NOT EXISTS idx_media_bookmark ON media(bookmark_id);
+CREATE INDEX IF NOT EXISTS idx_quoted_tweets_tweet_url ON quoted_tweets(tweet_url);
+CREATE INDEX IF NOT EXISTS idx_quoted_tweets_author_handle ON quoted_tweets(author_handle);
 CREATE INDEX IF NOT EXISTS idx_fts_content_bookmark ON bookmarks_fts_content(bookmark_id);
 
 -- Triggers to keep FTS index in sync

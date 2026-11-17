@@ -1,20 +1,25 @@
 { pkgs, lib, ... }:
 let
-  # Native libraries the Dioxus desktop window needs on Linux. The GTK stack
-  # pulls its own Pango, Cairo, GdkPixbuf, and GLib dependencies, so only the
-  # top-level libraries are listed here.
+  # Rune draws through wgpu/winit. On Linux the build needs the Wayland and
+  # XKB development packages; the window opens through the desktop session's
+  # Vulkan driver at runtime. ffmpeg is the video decoder.
   linuxLibraries = with pkgs; [
-    webkitgtk_4_1
-    gtk3
-    libsoup_3
-    librsvg
-    libayatana-appindicator
+    libxkbcommon
+    wayland
+    vulkan-loader
+    fontconfig
+    freetype
   ];
 in
 {
   name = "eterea";
 
   languages.rust.enable = true;
+  # Rune's pinned revision uses language features stabilized in Rust 1.99.
+  # nixpkgs' default rustc lags behind, so select the same stable line as the
+  # workspace toolchain through devenv's rust-overlay channel.
+  languages.rust.channel = "stable";
+  languages.rust.version = "1.99.1";
   languages.rust.components = [
     "rustc"
     "cargo"
@@ -26,14 +31,15 @@ in
   packages = with pkgs; [
     pkg-config
     sqlite
-    openssl
     git
+    ffmpeg
+    mesa
   ]
   ++ lib.optionals pkgs.stdenv.isLinux linuxLibraries;
 
   env = {
     PKG_CONFIG_PATH = lib.makeSearchPath "lib/pkgconfig" (
-      [ pkgs.sqlite.dev pkgs.openssl.dev ]
+      [ pkgs.sqlite.dev pkgs.fontconfig.dev pkgs.freetype.dev ]
       ++ lib.optionals pkgs.stdenv.isLinux (map lib.getDev linuxLibraries)
     );
   }
@@ -42,11 +48,11 @@ in
       with pkgs;
       [
         sqlite
-        openssl
-        webkitgtk_4_1
-        gtk3
-        libsoup_3
-        libayatana-appindicator
+        libxkbcommon
+        wayland
+        vulkan-loader
+        fontconfig
+        freetype
       ]
     );
   };

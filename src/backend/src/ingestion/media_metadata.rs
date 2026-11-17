@@ -84,6 +84,8 @@ pub(crate) fn media_from_value(raw: &Value) -> Option<Media> {
         .map(MediaType::from_source_type)
         .filter(|media_type| *media_type != MediaType::Unknown)
         .unwrap_or_else(|| MediaType::from_url(&url));
+    let duration_ms = duration_ms(raw);
+    let poster_url = poster_url(raw, &media_type);
 
     Some(
         Media::new(url, media_type)
@@ -95,8 +97,36 @@ pub(crate) fn media_from_value(raw: &Value) -> Option<Media> {
             .with_dimensions(number_at(raw, &["width"]), number_at(raw, &["height"]))
             .with_source(string_at(raw, &["media_key"]), source_type)
             .with_preview_urls(string_at(raw, &["preview_image_url"]), variant_url(raw))
-            .with_variants_json(variants_json(raw)),
+            .with_variants_json(variants_json(raw))
+            .with_playback_url(playback_url(raw))
+            .with_display_metadata(duration_ms, poster_url),
     )
+}
+
+/// Video/GIF duration in milliseconds.
+///
+/// X API v2 media carries `duration_ms`; archive and v1.1 payloads carry
+/// `video_info.duration_millis` instead. Both are display metadata only.
+fn duration_ms(raw: &Value) -> Option<i64> {
+    number_at(raw, &["duration_ms"])
+        .or_else(|| number_at(raw, &["duration_millis"]))
+        .or_else(|| number_at(raw, &["video_info", "duration_millis"]))
+        .filter(|duration| *duration > 0)
+}
+
+/// Remote poster image for a video/GIF frame.
+///
+/// `preview_image_url` wins; archive payloads put the poster in
+/// `media_url_https`. Photos do not get a poster because their `url` is the
+/// displayed image itself.
+fn poster_url(raw: &Value, media_type: &MediaType) -> Option<String> {
+    match media_type {
+        MediaType::Video | MediaType::Gif => string_at(raw, &["preview_image_url"])
+            .or_else(|| string_at(raw, &["media_url_https"]))
+            .or_else(|| string_at(raw, &["media_url"]))
+            .filter(|url| !url.trim().is_empty()),
+        MediaType::Image | MediaType::Unknown => None,
+    }
 }
 
 fn media_url(raw: &Value) -> Option<String> {
@@ -118,6 +148,16 @@ fn variants_json(raw: &Value) -> Option<String> {
         return None;
     }
     serde_json::to_string(variants).ok()
+}
+
+/// Best progressive MP4 playback URL from the variant list, if any.
+///
+/// Reuses the same pure selector the migration backfill uses, so import and
+/// migration agree on which variant is "best".
+fn playback_url(raw: &Value) -> Option<String> {
+    let variants = variant_items(raw)?;
+    let variants_json = serde_json::to_string(variants).ok()?;
+    crate::models::playback_url_from_variants_json(Some(&variants_json))
 }
 
 fn variant_items(raw: &Value) -> Option<&Vec<Value>> {
@@ -206,6 +246,38 @@ mod tests {
         );
         assert_eq!(media[0].width, Some(1200));
         assert_eq!(media[0].height, Some(900));
+    }
+
+    #[test]
+    fn video_media_gets_best_mp4_playback_url_and_never_hls() {
+        let raw = json!({
+            "extended_entities": {
+                "media": [{
+                    "media_key": "7_play",
+                    "type": "video",
+                    "preview_image_url": "https://pbs.twimg.com/ext_tw_video/thumb.jpg",
+                    "video_info": {
+                        "duration_millis": 9000,
+                        "variants": [
+                            {"url": "https://video.twimg.com/ext_tw_video/hls.m3u8", "content_type": "application/x-mpegURL"},
+                            {"url": "https://video.twimg.com/ext_tw_video/360.mp4", "content_type": "video/mp4", "bit_rate": 832000},
+                            {"url": "https://video.twimg.com/ext_tw_video/720.mp4", "content_type": "video/mp4", "bit_rate": 2176000}
+                        ]
+                    }
+                }]
+            }
+        });
+
+        let media = extract_media(&raw);
+        assert_eq!(media.len(), 1);
+        assert_eq!(
+            media[0].playback_url.as_deref(),
+            Some("https://video.twimg.com/ext_tw_video/720.mp4")
+        );
+
+        let image =
+            json!({"media": [{"type": "photo", "url": "https://pbs.twimg.com/media/x.jpg"}]});
+        assert!(extract_media(&image)[0].playback_url.is_none());
     }
 
     #[test]

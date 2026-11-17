@@ -1,19 +1,17 @@
 # eterea documentation
 
-This directory is the source of truth for production-facing project docs. Keep
-runtime instructions here concise and move dated planning notes into
-`docs/archive/` instead of linking them as current product state.
-
 ## Start here
 
-1. `architecture.md`: crate boundaries, app flow, and repository layout.
-2. `development.md`: supported toolchain, commands, and verification checks.
-3. `design-system.md`: implemented UI design system and screen map.
-4. `operations/release-readiness.md`: release evidence, waivers, and go/no-go
-   checks.
+1. [`architecture.md`](architecture.md): crate boundaries, data flow and trust boundaries.
+2. [`development.md`](development.md): toolchain, commands, test switches and headless captures.
+3. [`design/SPEC.md`](design/SPEC.md): the approved Daylight and Signal surface.
+4. [`verification/formal-verification.md`](verification/formal-verification.md): what Verus, Kani and Miri cover.
+5. [`verification/ui-harness.md`](verification/ui-harness.md): headless UI matrix and limits.
+6. [`performance.md`](performance.md): build space and headless render measurements.
+7. [`operations/release-readiness.md`](operations/release-readiness.md): release evidence and known gaps.
 
 ## Supporting areas
 
-- `archive/` contains historical notes from earlier frontend/performance work.
-- `figures/` contains the architecture scene, its PNG, and the generator.
-- `../fixtures/` contains test and performance fixtures only.
+- `design/`: approved direction, copy deck and component spec.
+- `verification/`: evidence contract and coverage tables.
+- `assets/`: brand marks and README captures.

@@ -5,6 +5,7 @@
 //! 2. New (Twitter/X): profile_image_url_https, screen_name, name, full_text, note_tweet_text, tweeted_at, tweet_url
 
 use crate::models::{Bookmark, BookmarkBuilder};
+use crate::storage::EXPORT_CSV_MARKER as ETEREA_EXPORT_MARKER;
 use crate::{Error, Result};
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use csv::ReaderBuilder;
@@ -20,6 +21,8 @@ pub enum CsvFormat {
     Legacy,
     /// Twitter/X export format with "screen_name" header
     New,
+    /// eterea's own round-trippable export format
+    EtereaExport,
 }
 
 impl CsvFormat {
@@ -46,7 +49,9 @@ impl CsvFormat {
     }
 
     fn detect_from_header_str(header_str: &str) -> Result<Self> {
-        if header_str.contains("tweet date") || header_str.contains("posted by") {
+        if header_str.contains(ETEREA_EXPORT_MARKER) {
+            Ok(CsvFormat::EtereaExport)
+        } else if header_str.contains("tweet date") || header_str.contains("posted by") {
             Ok(CsvFormat::Legacy)
         } else if header_str.contains("screen_name") || header_str.contains("tweeted_at") {
             Ok(CsvFormat::New)

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" role="img" aria-label="eterea">
+  <defs>
+    <mask id="highlight">
+      <rect width="20" height="20" fill="#fff"/>
+      <path d="M4.17 7.88A6.2 6.2 0 0 1 7.38 4.38" fill="none" stroke="#000" stroke-width="1.9" stroke-linecap="round"/>
+    </mask>
+  </defs>
+  <circle cx="10" cy="10" r="8.4" fill="currentColor" mask="url(#highlight)"/>
+</svg>

@@ -1,0 +1,12 @@
+[package]
+name = "eterea-logic"
+version = "0.1.0"
+edition = "2021"
+description = "Pure domain logic for eterea"
+license = "MIT"
+
+[lib]
+name = "eterea_logic"
+path = "src/lib.rs"
+
+[dependencies]

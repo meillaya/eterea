@@ -1,0 +1,20 @@
+# Workspace policy for mbx (https://mr-boxington.jdx.dev).
+# Machine-specific paths and cache budgets stay in the user's global
+# ~/.config/mbx/config.toml, never in this file.
+incremental = false
+eager_incremental = false
+share_out_dir = true
+share_workspace_root = false
+build_script_execution = true
+cc = true
+
+[linker.profiles.dev]
+default = "rust-lld"
+
+[linker.profiles.release]
+default = "system"
+
+[scheduler]
+reserve_cpus = 2
+memory = "24GiB"
+priority = "normal"

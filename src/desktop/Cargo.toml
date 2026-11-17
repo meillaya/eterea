@@ -1,0 +1,22 @@
+[package]
+name = "eterea-desktop"
+version = "0.1.0"
+edition = "2021"
+description = "Rune desktop shell for eterea"
+license = "MIT"
+
+[[bin]]
+name = "eterea"
+path = "src/main.rs"
+
+[dependencies]
+rune = { git = "https://github.com/anomalyco/rune", rev = "842c28c2ca5dd1506c1e4a67052db61800aed721", features = ["native-file-dialog", "tooling"] }
+eterea-logic = { path = "../logic" }
+eterea-core = { path = "../backend" }
+eterea-app = { path = "../app" }
+eterea-media = { path = "../media" }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+eterea-ui-model = { path = "../ui-model" }
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }

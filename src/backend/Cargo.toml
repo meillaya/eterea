@@ -18,6 +18,9 @@ name = "migrate"
 path = "../../scripts/migrate.rs"
 
 [dependencies]
+# Pure domain logic (URL classification, video variant selection, color validation)
+eterea-logic = { path = "../logic" }
+
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

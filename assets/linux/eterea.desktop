@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=eterea
+GenericName=Reading app
+Comment=Local reading app for saved X posts
+Exec=eterea %U
+TryExec=eterea
+Icon=eterea
+Terminal=false
+StartupNotify=true
+StartupWMClass=eterea
+Categories=Office;Utility;
+Keywords=bookmarks;reading;x;posts;archive;

@@ -1,0 +1,12 @@
+[package]
+name = "eterea-ui-model"
+version = "0.1.0"
+edition = "2021"
+description = "Pure interface state for eterea"
+license = "MIT"
+
+[lib]
+name = "eterea_ui_model"
+path = "src/lib.rs"
+
+[dependencies]

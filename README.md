@@ -1,80 +1,239 @@
-# eterea
+<div align="center">
 
-eterea turns an X/Twitter bookmark export into a local, keyboard-driven reading
-room. Import CSV, JSON, or an X archive JavaScript file, preview the parse, then
-search and read the archive in a Dioxus desktop app backed by SQLite.
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/brand/eterea-orb-light.svg">
+  <img src="docs/assets/brand/eterea-orb.svg" width="96" alt="The eterea orb">
+</picture>
 
-It is for people with thousands of saved posts who want a searchable archive on
-their own disk. The shell follows terminal conventions: `1` to `6` switch tabs,
-`/` searches, `:` opens commands, and `?` lists shortcuts.
+<h1>eterea</h1>
 
-## Quick start
+<p><i>A local archive for the posts you save on X.</i></p>
+
+<p>
+  <a href="https://github.com/meillaya/eterea/stargazers"><img src="https://img.shields.io/github/stars/meillaya/eterea?style=for-the-badge&amp;labelColor=1a1a18&amp;color=2447b8&amp;logo=github&amp;logoColor=f7f6f3" alt="GitHub stars"></a>
+  <a href="https://github.com/meillaya/eterea/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/meillaya/eterea/ci.yml?branch=main&amp;style=for-the-badge&amp;labelColor=1a1a18&amp;color=2447b8&amp;label=CI" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2447b8?style=for-the-badge&amp;labelColor=1a1a18" alt="License"></a>
+  <a href="https://www.rust-lang.org"><img src="https://img.shields.io/badge/Rust-1.99-1a1a18?style=for-the-badge&amp;logo=rust&amp;logoColor=f7f6f3" alt="Rust 1.99"></a>
+  <a href="https://github.com/anomalyco/rune"><img src="https://img.shields.io/badge/GPU-Rune-1a1a18?style=for-the-badge" alt="Rune"></a>
+  <a href="https://sqlite.org"><img src="https://img.shields.io/badge/SQLite-archive-1a1a18?style=for-the-badge&amp;logo=sqlite&amp;logoColor=f7f6f3" alt="SQLite"></a>
+</p>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/previews/hero-dark.webp">
+  <img src="docs/assets/previews/hero-light.webp" alt="The eterea feed: a selected post with a photograph pair, date rail and keyboard selection rule" width="100%">
+</picture>
+
+</div>
+
+eterea imports X bookmarks from CSV, JSON or an X archive, keeps them
+in SQLite, and draws the archive with Rune on the GPU. There is no account and no
+server. The desktop app is keyboard first, with a selection rule, a command
+palette, search and a key sheet.
+
+Screenshots use a reference archive, not a personal library.
+
+---
+
+## Screenshots
+
+| Daylight | Night |
+|:---:|:---:|
+| <img src="docs/assets/previews/feed-light.webp" alt="Feed: selected post, marginalia rail and photographs" width="100%"> | <img src="docs/assets/previews/feed-dark.webp" alt="The same feed at night" width="100%"> |
+| <img src="docs/assets/previews/detail-light.webp" alt="Detail: one post at reading width" width="100%"> | <img src="docs/assets/previews/detail-dark.webp" alt="The same detail at night" width="100%"> |
+| <img src="docs/assets/previews/graph-light.webp" alt="Tag graph with labels and edges" width="100%"> | <img src="docs/assets/previews/graph-dark.webp" alt="The tag graph at night" width="100%"> |
+| <img src="docs/assets/previews/palette-light.webp" alt="Command palette open over the feed" width="100%"> | <img src="docs/assets/previews/palette-dark.webp" alt="The command palette at night" width="100%"> |
+| <img src="docs/assets/previews/lightbox-light.webp" alt="Image lightbox over the feed scrim" width="100%"> | <img src="docs/assets/previews/lightbox-dark.webp" alt="The lightbox at night" width="100%"> |
+| <img src="docs/assets/previews/calendar-light.webp" alt="Calendar month with marks for saved posts" width="100%"> | <img src="docs/assets/previews/calendar-dark.webp" alt="The calendar at night" width="100%"> |
+| <img src="docs/assets/previews/import-light.webp" alt="Import: drop files or choose them" width="100%"> | <img src="docs/assets/previews/import-dark.webp" alt="The import route at night" width="100%"> |
+| <img src="docs/assets/previews/history-light.webp" alt="History: the five latest actions with exact before/after detail and undo" width="100%"> | <img src="docs/assets/previews/history-dark.webp" alt="History at night" width="100%"> |
+| <img src="docs/assets/previews/export-light.webp" alt="Export sheet with all or filtered scope and CSV or JSON format" width="100%"> | <img src="docs/assets/previews/export-dark.webp" alt="Export at night" width="100%"> |
+| <img src="docs/assets/previews/selection-light.webp" alt="Selection bar after selecting two posts, with tag, delete, read and unread actions" width="100%"> | <img src="docs/assets/previews/selection-dark.webp" alt="Selection at night" width="100%"> |
+| <img src="docs/assets/previews/carousel-light.webp" alt="A twenty-item media post paged as a carousel" width="100%"> | <img src="docs/assets/previews/carousel-dark.webp" alt="The media carousel at night" width="100%"> |
+
+Photograph credits: [`CREDITS.md`](docs/assets/previews/CREDITS.md).
+
+---
+
+## Installation
+
+### Release binary
+
+Draft release tarballs are built by the tag workflow:
+
+<https://github.com/meillaya/eterea/releases>
+
+The tarball contains `eterea`, `eterea-launcher`, non-GPU runtime libraries in
+`lib/`, a desktop entry and hicolor icons in `share/`, plus `PROVENANCE.md` and
+`SHA256SUMS`. It requires x86_64 Linux with glibc 2.39 or newer and the host's
+Vulkan/GL drivers; glibc and the GPU stack are deliberately not bundled. It is
+not signed. Run `./eterea` (or `./eterea-launcher` on a distribution whose loader
+path differs) from the unpacked directory; the launcher is also what the desktop
+entry uses. Video playback needs `ffmpeg` and `ffplay` on `PATH`.
+
+### From source
+
+The development shell pins Rust 1.99.1 and supplies the native libraries Rune
+needs:
 
 ```bash
-devenv shell -- cargo run -p eterea-dioxus
+git clone https://github.com/meillaya/eterea
+cd eterea
+devenv shell -- cargo run -p eterea-desktop
 ```
 
-Press `5` to open Import and paste the path to your export. Preview reports the
-format, bookmark count, source, and sample rows before the import writes
-anything. The default database is `eterea/bookmarks.db` under the platform
-app-data directory.
+For a release build:
 
-<p align="center">
-  <img src="docs/assets/previews/library-preview.png" alt="eterea library table view" width="49%" />
-  <img src="docs/assets/previews/dashboard-preview.png" alt="eterea dashboard view" width="49%" />
-</p>
+```bash
+devenv shell -- bash scripts/package-linux-release.sh
+./dist/eterea-*/eterea
+```
+
+The packager collects the display/font/Vulkan libraries Rune loads at runtime and
+sets a `$ORIGIN/lib` runpath. A bare `devenv shell -- cargo build --release`
+binary still expects the development shell's library path; use the packager for
+a file-manager launch. See
+[`scripts/RELEASE-LINUX.md`](scripts/RELEASE-LINUX.md) for the bundle layout,
+launcher and smoke test.
+
+With [mbx](https://mr-boxington.jdx.dev) installed, the same build can use its
+shared compiler cache:
+
+```bash
+mbx build -p eterea-desktop --release
+```
+
+Build-space and headless render measurements are in
+[`docs/performance.md`](docs/performance.md).
+
+### First run
+
+The empty archive offers one action: import bookmarks. The importer accepts one
+or many CSV, JSON or X archive files by picker or drag and drop, previews every
+file, and writes the batch only after you confirm. Duplicate tweet URLs are
+skipped. Repeat imports stay on the import screen so a second file does not
+require a restart.
+
+The archive lives at `<platform data dir>/eterea/bookmarks.db`. On Linux that is
+`~/.local/share/eterea/bookmarks.db`. Preferences live in
+`<platform config dir>/eterea/settings.json`, not in SQLite.
+
+---
 
 ## What it does
 
-The import path accepts CSV, JSON, and X archive JavaScript exports and skips
-duplicate tweet URLs. The library has search, author and topic directories,
-favorites, entry detail, and five views: table, tree, dashboard, graph, and
-calendar. Filters cover text, author, date range, tag, favorites, and media
-presence.
+- Imports CSV, JSON and X archive exports, one file or many, by picker or drop.
+  Preview before write; duplicate tweet URLs are skipped.
+- Searches text, names, handles and tags over SQLite FTS5. Paged author and topic
+  lists filter the feed and scroll without a demo cap.
+- Loads avatars and media automatically for the visible archive, at the best
+  rendition, through a bounded disk cache. Images and video files are cached
+  outside SQLite; the cache can be measured and cleared in settings.
+- Renders X media carousels up to 20 items, with a lightbox across the whole set.
+  Tweet and quote URLs are removed from the reading surface; external links keep
+  their display URL and quotes show as cards.
+- Plays progressive MP4 video from the persistent cache with `ffmpeg`, with
+  `ffplay` audio when unmuted. Sound starts off; `m` toggles it.
+- Edits tags and deletes posts from the viewer. Marks read or unread, selects a
+  page or the whole matching archive, and applies tags, deletion, read or unread
+  to the selection.
+- Keeps the last five import, delete and tag actions in History. The newest can
+  be undone from its exact before-state; older actions stay visible with detail.
+- Exports the archive, the current filter or the selection as CSV or JSON, with
+  round-trippable nested data.
+- Keeps quotes, favorites, media metadata, an interactive tag graph with persisted
+  colors, and a calendar month.
+- Switches between system, light and dark appearance, three text sizes, automatic
+  or on-demand media, and system or reduced motion. Preferences persist.
+- Ships a Verus reference model, bounded Kani harnesses, Miri tests and fuzz
+  targets for the pure crates and import parsers, plus a headless UI matrix. This
+  is not whole-app verification; see
+  [verification/COVERAGE.md](verification/COVERAGE.md).
 
-Remote image previews stay hidden until you load one tweet or enable images for
-the session. eterea stores media metadata from the export (alt text, dimensions,
-source keys, preview URLs, and variants) so rows can reserve space and label
-previews. The database stores metadata and URLs; the schema has no column for
-media bytes.
+---
 
-## Architecture
+## Shortcuts
 
-The desktop shell calls `eterea-app` for every read and write. `eterea-app` owns
-import, query, and mutation operations; `eterea-core` provides the parsers,
-SQLite storage, search, and statistics; and `eterea-dioxus` renders the shell.
-Imports cross the same service boundary, so UI code calls the service layer and
-SQL stays in `eterea-core`.
+| Key | Action |
+|:---|:---|
+| `j` `k` | Move selection |
+| `Enter` | Open the selected post |
+| `Esc` | Close the overlay, then search, then detail |
+| `/` | Search the feed |
+| `:` | Command palette |
+| `?` | Key sheet |
+| `f` | Favorite |
+| `c` | Copy link |
+| `o` | Open on X |
+| `m` | Load media, or toggle video sound |
+| `Space` | Play or pause video |
+| `←` `→` | Page the carousel, or move in the lightbox |
+| `x` | Select the current post and enter selection mode |
+| `Shift-j` `Shift-k` | Extend the selection |
+| `Cmd/Ctrl-A` | Select the current page |
+| `Shift-Cmd/Ctrl-A` | Select everything matching the current filter |
+| `t` | Edit tags; bulk tag in selection mode |
+| `d` | Delete; bulk delete in selection mode |
+| `u` / `r` | Mark unread / read |
+| `h` | History and undo |
+| `e` | Export |
+| `Cmd/Ctrl-F` | Search |
+| `Cmd/Ctrl-P` | Command palette |
+| `Cmd/Ctrl-,` | Settings |
 
-![eterea desktop architecture](docs/figures/eterea-architecture.png)
+Mouse selections, bylines, tags, media and navigation work too.
 
-The scene source is
-[docs/figures/eterea-architecture.excalidraw](docs/figures/eterea-architecture.excalidraw).
-See the [architecture document](docs/architecture.md) for trust boundaries and
-the persistence contract.
+---
 
-## Privacy model
+## Repository
 
-Bookmark data stays in SQLite on your machine. eterea parses and queries the
-archive in process, and it stores media metadata without caching image bytes.
-Remote previews remain hidden until you load one tweet or enable images for the
-session. Opening a stored link requires an explicit action and an HTTPS URL.
+| Path | Purpose |
+|:---|:---|
+| `src/backend` | Models, parsers, SQLite storage, migrations, search. |
+| `src/app` | Product operations and the background store actor. |
+| `src/logic` | Pure URL and MIME policy. |
+| `src/ui-model` | Pure routes, modes and keymap. |
+| `src/media` | HTTPS image workers, image and video caches, video and audio playback. |
+| `src/desktop` | Rune shell, theme, views and input. |
+| `verification` | Verus, Kani and Miri harnesses, coverage and findings. |
+
+[`docs/architecture.md`](docs/architecture.md) covers the crate boundaries and
+trust boundaries. The UI contract is in
+[`docs/design/SPEC.md`](docs/design/SPEC.md).
+
+---
 
 ## Develop and verify
 
-The devenv shell supplies the Rust toolchain and the native desktop libraries.
-CI runs these gates:
-
 ```bash
-devenv shell -- cargo fmt --all -- --check
-devenv shell -- cargo clippy --workspace --all-targets -- -D warnings
 devenv shell -- cargo test --workspace
-devenv shell -- cargo build -p eterea-dioxus --release
-devenv shell -- scripts/perf-baseline.sh
+devenv shell -- cargo build -p eterea-desktop --release
+bash scripts/verify/all.sh --strict --fast
+FUZZ_TIME=10 bash scripts/verify/fuzz.sh
 ```
 
-The documentation link check is local:
+`verification/kani` and `verification/miri` are standalone crates, so they are
+tested by the verification scripts rather than by `cargo test --workspace`. The
+formula for the pure layers is in
+[`docs/verification/formal-verification.md`](docs/verification/formal-verification.md).
 
-```bash
-python3 scripts/check-doc-links.py README.md 'docs/**/*.md' CHANGELOG.md
-```
+Desktop UI captures are produced by Rune's headless compositor. The harness
+command and its limits are in
+[`docs/verification/ui-harness.md`](docs/verification/ui-harness.md).
+
+---
+
+## Privacy
+
+Bookmark text, handles, tags and media URLs stay in the local SQLite file. Media
+bytes are never stored in SQLite; images and played videos live in the local
+cache and can be cleared. Avatars and visible media load automatically by
+default; Settings can switch media back to on-demand. Fetches use HTTPS only,
+without cookies or referrer, and a redirect is followed only when the next hop
+is safe too. Stored links open only through an explicit action. Preferences are a
+small JSON file. History payloads for the last five actions also stay local.
+
+---
+
+## License
+
+MIT. See [LICENSE](LICENSE).

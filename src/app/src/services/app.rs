@@ -3,6 +3,9 @@ use eterea_core::Database;
 use std::path::Path;
 
 mod directory_detail;
+mod discovery;
+mod export;
+mod history;
 mod import;
 mod import_preview;
 mod mutations;

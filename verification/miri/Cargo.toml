@@ -1,0 +1,26 @@
+# Standalone Miri test crate.
+#
+# Like verification/kani, the empty `[workspace]` table keeps this crate out of
+# the repository root workspace, so normal cargo builds ignore it. It depends on
+# the two pure crates by path and on the Kani crate for the shared URL/keymap
+# corpora (the harness crate's lib compiles on stable Rust; only its
+# #[kani::proof] items are cfg(kani)-gated).
+[workspace]
+
+[package]
+name = "eterea-verification-miri"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Miri runtime checks for eterea pure crates"
+
+[lib]
+name = "eterea_verification_miri"
+path = "src/lib.rs"
+
+# The pure crates and the shared harness crate are only used by the tests
+# (src/lib.rs has no dependencies), so they belong in dev-dependencies.
+[dev-dependencies]
+eterea-logic = { path = "../../src/logic" }
+eterea-ui-model = { path = "../../src/ui-model" }
+eterea-verification-kani = { path = "../kani" }

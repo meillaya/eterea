@@ -12,7 +12,8 @@ impl Database {
         let mut stmt = self.conn.prepare(
             r#"SELECT id, tweet_url, content, note_text, tweeted_at, imported_at,
                       author_handle, author_name, author_profile_url, author_profile_image,
-                      comments, is_favorite
+                      comments, is_favorite,
+                      is_read, links_json
                FROM bookmarks
                ORDER BY tweeted_at DESC, id DESC
                LIMIT ?1 OFFSET ?2"#,
@@ -58,7 +59,8 @@ impl Database {
         let mut stmt = self.conn.prepare(
             r#"SELECT b.id, b.tweet_url, b.content, b.note_text, b.tweeted_at, b.imported_at,
                       b.author_handle, b.author_name, b.author_profile_url, b.author_profile_image,
-                      b.comments, b.is_favorite
+                      b.comments, b.is_favorite,
+                      b.is_read, b.links_json
                FROM bookmarks b
                JOIN bookmark_tags bt ON bt.bookmark_id = b.id
                JOIN tags t ON t.id = bt.tag_id
@@ -88,7 +90,8 @@ impl Database {
         let mut stmt = self.conn.prepare(
             r#"SELECT id, tweet_url, content, note_text, tweeted_at, imported_at,
                       author_handle, author_name, author_profile_url, author_profile_image,
-                      comments, is_favorite
+                      comments, is_favorite,
+                      is_read, links_json
                FROM bookmarks
                WHERE author_handle = ?1
                ORDER BY tweeted_at DESC, id DESC
@@ -111,7 +114,8 @@ impl Database {
         let mut stmt = self.conn.prepare(
             r#"SELECT id, tweet_url, content, note_text, tweeted_at, imported_at,
                       author_handle, author_name, author_profile_url, author_profile_image,
-                      comments, is_favorite
+                      comments, is_favorite,
+                      is_read, links_json
                FROM bookmarks WHERE id = ?1"#,
         )?;
 
@@ -121,6 +125,7 @@ impl Database {
             Ok(mut bookmark) => {
                 bookmark.tags = self.load_bookmark_tags(&bookmark.id)?;
                 bookmark.media = self.load_bookmark_media(&bookmark.id)?;
+                bookmark.quoted = self.load_bookmark_quote(&bookmark.id)?;
                 Ok(Some(bookmark))
             }
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
@@ -133,7 +138,8 @@ impl Database {
         let mut stmt = self.conn.prepare(
             r#"SELECT id, tweet_url, content, note_text, tweeted_at, imported_at,
                       author_handle, author_name, author_profile_url, author_profile_image,
-                      comments, is_favorite
+                      comments, is_favorite,
+                      is_read, links_json
                FROM bookmarks
                WHERE is_favorite = 1
                ORDER BY tweeted_at DESC, id DESC
@@ -165,7 +171,8 @@ impl Database {
         let mut stmt = self.conn.prepare(
             r#"SELECT id, tweet_url, content, note_text, tweeted_at, imported_at,
                       author_handle, author_name, author_profile_url, author_profile_image,
-                      comments, is_favorite
+                      comments, is_favorite,
+                      is_read, links_json
                FROM bookmarks
                WHERE tweeted_at >= ?1 AND tweeted_at <= ?2
                ORDER BY tweeted_at DESC, id DESC

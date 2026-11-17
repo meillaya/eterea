@@ -1,0 +1,27 @@
+[package]
+name = "eterea-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+eterea-logic = { path = "../src/logic" }
+eterea-core = { path = "../src/backend" }
+
+[[bin]]
+name = "url_policy"
+path = "fuzz_targets/url_policy.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "import_text"
+path = "fuzz_targets/import_text.rs"
+test = false
+doc = false

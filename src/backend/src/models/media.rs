@@ -1,6 +1,12 @@
 //! Media attachment data model.
 
+use eterea_logic::{best_mp4_playback_url, VideoVariant};
 use serde::{Deserialize, Serialize};
+
+/// Data-layer cap on attachments per bookmark. The exports can carry up to
+/// four photos per post and, in some archive shapes, more; eterea keeps up to
+/// twenty so a gallery never has to drop data the export carried.
+pub const MAX_MEDIA_PER_BOOKMARK: usize = 20;
 
 /// Media attachment metadata stored by eterea.
 ///
@@ -18,6 +24,18 @@ pub struct Media {
     pub preview_url: Option<String>,
     pub variant_url: Option<String>,
     pub variants_json: Option<String>,
+    /// Video/GIF duration in milliseconds, when the export carries it.
+    #[serde(default)]
+    pub duration_ms: Option<i64>,
+    /// Remote HTTPS poster image for a video/GIF, when the export carries one.
+    #[serde(default)]
+    pub poster_url: Option<String>,
+    /// Best progressive MP4 playback URL chosen from the export variants.
+    ///
+    /// HLS playlists are never selected: the local player opens a progressive
+    /// file. `None` for still images and for videos without an MP4 variant.
+    #[serde(default)]
+    pub playback_url: Option<String>,
 }
 
 impl Media {
@@ -33,6 +51,9 @@ impl Media {
             preview_url: None,
             variant_url: None,
             variants_json: None,
+            duration_ms: None,
+            poster_url: None,
+            playback_url: None,
         }
     }
 
@@ -67,6 +88,96 @@ impl Media {
         self.variants_json = non_empty(variants_json);
         self
     }
+
+    /// Attach video/GIF display metadata: duration and poster URL.
+    pub fn with_display_metadata(
+        mut self,
+        duration_ms: Option<i64>,
+        poster_url: Option<String>,
+    ) -> Self {
+        self.duration_ms = duration_ms.filter(|duration| *duration > 0);
+        self.poster_url = non_empty(poster_url);
+        self
+    }
+
+    pub fn with_duration_ms(mut self, duration_ms: Option<i64>) -> Self {
+        self.duration_ms = duration_ms.filter(|duration| *duration > 0);
+        self
+    }
+
+    pub fn with_poster_url(mut self, poster_url: Option<String>) -> Self {
+        self.poster_url = non_empty(poster_url);
+        self
+    }
+
+    /// Attach the best progressive MP4 URL.
+    pub fn with_playback_url(mut self, playback_url: Option<String>) -> Self {
+        self.playback_url = non_empty(playback_url);
+        self
+    }
+
+    /// Playback source for the local player: the stored best MP4, or the
+    /// legacy `variant_url` when it is already a progressive MP4.
+    pub fn resolved_playback_url(&self) -> Option<&str> {
+        self.playback_url.as_deref().or_else(|| {
+            self.variant_url.as_deref().filter(|url| {
+                url.to_ascii_lowercase().ends_with(".mp4")
+                    && !url.to_ascii_lowercase().contains(".m3u8")
+            })
+        })
+    }
+}
+
+/// Choose the best progressive MP4 URL from a JSON variants payload.
+///
+/// Used by the migration that backfills `media.playback_url` for rows written
+/// before the column existed, and by the parser when it already has the raw
+/// JSON. Malformed payloads yield `None`.
+pub fn playback_url_from_variants_json(variants_json: Option<&str>) -> Option<String> {
+    let variants_json = variants_json?;
+    let value: serde_json::Value = serde_json::from_str(variants_json).ok()?;
+    let variants = value.as_array()?;
+
+    let urls: Vec<String> = variants
+        .iter()
+        .filter_map(|variant| {
+            variant
+                .get("url")
+                .and_then(|url| url.as_str())
+                .map(str::to_string)
+        })
+        .collect();
+    let content_types: Vec<Option<String>> = variants
+        .iter()
+        .map(|variant| {
+            variant
+                .get("content_type")
+                .and_then(|content_type| content_type.as_str())
+                .map(str::to_string)
+        })
+        .collect();
+    let bit_rates: Vec<Option<u64>> = variants
+        .iter()
+        .map(|variant| {
+            variant
+                .get("bit_rate")
+                .and_then(|bit_rate| bit_rate.as_u64())
+        })
+        .collect();
+
+    // Borrow the owned strings for the pure selector.
+    let url_refs: Vec<&str> = urls.iter().map(String::as_str).collect();
+    let content_type_refs: Vec<Option<&str>> =
+        content_types.iter().map(|value| value.as_deref()).collect();
+    let borrowed: Vec<VideoVariant<'_>> = (0..urls.len())
+        .map(|index| VideoVariant {
+            url: url_refs[index],
+            content_type: content_type_refs[index],
+            bit_rate: bit_rates[index],
+        })
+        .collect();
+
+    best_mp4_playback_url(&borrowed).map(str::to_string)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -166,5 +277,35 @@ mod tests {
         assert_eq!(media.height, None);
         assert_eq!(media.source_media_key.as_deref(), Some("3_123"));
         assert_eq!(media.source_type, None);
+    }
+
+    #[test]
+    fn playback_url_uses_highest_bitrate_mp4_and_never_hls() {
+        let variants = r#"[
+            {"url":"https://video.twimg.com/a/hls.m3u8","content_type":"application/x-mpegURL","bit_rate":9999999},
+            {"url":"https://video.twimg.com/a/320.mp4","content_type":"video/mp4","bit_rate":320000},
+            {"url":"https://video.twimg.com/a/720.mp4","content_type":"video/mp4","bit_rate":2176000}
+        ]"#;
+        assert_eq!(
+            playback_url_from_variants_json(Some(variants)).as_deref(),
+            Some("https://video.twimg.com/a/720.mp4")
+        );
+        assert_eq!(playback_url_from_variants_json(Some("not json")), None);
+        assert_eq!(playback_url_from_variants_json(None), None);
+
+        let media = Media::new("https://video.twimg.com/a/720.mp4", MediaType::Video)
+            .with_playback_url(playback_url_from_variants_json(Some(variants)));
+        assert_eq!(
+            media.resolved_playback_url(),
+            Some("https://video.twimg.com/a/720.mp4")
+        );
+
+        let legacy = Media::new("https://video.twimg.com/a/clip.mp4", MediaType::Video)
+            .with_preview_urls(None, Some("https://video.twimg.com/a/clip.mp4".to_string()));
+        assert_eq!(
+            legacy.resolved_playback_url(),
+            Some("https://video.twimg.com/a/clip.mp4"),
+            "legacy mp4 variant_url remains playable"
+        );
     }
 }

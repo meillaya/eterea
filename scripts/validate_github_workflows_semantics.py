@@ -17,7 +17,7 @@ REQUIRED_ACTIONS: Final = (
 GH_TOKEN_RE: Final = re.compile(r"^GH_TOKEN:\s*\$\{\{\s*github\.token\s*\}\}\s*$")
 COMMENT_RE: Final = re.compile(r"(?<!\S)#.*$")
 YAML_KEY_RE: Final = re.compile(r"^(?P<indent> *)(?P<key>[A-Za-z0-9_-]+|'[^']+'|\"[^\"]+\"):(?P<value>.*)$")
-CI_COMMANDS: Final = (("real devenv install command", "nix profile add nixpkgs#devenv"), ("real cargo fmt command", "devenv shell -- cargo fmt --all -- --check"), ("real cargo clippy command", "devenv shell -- cargo clippy --workspace --all-targets -- -D warnings"), ("real cargo test command", "devenv shell -- cargo test --workspace"), ("real Dioxus release build command", "devenv shell -- cargo build -p eterea-dioxus --release"), ("real performance baseline command", "devenv shell -- scripts/perf-baseline.sh"))
+CI_COMMANDS: Final = (("real devenv install command", "nix profile add nixpkgs#devenv"), ("real cargo fmt command", "devenv shell -- cargo fmt --all -- --check"), ("real cargo clippy command", "devenv shell -- cargo clippy --workspace --all-targets -- -D warnings"), ("real cargo test command", "devenv shell -- cargo test --workspace"), ("real Rune release build command", "devenv shell -- cargo build -p eterea-desktop --release"), ("real performance baseline command", "devenv shell -- scripts/perf-baseline.sh"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,7 +141,7 @@ def draft_release_semantic_failures(text: str) -> list[str]:
     if not has_upload_artifact_contract(steps):
         failures.append("missing real upload-artifact step with name, path, and retention-days")
     if not has_real_build_command(steps):
-        failures.append("missing real Dioxus release build command")
+        failures.append("missing real Rune release build command")
     if not has_real_checksum_command(steps):
         failures.append("missing real checksum file generation command")
     if not has_real_provenance_write(steps):
@@ -211,7 +211,7 @@ def has_cache_key_contract(steps: Sequence[Step]) -> bool:
 
 
 def has_real_build_command(steps: Sequence[Step]) -> bool:
-    return any("devenv shell -- cargo build -p eterea-dioxus --release" in command for command in commands_from_steps(steps))
+    return any("devenv shell -- cargo build -p eterea-desktop --release" in command for command in commands_from_steps(steps))
 
 
 def has_real_checksum_command(steps: Sequence[Step]) -> bool:

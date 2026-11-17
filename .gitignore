@@ -32,11 +32,6 @@ Thumbs.db
 # Logs
 *.log
 
-# OMX runtime state
-.omx/
-.omc/
-src/frontend/.omc/
-
 # Environment
 .env
 .env.local
@@ -50,8 +45,15 @@ result
 .devenv/
 .devenv.flake.nix
 
-src/legacy/
-
 # Generated design/runtime exports
 /*standalone*.html
 /eterea - *standalone*.html
+
+# Local work dirs (spikes, downloaded tools, design scratch)
+/.work/
+/design-demos/
+
+# Verification tools (workspace-local)
+/.tools/
+
+/dist/

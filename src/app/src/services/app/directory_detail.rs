@@ -1,5 +1,8 @@
 use super::AppServices;
-use crate::types::{AuthorSummary, BookmarkPage, BookmarkStats, TopicSummary};
+use crate::types::{
+    AuthorSummary, BookmarkPage, BookmarkStats, DirectoryPageRequest, PaginatedResponse,
+    TopicSummary,
+};
 use anyhow::{Context, Result};
 
 impl AppServices {
@@ -7,18 +10,24 @@ impl AppServices {
         self.db
             .get_all_authors()
             .context("failed to load author index")
-            .map(|authors| {
-                authors
-                    .into_iter()
-                    .map(|author| AuthorSummary {
-                        handle: author.handle,
-                        name: author.name,
-                        profile_image: author.profile_image,
-                        bookmark_count: author.bookmark_count,
-                        favorite_count: author.favorite_count,
-                    })
-                    .collect()
-            })
+            .map(|authors| authors.into_iter().map(AuthorSummary::from).collect())
+    }
+
+    /// Paged author directory with an optional name/handle filter.
+    pub fn author_page(
+        &self,
+        request: &DirectoryPageRequest,
+    ) -> Result<PaginatedResponse<AuthorSummary>> {
+        let (authors, total) = self
+            .db
+            .author_page(request.offset, request.limit, request.filter.as_deref())
+            .context("failed to load author page")?;
+        Ok(PaginatedResponse::new(
+            authors.into_iter().map(AuthorSummary::from).collect(),
+            total,
+            request.offset,
+            request.limit,
+        ))
     }
 
     pub fn topic_index(&self) -> Result<Vec<TopicSummary>> {
@@ -34,6 +43,29 @@ impl AppServices {
                     })
                     .collect()
             })
+    }
+
+    /// Paged topic directory with an optional tag filter.
+    pub fn topic_page(
+        &self,
+        request: &DirectoryPageRequest,
+    ) -> Result<PaginatedResponse<TopicSummary>> {
+        let (topics, total) = self
+            .db
+            .topic_page(request.offset, request.limit, request.filter.as_deref())
+            .context("failed to load topic page")?;
+        Ok(PaginatedResponse::new(
+            topics
+                .into_iter()
+                .map(|(tag, bookmark_count)| TopicSummary {
+                    tag,
+                    bookmark_count,
+                })
+                .collect(),
+            total,
+            request.offset,
+            request.limit,
+        ))
     }
 
     pub fn bookmark_detail(&self, id: &str) -> Result<Option<eterea_core::Bookmark>> {
@@ -85,5 +117,17 @@ impl AppServices {
 
     pub fn stats(&self) -> Result<BookmarkStats> {
         self.db.get_stats().context("failed to load bookmark stats")
+    }
+}
+
+impl From<eterea_core::storage::AuthorStats> for AuthorSummary {
+    fn from(author: eterea_core::storage::AuthorStats) -> Self {
+        Self {
+            handle: author.handle,
+            name: author.name,
+            profile_image: author.profile_image,
+            bookmark_count: author.bookmark_count,
+            favorite_count: author.favorite_count,
+        }
     }
 }

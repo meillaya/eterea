@@ -1,0 +1,171 @@
+{
+  "schema": 2,
+  "at": 1.5,
+  "scale": 1,
+  "sizes": ["1440x900", "1280x820", "960x640"],
+  "themes": ["light", "dark"],
+  "scenes": [
+    "detail",
+    "selected",
+    "quote",
+    "video",
+    "hidden",
+    "palette",
+    "keys",
+    "searching",
+    "lightbox"
+  ],
+  "scene_env": {
+    "hidden": {"ETEREA_HIDE_MEDIA": "1"}
+  },
+  "routes": [
+    "feed",
+    "authors",
+    "topics",
+    "graph",
+    "calendar",
+    "import",
+    "settings",
+    "detail"
+  ],
+  "route_size": "1440x900",
+  "main_fixture": "fixtures/x-api-v2-demo.json",
+  "datasets": {
+    "empty": {
+      "fixture": null,
+      "routes": ["history"],
+      "themes": ["light", "dark"],
+      "size": "1440x900"
+    },
+    "carousel": {
+      "fixture": "fixtures/eterea-export-carousel.json",
+      "routes": ["feed"],
+      "themes": ["light", "dark"],
+      "size": "1440x900"
+    }
+  },
+  "script_cases": [
+    {
+      "id": "export-sheet",
+      "script": "scripts/export-sheet.json",
+      "dataset": "main",
+      "route": "feed",
+      "size": "1440x900",
+      "themes": ["light", "dark"],
+      "at": 2.2,
+      "expect": ["Noor Haddad", "Mira Okonkwo", "export", "scope", "format", "all", "filter", "csv", "json", "cancel"],
+      "visible_expect": ["export", "scope", "format", "csv", "json", "cancel"],
+      "min_texts": 20
+    },
+    {
+      "id": "selection-bar",
+      "script": "scripts/selection-bar.json",
+      "dataset": "main",
+      "route": "feed",
+      "size": "1440x900",
+      "themes": ["light", "dark"],
+      "at": 2.2,
+      "expect": ["Noor Haddad", "2 selected", "tag", "delete", "read", "unread", "clear"],
+      "visible_expect": ["2 selected", "clear"],
+      "min_texts": 30
+    },
+    {
+      "id": "carousel-page-1",
+      "script": "scripts/carousel-page-1.json",
+      "dataset": "carousel",
+      "route": "feed",
+      "size": "1440x900",
+      "themes": ["light", "dark"],
+      "at": 2.2,
+      "expect": ["Carousel Demo", "Twenty frames from one walk", "Carousel frame 1", "Carousel frame 4", "‹", "1/5", "›"],
+      "visible_expect": ["‹", "1/5", "›"],
+      "min_texts": 18
+    },
+    {
+      "id": "carousel-page-2",
+      "script": "scripts/carousel-page-2.json",
+      "dataset": "carousel",
+      "route": "feed",
+      "size": "1440x900",
+      "themes": ["light", "dark"],
+      "at": 2.2,
+      "expect": ["Carousel Demo", "Carousel frame 5", "Carousel frame 8", "2/5"],
+      "visible_expect": ["‹", "2/5", "›"],
+      "min_texts": 18
+    }
+  ],
+  "limits": {
+    "min_png_bytes": 1024,
+    "min_elements": 8,
+    "px_tolerance": 1.0,
+    "max_reported_overflow": 5
+  },
+  "expect": {
+    "brand": "eterea",
+    "nav": ["feed", "authors", "topics", "graph", "calendar", "import", "history", "settings"],
+    "scenes": {
+      "detail": ["Mira Okonkwo", "Barbican at seven", "favorited", "edit tags", "delete"],
+      "selected": ["Noor Haddad", "Mira Okonkwo"],
+      "quote": ["Elena Voss", "We keep rebuilding", "Studio Field"],
+      "video": ["Samir Patel", "Three minutes inside the Pantheon", "0:47", "edit tags"],
+      "hidden": ["Ada Lin", "Flea market type haul", "edit tags"],
+      "palette": ["Noor Haddad"],
+      "keys": ["Noor Haddad"],
+      "searching": ["barbican", "esc", "Noor Haddad"],
+      "lightbox": ["Mira Okonkwo"]
+    },
+    "scene_no_nav": ["searching"],
+    "scene_min_texts": {
+      "detail": 15,
+      "selected": 50,
+      "quote": 18,
+      "video": 17,
+      "hidden": 15,
+      "palette": 70,
+      "keys": 60,
+      "searching": 45,
+      "lightbox": 50
+    },
+    "routes": {
+      "feed": ["Noor Haddad", "Spent the morning", "#interfaces", "example.com/archive-app"],
+      "authors": ["Ada Lin", "@adalin", "Elena Voss"],
+      "topics": ["books", "concrete", "architecture"],
+      "graph": ["books", "concrete", "architecture"],
+      "calendar": ["August 2025", "mon", "tue"],
+      "import": ["drop files or choose them", "choose files", "CSV, JSON or X archive"],
+      "settings": ["appearance", "media", "load automatically", "load on demand", "motion", "version"],
+      "detail": ["Noor Haddad", "Spent the morning", "edit tags", "delete"]
+    },
+    "route_min_texts": {
+      "feed": 60,
+      "authors": 35,
+      "topics": 30,
+      "graph": 20,
+      "calendar": 60,
+      "import": 9,
+      "settings": 30,
+      "detail": 18
+    },
+    "route_absent": {
+      "feed": ["https://t.co/"]
+    },
+    "datasets": {
+      "empty": {
+        "routes": {
+          "history": {
+            "expect": ["no actions yet", "export archive"],
+            "min_texts": 8
+          }
+        }
+      },
+      "carousel": {
+        "routes": {
+          "feed": {
+            "expect": ["Carousel Demo", "Twenty frames from one walk", "load media"],
+            "min_texts": 10
+          }
+        }
+      }
+    }
+  }
+}

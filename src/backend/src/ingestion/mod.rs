@@ -5,12 +5,18 @@
 //! - New CSV format (Twitter/X export)
 //! - JSON format
 //! - Archive JS format (`window.YTD... = [...]`)
+//! - X API v2 JSON (`data` + `includes.tweets/users/media`)
 
 mod csv_parser;
+mod date_parse;
+mod export_parser;
 mod json_parser;
 mod media_metadata;
+mod quote_metadata;
+mod url_entities;
 
 pub use csv_parser::{CsvFormat, LegacyCsvParser, NewCsvParser};
+pub use export_parser::ExportCsvParser;
 pub use json_parser::JsonParser;
 
 use crate::models::Bookmark;
@@ -72,6 +78,11 @@ impl Ingester {
                 let parser = NewCsvParser::new();
                 parser.parse(path)
             }
+            CsvFormat::EtereaExport => {
+                let parser = ExportCsvParser::new();
+                let file = std::fs::File::open(path)?;
+                parser.parse(std::io::BufReader::new(file))
+            }
         }
     }
 
@@ -85,6 +96,7 @@ impl Ingester {
         match CsvFormat::detect_from_content(content)? {
             CsvFormat::Legacy => LegacyCsvParser::new().parse_str(content),
             CsvFormat::New => NewCsvParser::new().parse_str(content),
+            CsvFormat::EtereaExport => ExportCsvParser::new().parse_str(content),
         }
     }
 

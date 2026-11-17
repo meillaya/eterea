@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="eterea">
+  <defs>
+    <radialGradient id="halo" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#8f6fc8" stop-opacity="0.4"/>
+      <stop offset="0.5" stop-color="#9a7bd0" stop-opacity="0.3"/>
+      <stop offset="0.74" stop-color="#aa8ed9" stop-opacity="0.14"/>
+      <stop offset="1" stop-color="#b39bdf" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="body" cx="0.48" cy="0.44" r="0.5" fx="0.45" fy="0.4">
+      <stop offset="0" stop-color="#fffdf6" stop-opacity="0.8"/>
+      <stop offset="0.2" stop-color="#fbf1fa" stop-opacity="0.76"/>
+      <stop offset="0.42" stop-color="#f0dbf7" stop-opacity="0.74"/>
+      <stop offset="0.6" stop-color="#e1c4f0" stop-opacity="0.72"/>
+      <stop offset="0.76" stop-color="#cdaae7" stop-opacity="0.7"/>
+      <stop offset="0.88" stop-color="#b890dc" stop-opacity="0.68"/>
+      <stop offset="0.95" stop-color="#a17bd0" stop-opacity="0.62"/>
+      <stop offset="0.99" stop-color="#8f6fc8" stop-opacity="0.44"/>
+      <stop offset="1" stop-color="#8f6fc8" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="core" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#fffdf7" stop-opacity="0.96"/>
+      <stop offset="0.4" stop-color="#fff7ee" stop-opacity="0.65"/>
+      <stop offset="0.72" stop-color="#fdeffa" stop-opacity="0.26"/>
+      <stop offset="1" stop-color="#fdeffa" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="rim" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#8b6ac4" stop-opacity="0"/>
+      <stop offset="0.9" stop-color="#8b6ac4" stop-opacity="0"/>
+      <stop offset="0.945" stop-color="#b392d9" stop-opacity="0.42"/>
+      <stop offset="0.965" stop-color="#d9c3f2" stop-opacity="0.58"/>
+      <stop offset="0.982" stop-color="#ebdcf9" stop-opacity="0.72"/>
+      <stop offset="0.992" stop-color="#b18fd9" stop-opacity="0.72"/>
+      <stop offset="0.997" stop-color="#7a58b8" stop-opacity="0.58"/>
+      <stop offset="1" stop-color="#7a58b8" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="blurArc" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="5.5"/>
+    </filter>
+    <filter id="blurShade" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="16"/>
+    </filter>
+  </defs>
+  <circle cx="512" cy="512" r="512" fill="url(#halo)"/>
+  <circle cx="512" cy="512" r="300" fill="url(#body)"/>
+  <circle cx="512" cy="512" r="300" fill="url(#rim)"/>
+  <circle cx="468" cy="462" r="170" fill="url(#core)"/>
+  <path d="M758 602A262 262 0 0 1 489 773" fill="none" stroke="#7d5cbb" stroke-opacity="0.16" stroke-width="22" stroke-linecap="round" filter="url(#blurShade)"/>
+  <path d="M266 422A262 262 0 0 1 393 279" fill="none" stroke="#fffdf8" stroke-opacity="0.92" stroke-width="10" stroke-linecap="round" filter="url(#blurArc)"/>
+</svg>
