@@ -35,13 +35,13 @@ Imported archives are untrusted: post text, handles, tags, URLs, alt text, quote
 
 ## Persistence
 
-The default database is `<platform data dir>/eterea/bookmarks.db`. SQLite runs in WAL mode. Schema version is `PRAGMA user_version = 1`; migrations are idempotent and reject newer versions without mutation. Media bytes and settings are not stored in the database. Appearance and media preferences live in `settings.json` under the platform config directory.
+The default database is `<platform data dir>/eterea/bookmarks.db`. SQLite runs in WAL mode. Schema version is `PRAGMA user_version = 3`; migrations are idempotent, reject newer versions, and only touch the database after the version check. Migration v3 renames the FTS content table from `bookmarks_fts_content` to `bookmarks_search_docs` and rebuilds the external-content index, because the old name was an FTS5 shadow-table name: SQLite newer than the bundled 3.46 refused to parse the whole schema ("cannot create triggers on shadow tables"). Media bytes and settings are not stored in the database. Appearance and media preferences live in `settings.json` under the platform config directory.
 
 ## Deferred
 
 Live X sync, multiple accounts, server mode and signed installers are not shipped. Do not describe them as runtime behavior until implemented and verified.
 
-## v2 reader state, history and media
+## v2/v3 reader state, history and media
 
 Schema v2 adds `bookmarks.is_read`, `bookmarks.links_json`, `media.playback_url`,
 `tag_colors` and `history_events`. The backend owns the data and round-trip CSV/
@@ -50,6 +50,9 @@ export operations; the desktop shell owns presentation and pending UI state.
 Journaled actions (import, delete, tag) write their inverse payload in the same
 SQLite transaction and keep only the latest five events. Only the newest
 non-undone event is undoable.
+
+Schema v3 only changes the FTS storage names; every v2 column and row is
+preserved, and the migration is a no-op on reopen.
 
 The media crate resolves best progressive MP4 variants, stores played videos in
 a bounded content-addressed cache, and spawns external `ffmpeg`/`ffplay` for

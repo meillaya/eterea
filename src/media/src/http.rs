@@ -6,15 +6,62 @@
 //! authorization or cookie headers, a stable user agent, one timeout, and
 //! manual redirect handling. Every URL, including every redirect target,
 //! passes [`crate::is_allowed_media_url`] before a socket is opened.
+//!
+//! Before any body byte is read, the response `Content-Type` is checked with
+//! the same media policy the rest of the crate documents: image fetches accept
+//! only the `eterea_logic::is_image_mime` allowlist, and video downloads accept
+//! progressive MP4 (plus the generic binary types CDNs use in practice — see
+//! [`video_mime_allowed`]). A disallowed response becomes
+//! [`MediaError::UnsupportedType`] and is never decoded or cached.
 
 use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use eterea_logic::is_image_mime;
+
 use crate::error::MediaError;
 use crate::url::is_allowed_media_url;
 use crate::{MAX_REDIRECTS, USER_AGENT};
+
+/// Content types accepted for a video download.
+///
+/// The player only supports progressive MP4, so the allowlist is deliberately
+/// MP4-shaped. `application/octet-stream` (and `binary/octet-stream`) are
+/// accepted because X's CDN and several generic file hosts label MP4 bodies
+/// that way, and a missing `Content-Type` is tolerated for the same reason:
+/// the bytes are still validated locally by ffmpeg, and a decode failure is
+/// now reported as a typed [`MediaError::DecodeFailed`]. A wrong-but-generic
+/// label can therefore never reach a decoder silently; an obviously wrong
+/// label (`text/html`, JSON, HLS playlists) is refused before the body.
+pub(crate) fn video_mime_allowed(content_type: Option<&str>) -> bool {
+    let Some(content_type) = content_type else {
+        return true;
+    };
+    let essence = content_type
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    matches!(
+        essence.as_str(),
+        "video/mp4"
+            | "application/mp4"
+            | "video/x-m4v"
+            | "application/octet-stream"
+            | "binary/octet-stream"
+    )
+}
+
+/// Return `true` when the image response's `Content-Type` is on the allowlist.
+///
+/// Missing or non-ASCII header values are refused: an image we cannot classify
+/// is not decoded. This is the runtime half of `INV-MED-09`.
+pub(crate) fn image_content_type_allowed(content_type: Option<&str>) -> bool {
+    content_type.is_some_and(is_image_mime)
+}
 
 /// Blocking HTTP client shared by media workers.
 pub(crate) struct HttpClient {
@@ -41,6 +88,11 @@ impl HttpClient {
 
     /// Fetch a complete image body, capped at `max_bytes`.
     ///
+    /// The response must carry an allowlisted image `Content-Type` (see
+    /// [`image_content_type_allowed`]); anything else fails with
+    /// [`MediaError::UnsupportedType`] before a byte is read, so non-image
+    /// bodies never reach the decoder or the disk cache.
+    ///
     /// Cancellation is observed between redirect hops and between body chunks;
     /// a blocking socket read is not interrupted mid-syscall.
     pub(crate) fn fetch_bytes(
@@ -50,6 +102,13 @@ impl HttpClient {
         max_bytes: usize,
     ) -> Result<Vec<u8>, MediaError> {
         let response = self.open(url, Some(cancel))?;
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok());
+        if !image_content_type_allowed(content_type) {
+            return Err(MediaError::UnsupportedType);
+        }
         if let Some(length) = response.body().content_length() {
             if length > max_bytes as u64 {
                 return Err(MediaError::TooLarge);
@@ -77,11 +136,14 @@ impl HttpClient {
         }
     }
 
-    /// Streaming download with an optional cancellation flag.
+    /// Streaming video download with an optional cancellation flag.
     ///
-    /// Cancellation is observed between redirect hops and between body chunks.
-    /// The partial file is removed on every failure path, including
-    /// cancellation.
+    /// The response must be a progressive-video or generic binary type (see
+    /// [`video_mime_allowed`]). Cancellation is observed between redirect hops
+    /// and between body chunks. The partial file is removed on every failure
+    /// path, including cancellation, a truncated body, or a disallowed
+    /// `Content-Type`. The completed file is flushed to disk before success is
+    /// reported, so a later rename cannot promote unflushed bytes.
     pub(crate) fn download_to_cancellable(
         &self,
         url: &str,
@@ -90,7 +152,15 @@ impl HttpClient {
         cancel: Option<&AtomicBool>,
     ) -> Result<u64, MediaError> {
         let response = self.open(url, cancel)?;
-        if let Some(length) = response.body().content_length() {
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok());
+        if !video_mime_allowed(content_type) {
+            return Err(MediaError::UnsupportedType);
+        }
+        let expected = response.body().content_length();
+        if let Some(length) = expected {
             if length > max_bytes {
                 return Err(MediaError::TooLarge);
             }
@@ -132,7 +202,16 @@ impl HttpClient {
                 }
             }
         }
-        if file.flush().is_err() {
+        // A body shorter than the declared Content-Length is a cut connection;
+        // never let a truncated file be promoted into the cache (the video
+        // cache has no payload digest to catch it later).
+        if expected.is_some_and(|expected| written != expected) {
+            drop(reader);
+            drop(file);
+            let _ = std::fs::remove_file(destination);
+            return Err(MediaError::Connection);
+        }
+        if file.flush().is_err() || file.sync_all().is_err() {
             drop(file);
             let _ = std::fs::remove_file(destination);
             return Err(MediaError::Io);
@@ -228,13 +307,89 @@ fn map_body_read_error(error: std::io::Error) -> MediaError {
 
 #[cfg(test)]
 mod tests {
-    use super::{map_body_read_error, map_transport_error, HttpClient};
+    use super::{
+        image_content_type_allowed, map_body_read_error, map_transport_error, video_mime_allowed,
+        HttpClient,
+    };
     use crate::MediaError;
     use std::time::Duration;
 
     #[test]
     fn client_configures_without_network() {
         let _client = HttpClient::new(Duration::from_secs(20));
+    }
+
+    #[test]
+    fn image_content_type_allowlist_is_enforced() {
+        for allowed in [
+            "image/jpeg",
+            "image/png",
+            "image/gif",
+            "image/webp",
+            "image/avif",
+            "IMAGE/PNG",
+            "image/jpeg; charset=binary",
+            " image/webp ; q=1",
+        ] {
+            assert!(
+                image_content_type_allowed(Some(allowed)),
+                "must accept {allowed}"
+            );
+        }
+        for refused in [
+            "text/html",
+            "text/html; charset=utf-8",
+            "application/json",
+            "image/svg+xml",
+            "video/mp4",
+            "application/octet-stream",
+            "",
+        ] {
+            assert!(
+                !image_content_type_allowed(Some(refused)),
+                "must refuse {refused}"
+            );
+        }
+        // A missing (or non-ASCII) Content-Type cannot be classified, so the
+        // image is refused rather than decoded.
+        assert!(!image_content_type_allowed(None));
+    }
+
+    #[test]
+    fn video_content_type_allows_progressive_mp4_and_generic_binary() {
+        for allowed in [
+            "video/mp4",
+            "VIDEO/MP4",
+            "video/mp4; codecs=avc1",
+            "application/mp4",
+            "video/x-m4v",
+            "application/octet-stream",
+            "binary/octet-stream",
+        ] {
+            assert!(video_mime_allowed(Some(allowed)), "must accept {allowed}");
+        }
+        // Missing Content-Type is tolerated for video: generic hosts omit it and
+        // ffmpeg validates the bytes (a decode failure is typed now).
+        assert!(video_mime_allowed(None));
+        // Obviously wrong envelope types are refused before the body is read.
+        for refused in [
+            "text/html",
+            "application/json",
+            "text/plain",
+            "application/vnd.apple.mpegurl",
+            "video/x-matroska",
+        ] {
+            assert!(!video_mime_allowed(Some(refused)), "must refuse {refused}");
+        }
+    }
+
+    #[test]
+    fn unsupported_content_type_has_a_typed_actionable_error() {
+        assert_eq!(
+            MediaError::UnsupportedType.to_string(),
+            "unsupported media content type"
+        );
+        assert_eq!(MediaError::DecodeFailed.to_string(), "video decoder failed");
     }
 
     #[test]

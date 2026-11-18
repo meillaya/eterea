@@ -13,6 +13,11 @@
 //! local file in parallel. Pause, mute, loop, stop and volume changes are
 //! handled without ever letting a child process outlive the player.
 //!
+//! A decoder that exits non-zero or produces no frames is a failure, not an
+//! end of stream: the player reports [`MediaError::DecodeFailed`] with a short
+//! diagnostic and stops. It never respawns a failed decoder, even when looping
+//! is enabled, so an undecodable file cannot spin ffmpeg forever.
+//!
 //! The legacy API ([`VideoPlayer::start`], [`VideoPlayer::poll`],
 //! [`VideoPlayer::is_ended`], [`VideoPlayer::error`],
 //! [`VideoPlayer::toggle_pause`], [`VideoPlayer::is_paused`],
@@ -21,7 +26,7 @@
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStderr, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TryRecvError};
 use std::sync::{Arc, Mutex};
@@ -182,6 +187,12 @@ pub struct PlaybackState {
     pub ended: bool,
     /// Decoder/download failure message, if any.
     pub error: Option<String>,
+    /// Typed decoder/download failure, if any.
+    ///
+    /// The message above is the human-readable detail; this is the stable
+    /// [`MediaError`] the UI can match on (for example
+    /// [`MediaError::DecodeFailed`] for a decoder that produced no frames).
+    pub error_kind: Option<MediaError>,
     /// Current position within the file, derived from delivered frames.
     pub position: Duration,
     /// File duration when ffmpeg could probe it.
@@ -223,6 +234,7 @@ enum PlaybackEvent {
         count: u32,
     },
     Failed {
+        error: MediaError,
         message: String,
     },
     Ended,
@@ -251,6 +263,7 @@ pub struct VideoPlayer {
     loop_count: u32,
     ended: bool,
     error: Option<String>,
+    error_kind: Option<MediaError>,
     local_path: Option<PathBuf>,
     volume: u8,
     muted: bool,
@@ -336,6 +349,7 @@ impl VideoPlayer {
             loop_count: 0,
             ended: false,
             error: None,
+            error_kind: None,
             local_path: None,
             volume,
             muted,
@@ -362,6 +376,15 @@ impl VideoPlayer {
     /// stopped deliberately.
     pub fn error(&self) -> Option<&str> {
         self.error.as_deref()
+    }
+
+    /// The typed decoder/download error, if playback failed.
+    ///
+    /// A decoder that exits without producing frames is reported as
+    /// [`MediaError::DecodeFailed`]; it is never restarted, even when looping
+    /// is enabled.
+    pub fn error_kind(&self) -> Option<MediaError> {
+        self.error_kind
     }
 
     /// True when playback is paused.
@@ -491,6 +514,7 @@ impl VideoPlayer {
             looping: self.is_looping(),
             ended: self.ended,
             error: self.error.clone(),
+            error_kind: self.error_kind,
             position: self.position(),
             duration: self.duration,
             from_cache: self.from_cache,
@@ -560,8 +584,9 @@ impl VideoPlayer {
                         }
                     }
                 }
-                Ok(PlaybackEvent::Failed { message }) => {
+                Ok(PlaybackEvent::Failed { error, message }) => {
                     self.error = Some(message);
+                    self.error_kind = Some(error);
                     self.ended = true;
                     self.audio.stop();
                 }
@@ -702,6 +727,7 @@ fn video_thread(
         Err(error) => {
             if !control.stop.load(Ordering::SeqCst) {
                 let _ = events.send(PlaybackEvent::Failed {
+                    error,
                     message: error.to_string(),
                 });
             }
@@ -734,6 +760,7 @@ fn video_thread(
             Ok(child) => child,
             Err(error) => {
                 let _ = events.send(PlaybackEvent::Failed {
+                    error,
                     message: error.to_string(),
                 });
                 break;
@@ -742,25 +769,29 @@ fn video_thread(
         let Some(mut stdout) = child.stdout.take() else {
             kill_child(&mut child);
             let _ = events.send(PlaybackEvent::Failed {
+                error: MediaError::DecodeFailed,
                 message: "video decoder produced no output pipe".to_string(),
             });
             break;
         };
+        let stderr = child.stderr.take().and_then(drain_child_stderr);
         if let Ok(mut slot) = decoder.lock() {
             *slot = Some(child);
         }
 
         let mut buffer = vec![0_u8; FRAME_BYTES];
         let mut next_frame = Instant::now();
+        let mut frames_in_run: u64 = 0;
         loop {
             if control.stop.load(Ordering::SeqCst) {
-                break 'playback;
+                break;
             }
             while control.paused.load(Ordering::SeqCst) && !control.stop.load(Ordering::SeqCst) {
                 std::thread::sleep(PAUSE_POLL);
             }
             match stdout.read_exact(&mut buffer) {
                 Ok(()) => {
+                    frames_in_run = frames_in_run.saturating_add(1);
                     let frame = VideoFrame {
                         rgba: buffer.clone(),
                     };
@@ -780,11 +811,35 @@ fn video_thread(
             }
         }
         drop(stdout);
-        kill_decoder(&decoder);
 
-        if control.stop.load(Ordering::SeqCst) {
+        let stopped = control.stop.load(Ordering::SeqCst);
+        let mut child = take_decoder(&decoder);
+        if stopped {
+            if let Some(child) = child.as_mut() {
+                kill_child(child);
+            }
+            // Killing the decoder closes its stderr pipe, so the drain thread
+            // ends; join it so it cannot outlive this playback run.
+            drop(join_stderr(stderr));
             break;
         }
+
+        // The decoder closes stdout before it exits. Reap it here so the exit
+        // status is known: a non-zero exit or a run that produced no frame is
+        // a decode failure, never an "ended" or a loop. Before this check the
+        // desktop's always-on looping turned any undecodable file into an
+        // infinite ffmpeg respawn loop.
+        let status = child.as_mut().and_then(reap_after_stream_end);
+        let exit_failed = status.map(|status| !status.success()).unwrap_or(true);
+        let detail = join_stderr(stderr);
+        if exit_failed || frames_in_run == 0 {
+            let _ = events.send(PlaybackEvent::Failed {
+                error: MediaError::DecodeFailed,
+                message: decode_failure_message(frames_in_run, status, detail),
+            });
+            break;
+        }
+
         if control.looping.load(Ordering::SeqCst) {
             loops = loops.saturating_add(1);
             if events.send(PlaybackEvent::Looped { count: loops }).is_err() {
@@ -839,7 +894,10 @@ fn spawn_decoder(ffmpeg: &Path, path: &Path) -> Result<Child, MediaError> {
             "-an", "-vf", &filter, "-r", "30", "-f", "rawvideo", "-pix_fmt", "rgba", "-",
         ])
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        // stderr carries the decoder's diagnostic for failure messages; it is
+        // drained on a helper thread so a chatty decoder cannot block on a
+        // full pipe, and it is bounded (see `drain_child_stderr`).
+        .stderr(Stdio::piped())
         .spawn()
         .map_err(|_| MediaError::DecoderUnavailable)
 }
@@ -855,6 +913,104 @@ fn kill_decoder(decoder: &Mutex<Option<Child>>) {
             kill_child(&mut child);
         }
     }
+}
+
+fn take_decoder(decoder: &Mutex<Option<Child>>) -> Option<Child> {
+    decoder.lock().ok().and_then(|mut slot| slot.take())
+}
+
+/// Grace period for a decoder to exit after it closed its stdout pipe.
+const DECODER_EXIT_GRACE: Duration = Duration::from_secs(2);
+
+/// Reap a decoder whose stdout already closed, without blocking forever.
+///
+/// ffmpeg exits immediately after closing its output pipe; a stuck child is
+/// killed after [`DECODER_EXIT_GRACE`] instead of blocking the worker thread
+/// and leaving an orphan process behind.
+fn reap_after_stream_end(child: &mut Child) -> Option<ExitStatus> {
+    let deadline = Instant::now() + DECODER_EXIT_GRACE;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Some(status),
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            Ok(None) => {
+                kill_child(child);
+                return child.try_wait().ok().flatten();
+            }
+            Err(_) => return None,
+        }
+    }
+}
+
+/// How many trailing stderr bytes are kept for a decode-failure message.
+const DECODER_STDERR_TAIL: usize = 2048;
+/// Maximum human-readable decoder detail appended to the message.
+const DECODER_DETAIL_CHARS: usize = 300;
+
+/// Drain a decoder's stderr on its own thread, keeping a bounded tail.
+///
+/// The pipe must be drained or a chatty decoder could block on a full pipe;
+/// only the last [`DECODER_STDERR_TAIL`] bytes are kept so a broken decoder
+/// cannot grow memory without bound.
+fn drain_child_stderr(mut stderr: ChildStderr) -> Option<JoinHandle<Vec<u8>>> {
+    std::thread::Builder::new()
+        .name("eterea-video-stderr".into())
+        .spawn(move || {
+            let mut tail: Vec<u8> = Vec::new();
+            let mut chunk = [0_u8; 1024];
+            loop {
+                match stderr.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(read) => {
+                        tail.extend_from_slice(&chunk[..read]);
+                        if tail.len() > DECODER_STDERR_TAIL {
+                            let excess = tail.len() - DECODER_STDERR_TAIL;
+                            tail.drain(..excess);
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            tail
+        })
+        .ok()
+}
+
+fn join_stderr(handle: Option<JoinHandle<Vec<u8>>>) -> Option<String> {
+    let bytes = handle?.join().ok()?;
+    let text = String::from_utf8_lossy(&bytes);
+    let cleaned = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let cleaned = cleaned.trim();
+    if cleaned.is_empty() {
+        return None;
+    }
+    Some(cleaned.chars().take(DECODER_DETAIL_CHARS).collect())
+}
+
+/// Actionable, URL-free failure message for a decoder run that produced no
+/// usable frames.
+fn decode_failure_message(
+    frames: u64,
+    status: Option<ExitStatus>,
+    detail: Option<String>,
+) -> String {
+    let mut message = String::from("video decoder failed");
+    if let Some(status) = status {
+        match status.code() {
+            Some(code) => message.push_str(&format!(" (exit code {code})")),
+            None => message.push_str(" (terminated by signal)"),
+        }
+    }
+    if frames == 0 {
+        message.push_str(": no frames decoded");
+    }
+    if let Some(detail) = detail {
+        message.push_str(": ");
+        message.push_str(&detail);
+    }
+    message
 }
 
 fn probe_duration(ffmpeg: &Path, path: &Path) -> Option<Duration> {
@@ -950,6 +1106,34 @@ mod playback_tests {
         path
     }
 
+    /// A fake decoder that logs each spawn, writes `bytes` bytes of "frames",
+    /// writes `stderr_line` to stderr and exits with `exit_code`. Used to prove
+    /// a failed decode is reported once and never respawned.
+    #[cfg(unix)]
+    fn failing_decoder_script(
+        scratch: &ScratchDir,
+        spawn_log: &std::path::Path,
+        bytes: usize,
+        exit_code: i32,
+        stderr_line: &str,
+    ) -> std::path::PathBuf {
+        write_script(
+            scratch.path(),
+            "failing-ffmpeg",
+            &format!(
+                "#!/bin/sh\necho run >> \"{}\"\nhead -c {bytes} /dev/zero\nprintf '%s\\n' '{stderr_line}' >&2\nexit {exit_code}\n",
+                spawn_log.display()
+            ),
+        )
+    }
+
+    #[cfg(unix)]
+    fn spawn_count(spawn_log: &std::path::Path) -> usize {
+        std::fs::read_to_string(spawn_log)
+            .map(|text| text.lines().count())
+            .unwrap_or(0)
+    }
+
     #[cfg(unix)]
     #[test]
     fn local_file_decodes_paced_frames_and_ends() {
@@ -979,6 +1163,178 @@ mod playback_tests {
         assert_eq!(player.frames_delivered(), 4);
         assert!(player.position() >= Duration::from_millis(90));
         assert!(player.state().ended);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_decoder_is_a_typed_error_and_never_respawned() {
+        let _process = crate::test_support::process_test_lock();
+        let scratch = ScratchDir::new("player-decode-failure");
+        let spawn_log = scratch.path().join("decoder-spawns.log");
+        let decoder = failing_decoder_script(
+            &scratch,
+            &spawn_log,
+            0,
+            1,
+            "invalid data found when processing input",
+        );
+        let file = local_video(&scratch);
+        // The desktop always enables looping, so the failure path must be safe
+        // with looping on: one spawn, one typed error, no restart.
+        let options = VideoPlayerOptions::new()
+            .with_tools(MediaTools::from_paths(decoder, None))
+            .with_probe_duration(false)
+            .with_looping(true);
+        let mut player = VideoPlayer::start_local_file(&file, options).expect("start");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !player.is_ended() && Instant::now() < deadline {
+            let _ = player.poll();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            player.is_ended(),
+            "a failed decoder must end the player (error={:?})",
+            player.error()
+        );
+        assert_eq!(player.error_kind(), Some(MediaError::DecodeFailed));
+        let message = player.error().unwrap_or_default();
+        assert!(
+            message.contains("video decoder failed"),
+            "message must be actionable: {message}"
+        );
+        assert!(
+            message.contains("exit code 1"),
+            "message must carry the decoder exit status: {message}"
+        );
+        assert!(
+            message.contains("invalid data found"),
+            "decoder stderr must be surfaced: {message}"
+        );
+        assert_eq!(
+            player.loop_count(),
+            0,
+            "a failed decode must not count or perform a loop"
+        );
+        assert_eq!(player.frames_delivered(), 0);
+        let state = player.state();
+        assert_eq!(state.error_kind, Some(MediaError::DecodeFailed));
+        assert!(state.ended);
+        assert!(state.error.is_some());
+        // Give a buggy respawn loop room to show itself, then prove it did not
+        // happen: exactly one decoder process for the whole playback.
+        std::thread::sleep(Duration::from_millis(250));
+        assert_eq!(
+            spawn_count(&spawn_log),
+            1,
+            "a failed decoder must never be respawned"
+        );
+        player.stop();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn truncated_decoder_output_is_a_failure_not_a_quiet_end() {
+        let _process = crate::test_support::process_test_lock();
+        let scratch = ScratchDir::new("player-truncated-frame");
+        let spawn_log = scratch.path().join("decoder-spawns.log");
+        // Exits 0 but closes the pipe mid-frame: zero complete frames were
+        // decoded, so this must be a typed failure, not Ended.
+        let decoder =
+            failing_decoder_script(&scratch, &spawn_log, FRAME_BYTES / 2, 0, "partial frame");
+        let file = local_video(&scratch);
+        let options = VideoPlayerOptions::new()
+            .with_tools(MediaTools::from_paths(decoder, None))
+            .with_probe_duration(false)
+            .with_looping(true);
+        let mut player = VideoPlayer::start_local_file(&file, options).expect("start");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !player.is_ended() && Instant::now() < deadline {
+            let _ = player.poll();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(player.is_ended());
+        assert_eq!(player.error_kind(), Some(MediaError::DecodeFailed));
+        assert_eq!(player.frames_delivered(), 0);
+        assert_eq!(player.loop_count(), 0);
+        assert!(
+            player
+                .error()
+                .unwrap_or_default()
+                .contains("no frames decoded"),
+            "zero-frame run must say so: {:?}",
+            player.error()
+        );
+        std::thread::sleep(Duration::from_millis(150));
+        assert_eq!(spawn_count(&spawn_log), 1);
+        player.stop();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn real_ffmpeg_on_an_undecodable_file_reports_decode_failed_once() {
+        let _process = crate::test_support::process_test_lock();
+        let tools = MediaTools::discover();
+        let Ok(ffmpeg) = tools.ffmpeg() else {
+            eprintln!("skipping: ffmpeg is not installed");
+            return;
+        };
+        let ffmpeg = ffmpeg.to_path_buf();
+        let scratch = ScratchDir::new("player-real-ffmpeg-garbage");
+        let file = scratch.path().join("garbage.mp4");
+        std::fs::write(&file, vec![0_u8; 4096]).expect("garbage fixture");
+        let options = VideoPlayerOptions::new()
+            .with_tools(MediaTools::from_paths(ffmpeg, None))
+            .with_probe_duration(false)
+            .with_looping(true);
+        let mut player = VideoPlayer::start_local_file(&file, options).expect("start");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !player.is_ended() && Instant::now() < deadline {
+            let _ = player.poll();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            player.is_ended(),
+            "real ffmpeg on garbage must end the player (error={:?})",
+            player.error()
+        );
+        assert_eq!(player.error_kind(), Some(MediaError::DecodeFailed));
+        assert_eq!(player.loop_count(), 0, "must not loop a failed decode");
+        assert_eq!(player.frames_delivered(), 0);
+        assert!(
+            player.error().unwrap_or_default().contains("exit code"),
+            "message should carry ffmpeg's exit status: {:?}",
+            player.error()
+        );
+        player.stop();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_decoder_without_looping_is_not_a_quiet_end() {
+        let _process = crate::test_support::process_test_lock();
+        let scratch = ScratchDir::new("player-decode-failure-no-loop");
+        let spawn_log = scratch.path().join("decoder-spawns.log");
+        let decoder = failing_decoder_script(&scratch, &spawn_log, 0, 2, "no stream");
+        let file = local_video(&scratch);
+        let options = VideoPlayerOptions::new()
+            .with_tools(MediaTools::from_paths(decoder, None))
+            .with_probe_duration(false);
+        let mut player = VideoPlayer::start_local_file(&file, options).expect("start");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !player.is_ended() && Instant::now() < deadline {
+            let _ = player.poll();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(player.is_ended());
+        // Regression for the old behaviour: this used to be `Ended` with
+        // error == None, i.e. a broken video looked like a finished one.
+        assert!(
+            player.error().is_some(),
+            "failure must not look like a normal end"
+        );
+        assert_eq!(player.error_kind(), Some(MediaError::DecodeFailed));
+        assert_eq!(player.loop_count(), 0);
+        player.stop();
     }
 
     #[cfg(unix)]
@@ -1031,6 +1387,8 @@ mod playback_tests {
             player.loop_count(),
             player.error()
         );
+        assert_eq!(player.error(), None, "valid looping must not report errors");
+        assert_eq!(player.error_kind(), None);
         assert!(!player.is_ended());
         player.stop();
         assert!(player.is_ended());

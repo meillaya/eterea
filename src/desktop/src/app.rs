@@ -15,14 +15,14 @@ use eterea_app::{
     AuthorSummary, BookmarkQuery, BookmarkSelection, BookmarkStats, CalendarData, CalendarRequest,
     DirectoryPageRequest, ExportFormat, ExportRequest, ExportScope, GraphData, GraphRequest,
     HistoryDetail, HistoryEvent, HistoryKind, HistoryListRequest, HistoryState, ImportBatchPreview,
-    ImportBatchSummary, Response, StoreHandle, TagMutation, TopicSummary,
+    ImportBatchSummary, RequestId, Response, StoreHandle, TagMutation, TopicSummary,
 };
 use eterea_media::{ImageKind, VideoCache, VideoCacheConfig, VideoPlayer, VideoPlayerOptions};
 use eterea_ui_model::{Mode, Route};
 use rune::{
     canvas, col, el, row, text, text_input, Align, AppSpec, Color, Cx, Drag, El, FileDialogOptions,
-    Image, ImageCache, Key, KeyEvent, LineCap, Link, MagnifyEvent, Phase, ScrollSpec, Shape, Span,
-    SurfaceFit, TextEdit, Tx, Waker, WheelEvent,
+    Image, ImageCache, Key, KeyEvent, LineCap, Link, MagnifyEvent, Phase, PointerButton,
+    ScrollSpec, Shape, Span, SurfaceFit, TextEdit, Tx, Waker, WheelEvent,
 };
 
 use crate::images::ImageStore;
@@ -177,6 +177,10 @@ pub(crate) struct State {
     total: i64,
     selected: usize,
     route: Route,
+    /// Routes navigated through, newest last. Mouse back pops one.
+    back_stack: Vec<Route>,
+    /// Routes the mouse forward button can return to.
+    forward_stack: Vec<Route>,
     store: Option<StoreHandle>,
     images: ImageStore,
     logo: Option<Image>,
@@ -184,6 +188,11 @@ pub(crate) struct State {
     dark: Option<bool>,
     status: Option<Status>,
     feed_pending: bool,
+    /// Whether the archive has feed posts past the ones loaded.
+    feed_has_more: bool,
+    /// Identity of the newest feed request; older replies are dropped so a
+    /// superseded filter or search cannot overwrite fresher results.
+    feed_request: Option<RequestId>,
     favorite_request: Option<(u64, String)>,
     delete_request: Option<(u64, String)>,
     demo: bool,
@@ -195,6 +204,16 @@ pub(crate) struct State {
     topics: Vec<TopicSummary>,
     topics_total: i64,
     topics_pending: bool,
+    /// The shared authors/topics filter text.
+    directory_filter: String,
+    /// Whether the directory filter field owns the keyboard.
+    directory_editing: bool,
+    /// A filter keystroke arrived while an authors page was still loading.
+    authors_dirty: bool,
+    /// The same, for topics.
+    topics_dirty: bool,
+    authors_request: Option<RequestId>,
+    topics_request: Option<RequestId>,
     graph: Option<GraphData>,
     calendar: Option<CalendarData>,
     filter: Option<Filter>,
@@ -252,6 +271,8 @@ impl State {
             total: 0,
             selected: 0,
             route: Route::Feed,
+            back_stack: Vec::new(),
+            forward_stack: Vec::new(),
             store: None,
             images: ImageStore::empty(),
             logo: None,
@@ -259,6 +280,8 @@ impl State {
             dark: None,
             status: None,
             feed_pending: false,
+            feed_has_more: false,
+            feed_request: None,
             favorite_request: None,
             delete_request: None,
             demo: false,
@@ -269,6 +292,12 @@ impl State {
             topics: Vec::new(),
             topics_total: 0,
             topics_pending: false,
+            directory_filter: String::new(),
+            directory_editing: false,
+            authors_dirty: false,
+            topics_dirty: false,
+            authors_request: None,
+            topics_request: None,
             graph: None,
             calendar: None,
             filter: None,
@@ -327,8 +356,13 @@ impl State {
     }
 
     fn current_query(&self) -> BookmarkQuery {
+        self.feed_query(0)
+    }
+
+    /// One page of the current feed filter, starting at `offset`.
+    fn feed_query(&self, offset: usize) -> BookmarkQuery {
         let mut query = BookmarkQuery {
-            offset: 0,
+            offset,
             limit: PAGE,
             ..BookmarkQuery::default()
         };
@@ -345,6 +379,16 @@ impl State {
             None => {}
         }
         query
+    }
+
+    /// The directory filter, unless it is blank.
+    fn directory_filter_value(&self) -> Option<String> {
+        let filter = self.directory_filter.trim();
+        if filter.is_empty() {
+            None
+        } else {
+            Some(filter.to_string())
+        }
     }
 
     fn request_history(&mut self) {
@@ -440,34 +484,42 @@ impl State {
 
     fn request_authors(&mut self, offset: usize) {
         if self.authors_pending {
+            if offset == 0 {
+                self.authors_dirty = true;
+            }
             return;
         }
-        let Some(store) = self.store.as_ref() else {
+        let Some(store) = self.store.clone() else {
             return;
         };
         self.authors_pending = true;
+        self.authors_dirty = false;
         self.pending_views += 1;
-        store.author_page(DirectoryPageRequest {
+        self.authors_request = Some(store.author_page(DirectoryPageRequest {
             offset,
             limit: 100,
-            filter: None,
-        });
+            filter: self.directory_filter_value(),
+        }));
     }
 
     fn request_topics(&mut self, offset: usize) {
         if self.topics_pending {
+            if offset == 0 {
+                self.topics_dirty = true;
+            }
             return;
         }
-        let Some(store) = self.store.as_ref() else {
+        let Some(store) = self.store.clone() else {
             return;
         };
         self.topics_pending = true;
+        self.topics_dirty = false;
         self.pending_views += 1;
-        store.topic_page(DirectoryPageRequest {
+        self.topics_request = Some(store.topic_page(DirectoryPageRequest {
             offset,
             limit: 100,
-            filter: None,
-        });
+            filter: self.directory_filter_value(),
+        }));
     }
 
     fn load_more_authors(&mut self) {
@@ -484,34 +536,50 @@ impl State {
 
     fn request_feed(&mut self, filter: Option<Filter>) {
         self.filter = filter;
+        self.feed_has_more = false;
         let Some(store) = self.store.as_ref() else {
             return;
         };
-        let mut query = BookmarkQuery {
-            offset: 0,
-            limit: PAGE,
-            ..BookmarkQuery::default()
-        };
-        match &self.filter {
-            Some(Filter::Author(handle)) => query.author = Some(handle.clone()),
-            Some(Filter::Topic(tag)) => query.tag = Some(tag.clone()),
-            Some(Filter::Day(from, to)) => {
-                query.from_date = Some(from.clone());
-                query.to_date = Some(to.clone());
-            }
-            Some(Filter::Query(text)) => query.query = Some(text.clone()),
-            Some(Filter::Favorites) => query.favorites_only = true,
-            Some(Filter::Unread) => query.unread_only = true,
-            None => {}
-        }
-        store.feed(query);
+        self.feed_request = Some(store.feed(self.feed_query(0)));
         self.feed_pending = true;
     }
 
+    /// Fetch the next feed page and append it when it arrives.
+    fn load_more_feed(&mut self) {
+        if self.feed_pending || !self.feed_has_more || self.posts.is_empty() {
+            return;
+        }
+        let Some(store) = self.store.as_ref() else {
+            return;
+        };
+        let offset = self.posts.len();
+        self.feed_request = Some(store.feed(self.feed_query(offset)));
+        self.feed_pending = true;
+    }
+
+    /// Remember the route being left so the mouse back button can return to it.
+    fn note_navigation(&mut self, next: Route) {
+        if self.route != next {
+            self.back_stack.push(self.route);
+            if self.back_stack.len() > 32 {
+                self.back_stack.remove(0);
+            }
+            self.forward_stack.clear();
+        }
+    }
+
     fn open_route(&mut self, route: Route) {
+        self.note_navigation(route);
+        self.apply_route(route);
+    }
+
+    /// Enter a route and make sure its data is loaded, without touching the
+    /// navigation stacks.
+    fn apply_route(&mut self, route: Route) {
         let previous = self.route;
         stop_video(self);
         self.route = route;
+        self.directory_editing = false;
         if route == Route::Import
             && previous != Route::Import
             && !matches!(
@@ -524,10 +592,18 @@ impl State {
         }
         match route {
             Route::Feed => self.request_feed(None),
-            Route::Authors if self.authors.is_empty() => {
+            Route::Authors => {
+                self.directory_filter.clear();
+                self.directory_index = 0;
+                self.authors_dirty = false;
+                self.topics_dirty = false;
                 self.request_authors(0);
             }
-            Route::Topics if self.topics.is_empty() => {
+            Route::Topics => {
+                self.directory_filter.clear();
+                self.directory_index = 0;
+                self.authors_dirty = false;
+                self.topics_dirty = false;
                 self.request_topics(0);
             }
             Route::Graph => {
@@ -566,11 +642,13 @@ impl State {
     }
 
     fn filter_author(&mut self, handle: &str) {
+        self.note_navigation(Route::Feed);
         self.route = Route::Feed;
         self.request_feed(Some(Filter::Author(handle.to_string())));
     }
 
     fn filter_topic(&mut self, tag: &str) {
+        self.note_navigation(Route::Feed);
         self.route = Route::Feed;
         self.request_feed(Some(Filter::Topic(tag.to_string())));
     }
@@ -588,6 +666,7 @@ impl State {
         let Some(end) = next.and_hms_opt(0, 0, 0) else {
             return;
         };
+        self.note_navigation(Route::Feed);
         self.route = Route::Feed;
         self.request_feed(Some(Filter::Day(
             format!("{}Z", start.format("%Y-%m-%dT%H:%M:%S")),
@@ -720,10 +799,24 @@ impl State {
     }
 
     fn close_overlay(&mut self) {
-        self.overlay = Overlay::None;
-        self.palette.clear();
-        self.palette_index = 0;
+        dismiss_overlay(self);
     }
+}
+
+/// Close the top overlay and reset every transient flag it could set. A bulk
+/// confirmation used to leave `bulk_delete` behind, so a later single delete
+/// ran the bulk path and silently deleted nothing.
+fn dismiss_overlay(state: &mut State) {
+    state.overlay = Overlay::None;
+    state.palette.clear();
+    state.palette_index = 0;
+    state.lightbox = None;
+    state.tag_edit = None;
+    state.delete_target = None;
+    state.export_sheet = None;
+    state.graph_color_tag = None;
+    state.bulk_delete = false;
+    state.bulk_tag_remove = false;
 }
 
 fn setup(state: &mut State, waker: Waker) {
@@ -813,7 +906,7 @@ fn install_store(state: &mut State, store: StoreHandle) {
         limit: PAGE,
         ..BookmarkQuery::default()
     });
-    let _ = request;
+    state.feed_request = Some(request);
     state.store = Some(store.clone());
     state.feed_pending = true;
     if state.route == Route::Feed {
@@ -889,6 +982,21 @@ fn request_avatars(state: &mut State) {
             }
         }
     }
+    for key in keys {
+        state.images.request(&key, ImageKind::Avatar);
+    }
+}
+
+/// Load the portraits of the authors directory rows.
+fn request_directory_avatars(state: &mut State) {
+    if !state.avatars {
+        return;
+    }
+    let keys: Vec<String> = state
+        .authors
+        .iter()
+        .filter_map(|author| author.profile_image.clone())
+        .collect();
     for key in keys {
         state.images.request(&key, ImageKind::Avatar);
     }
@@ -1006,6 +1114,8 @@ fn poll(state: &mut State, clock: f64, tx: &mut Tx) -> bool {
         || state.import_picker.is_some()
         || state.video.is_some()
         || state.images.pending() > 0
+        || state.images.has_deferred()
+        || state.status.is_some()
     {
         tx.wake_after(Duration::from_millis(33));
     }
@@ -1015,31 +1125,54 @@ fn poll(state: &mut State, clock: f64, tx: &mut Tx) -> bool {
 
 fn handle_response(state: &mut State, response: Response, clock: f64) {
     match response {
-        Response::Feed { result, .. } => {
+        Response::Feed { id, result } => {
+            if state.feed_request != Some(id) {
+                // A superseded query already answered; keep the fresher state.
+                return;
+            }
+            state.feed_request = None;
             state.feed_pending = false;
             match result {
                 Ok(page) => {
+                    let append = page.offset > 0 && !state.posts.is_empty();
                     if state.latest_month.is_none() {
                         if let Some(first) = page.items.first() {
                             state.latest_month = Some(first.tweeted_at.format("%Y-%m").to_string());
                         }
                     }
-                    state.posts = page.items.iter().map(Post::from_bookmark).collect();
+                    if append {
+                        // Append the next page without dropping the posts already
+                        // loaded; duplicates are skipped defensively.
+                        let known: HashSet<&str> =
+                            state.posts.iter().map(|post| post.id.as_str()).collect();
+                        let mut added = Vec::new();
+                        for bookmark in &page.items {
+                            if known.contains(bookmark.id.as_str()) {
+                                continue;
+                            }
+                            added.push(Post::from_bookmark(bookmark));
+                        }
+                        drop(known);
+                        state.posts.extend(added);
+                    } else {
+                        state.posts = page.items.iter().map(Post::from_bookmark).collect();
+                        let selected = std::env::var("ETEREA_SELECTED")
+                            .ok()
+                            .and_then(|value| value.parse::<usize>().ok())
+                            .unwrap_or(state.selected);
+                        state.selected = selected.min(state.posts.len().saturating_sub(1));
+                    }
                     state.total = page.total;
-                    state.selected = std::env::var("ETEREA_SELECTED")
-                        .ok()
-                        .and_then(|value| value.parse::<usize>().ok())
-                        .unwrap_or(state.selected)
-                        .min(state.posts.len().saturating_sub(1));
-                    if matches!(state.route, Route::Feed | Route::Onboarding) {
+                    state.feed_has_more = page.has_more;
+                    state.selected = state.selected.min(state.posts.len().saturating_sub(1));
+                    if !append && matches!(state.route, Route::Feed | Route::Onboarding) {
                         state.route = if state.posts.is_empty() && state.filter.is_none() {
                             Route::Onboarding
                         } else {
                             Route::Feed
                         };
                     }
-                    state.feed_pending = false;
-                    if state.route == Route::Calendar {
+                    if !append && state.route == Route::Calendar {
                         if let (Some(month), Some(store)) =
                             (state.latest_month.clone(), state.store.as_ref())
                         {
@@ -1051,8 +1184,11 @@ fn handle_response(state: &mut State, response: Response, clock: f64) {
                     request_all_media(state);
                 }
                 Err(error) => {
-                    state.set_status(error.message, 0.0);
-                    state.route = Route::Onboarding;
+                    state.feed_has_more = false;
+                    state.set_status(error.message, clock);
+                    if state.posts.is_empty() {
+                        state.route = Route::Onboarding;
+                    }
                 }
             }
         }
@@ -1065,13 +1201,30 @@ fn handle_response(state: &mut State, response: Response, clock: f64) {
                 }
             }
         }
-        Response::AuthorPage { result, .. } => {
+        Response::AuthorPage { id, result } => {
+            if state.authors_request != Some(id) {
+                return;
+            }
+            state.authors_request = None;
             state.pending_views = state.pending_views.saturating_sub(1);
             state.authors_pending = false;
             match result {
                 Ok(page) => {
+                    let replace = page.offset == 0 || state.authors.is_empty();
                     state.authors_total = page.total;
-                    state.authors.extend(page.items);
+                    if replace {
+                        state.authors = page.items;
+                        state.directory_index = 0;
+                    } else {
+                        state.authors.extend(page.items);
+                    }
+                    state.directory_index = state
+                        .directory_index
+                        .min(state.authors.len().saturating_sub(1));
+                    request_directory_avatars(state);
+                    if state.authors_dirty && state.route == Route::Authors {
+                        state.request_authors(0);
+                    }
                 }
                 Err(error) => {
                     let now = clock;
@@ -1079,13 +1232,29 @@ fn handle_response(state: &mut State, response: Response, clock: f64) {
                 }
             }
         }
-        Response::TopicPage { result, .. } => {
+        Response::TopicPage { id, result } => {
+            if state.topics_request != Some(id) {
+                return;
+            }
+            state.topics_request = None;
             state.pending_views = state.pending_views.saturating_sub(1);
             state.topics_pending = false;
             match result {
                 Ok(page) => {
+                    let replace = page.offset == 0 || state.topics.is_empty();
                     state.topics_total = page.total;
-                    state.topics.extend(page.items);
+                    if replace {
+                        state.topics = page.items;
+                        state.directory_index = 0;
+                    } else {
+                        state.topics.extend(page.items);
+                    }
+                    state.directory_index = state
+                        .directory_index
+                        .min(state.topics.len().saturating_sub(1));
+                    if state.topics_dirty && state.route == Route::Topics {
+                        state.request_topics(0);
+                    }
                 }
                 Err(error) => {
                     let now = clock;
@@ -1331,6 +1500,9 @@ fn on_key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
     if state.mode == Mode::Search {
         return search_key(state, event, tx);
     }
+    if state.directory_editing && matches!(state.route, Route::Authors | Route::Topics) {
+        return directory_key(state, event);
+    }
     if state.route == Route::Import {
         match &event.key {
             Key::Escape => {
@@ -1394,9 +1566,7 @@ fn on_key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
     }
     match &event.key {
         Key::Command('f') => {
-            state.route = Route::Feed;
-            state.mode = Mode::Search;
-            state.search.clear();
+            enter_search(state);
             true
         }
         Key::Command('p') => {
@@ -1441,9 +1611,11 @@ fn on_key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
             true
         }
         Key::Text(t) if t.as_str() == "/" => {
-            state.route = Route::Feed;
-            state.mode = Mode::Search;
-            state.search.clear();
+            if matches!(state.route, Route::Authors | Route::Topics) {
+                state.directory_editing = true;
+            } else {
+                enter_search(state);
+            }
             true
         }
         Key::Text(t) if t.as_str() == ":" => {
@@ -1513,22 +1685,30 @@ fn on_key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
             true
         }
         Key::Left => {
-            turn_carousel(state, state.selected, -1);
+            if !matches!(state.route, Route::Authors | Route::Topics) {
+                turn_carousel(state, state.selected, -1);
+            }
             true
         }
         Key::Right => {
-            turn_carousel(state, state.selected, 1);
+            if !matches!(state.route, Route::Authors | Route::Topics) {
+                turn_carousel(state, state.selected, 1);
+            }
             true
         }
         Key::Escape | Key::Backspace => {
             if state.selection.mode {
                 clear_selection(state);
             } else if state.route == Route::Detail {
+                stop_video(state);
                 state.route = Route::Feed;
-            } else if state.filter.is_some() {
-                state.request_feed(None);
+                if state.back_stack.last() == Some(&Route::Feed) {
+                    state.back_stack.pop();
+                }
             } else if state.route != Route::Feed {
                 state.open_route(Route::Feed);
+            } else if state.filter.is_some() {
+                state.request_feed(None);
             } else {
                 state.status = None;
             }
@@ -1632,15 +1812,12 @@ fn overlay_key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
             _ => {}
         },
         Overlay::Keys => match &event.key {
-            Key::Escape => state.overlay = Overlay::None,
-            Key::Text(t) if t.as_str() == "?" => state.overlay = Overlay::None,
+            Key::Escape => dismiss_overlay(state),
+            Key::Text(t) if t.as_str() == "?" => dismiss_overlay(state),
             _ => {}
         },
         Overlay::Lightbox => match &event.key {
-            Key::Escape => {
-                state.lightbox = None;
-                state.overlay = Overlay::None;
-            }
+            Key::Escape => dismiss_overlay(state),
             Key::Text(t) if t.as_str() == " " || t.as_str() == "Enter" => {
                 if let Some((post, index)) = state.lightbox {
                     start_video_at(state, tx, post, index);
@@ -1665,29 +1842,22 @@ fn overlay_key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
             _ => {}
         },
         Overlay::Tags => match &event.key {
-            Key::Escape => {
-                state.overlay = Overlay::None;
-                state.tag_edit = None;
-            }
+            Key::Escape => dismiss_overlay(state),
             Key::Enter => add_tag(state),
             _ => {}
         },
         Overlay::GraphColor => {
             if event.key == Key::Escape {
-                state.overlay = Overlay::None;
-                state.graph_color_tag = None;
+                dismiss_overlay(state);
             }
         }
         Overlay::BulkTag => match &event.key {
-            Key::Escape => state.overlay = Overlay::None,
+            Key::Escape => dismiss_overlay(state),
             Key::Enter => apply_bulk_tag(state),
             _ => {}
         },
         Overlay::Export => match &event.key {
-            Key::Escape => {
-                state.overlay = Overlay::None;
-                state.export_sheet = None;
-            }
+            Key::Escape => dismiss_overlay(state),
             Key::Text(t) if t.as_str() == "a" => {
                 if let Some(sheet) = state.export_sheet.as_mut() {
                     sheet.scope = ExportScopeChoice::All;
@@ -1717,10 +1887,7 @@ fn overlay_key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
             _ => {}
         },
         Overlay::ConfirmDelete => match &event.key {
-            Key::Escape => {
-                state.delete_target = None;
-                state.overlay = Overlay::None;
-            }
+            Key::Escape => dismiss_overlay(state),
             Key::Enter => confirm_delete(state),
             _ => {}
         },
@@ -1749,7 +1916,8 @@ fn search_key(state: &mut State, event: &KeyEvent, _tx: &mut Tx) -> bool {
         Key::Enter => {
             state.mode = Mode::Normal;
             if !state.posts.is_empty() {
-                state.route = Route::Detail;
+                stop_video(state);
+                open_detail(state);
             }
         }
         Key::Text(t) => {
@@ -1759,6 +1927,109 @@ fn search_key(state: &mut State, event: &KeyEvent, _tx: &mut Tx) -> bool {
         _ => return false,
     }
     true
+}
+
+/// Open the header search field over the feed.
+fn enter_search(state: &mut State) {
+    stop_video(state);
+    state.note_navigation(Route::Feed);
+    state.route = Route::Feed;
+    state.mode = Mode::Search;
+    state.search.clear();
+}
+
+/// The mouse back button (and the key sheet hint describe the same model):
+/// close the top overlay, leave a text mode, then walk back one route.
+fn navigate_back(state: &mut State, _tx: &mut Tx) {
+    if state.overlay != Overlay::None {
+        dismiss_overlay(state);
+        return;
+    }
+    if state.mode != Mode::Normal {
+        state.mode = Mode::Normal;
+        state.search.clear();
+        state.directory_editing = false;
+        if matches!(state.filter, Some(Filter::Query(_))) {
+            state.request_feed(None);
+        }
+        return;
+    }
+    if state.directory_editing {
+        state.directory_editing = false;
+        if !state.directory_filter.is_empty() {
+            state.directory_filter.clear();
+            reload_directory(state);
+        }
+        return;
+    }
+    if state.selection.mode {
+        clear_selection(state);
+        return;
+    }
+    let Some(previous) = state.back_stack.pop() else {
+        return;
+    };
+    state.forward_stack.push(state.route);
+    let filter = state.filter.clone();
+    state.apply_route(previous);
+    restore_feed_filter(state, filter);
+}
+
+/// The mouse forward button: return to the route back left.
+fn navigate_forward(state: &mut State, _tx: &mut Tx) {
+    if state.overlay != Overlay::None || state.mode != Mode::Normal {
+        return;
+    }
+    let Some(next) = state.forward_stack.pop() else {
+        return;
+    };
+    state.back_stack.push(state.route);
+    let filter = state.filter.clone();
+    state.apply_route(next);
+    restore_feed_filter(state, filter);
+}
+
+/// `apply_route(Feed)` clears the filter; walking between routes must not.
+fn restore_feed_filter(state: &mut State, filter: Option<Filter>) {
+    if state.route == Route::Feed && filter.is_some() {
+        state.request_feed(filter);
+    }
+}
+
+/// Keys while the authors/topics filter field owns the keyboard.
+fn directory_key(state: &mut State, event: &KeyEvent) -> bool {
+    match &event.key {
+        Key::Escape => {
+            if state.directory_filter.is_empty() {
+                state.directory_editing = false;
+            } else {
+                state.directory_filter.clear();
+                reload_directory(state);
+            }
+        }
+        Key::Backspace => {
+            state.directory_filter.pop();
+            reload_directory(state);
+        }
+        Key::Enter => {
+            state.directory_editing = false;
+            open_directory_selection(state);
+        }
+        Key::Text(text) => {
+            state.directory_filter.push_str(text);
+            reload_directory(state);
+        }
+        _ => return false,
+    }
+    true
+}
+
+fn reload_directory(state: &mut State) {
+    match state.route {
+        Route::Authors => state.request_authors(0),
+        Route::Topics => state.request_topics(0),
+        _ => {}
+    }
 }
 
 fn stop_video(state: &mut State) {
@@ -2030,15 +2301,21 @@ fn bulk_read(state: &mut State, read: bool) {
 }
 
 fn open_detail(state: &mut State) {
-    let Some(post) = state.posts.get_mut(state.selected) else {
-        return;
-    };
-    state.route = Route::Detail;
-    if post.is_read {
+    if state.posts.get(state.selected).is_none() {
         return;
     }
-    post.is_read = true;
-    let id = post.id.clone();
+    state.note_navigation(Route::Detail);
+    state.route = Route::Detail;
+    let id = {
+        let Some(post) = state.posts.get_mut(state.selected) else {
+            return;
+        };
+        if post.is_read {
+            return;
+        }
+        post.is_read = true;
+        post.id.clone()
+    };
     if let Some(store) = state.store.as_ref() {
         store.set_read(id, true);
     }
@@ -2263,6 +2540,12 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
         .w_full()
         .h_full()
         .fill(p.bg)
+        .pointer_buttons([PointerButton::Back, PointerButton::Forward])
+        .on_press_tx(|state: &mut State, tx: &mut Tx| match tx.button() {
+            PointerButton::Back => navigate_back(state, tx),
+            PointerButton::Forward => navigate_forward(state, tx),
+            _ => {}
+        })
         .on_drop_files(|state: &mut State, files: &[PathBuf], _tx: &mut Tx| {
             state.drop_import_paths(files);
         })
@@ -2275,9 +2558,7 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
     if state.selection.mode {
         root = root.child(selection_bar(state, p).motion(crate::motion::SELECTION));
     }
-    if let Some(status) = &state.status {
-        root = root.child(status_line(status, p).motion(crate::motion::STATUS));
-    }
+    root = root.child(footer(state, p).motion(crate::motion::STATUS));
     if state.overlay != Overlay::None {
         root = root.child(overlay_view(state, p).transition(crate::motion::overlay_enter(reduced)));
     }
@@ -2307,6 +2588,18 @@ fn header(state: &State, p: Palette, dark: bool) -> El {
                 .on_press(move |state: &mut State| state.open_route(route)),
         );
     }
+    links = links.child(
+        text("search")
+            .font(theme::ui(12.5, 400.0))
+            .color(if state.mode == Mode::Search {
+                p.ink
+            } else {
+                p.muted
+            })
+            .role("button")
+            .label("search")
+            .on_press(|state: &mut State| enter_search(state)),
+    );
     let brand = row()
         .gap(9.0)
         .center_y()
@@ -2328,6 +2621,12 @@ fn header(state: &State, p: Palette, dark: bool) -> El {
         );
 
     if state.mode == Mode::Search {
+        let placeholder = state.search.is_empty();
+        let shown = if placeholder {
+            "search".to_string()
+        } else {
+            format!("{}|", state.search)
+        };
         return row()
             .h(56.0)
             .w_full()
@@ -2338,12 +2637,16 @@ fn header(state: &State, p: Palette, dark: bool) -> El {
             .child(
                 row()
                     .w(360.0)
-                    .gap(16.0)
+                    .h(32.0)
+                    .gap(12.0)
                     .center_y()
+                    .border_sides([0.0, 0.0, 1.0, 0.0], p.line)
+                    .role("searchbox")
+                    .label("search")
                     .child(
-                        text(format!("{}|", state.search))
+                        text(shown)
                             .font(theme::ui(13.0, 400.0))
-                            .color(p.ink)
+                            .color(if placeholder { p.muted } else { p.ink })
                             .grow(1.0),
                     )
                     .child(text("esc").font(theme::mono(10.5)).color(p.muted)),
@@ -2360,12 +2663,36 @@ fn header(state: &State, p: Palette, dark: bool) -> El {
         .child(links)
 }
 
-fn status_line(status: &Status, p: Palette) -> El {
-    row().w_full().h(24.0).px(52.0).center_y().fill(p.bg).child(
-        text(status.text.clone())
-            .font(theme::ui(11.5, 400.0))
-            .color(p.muted),
-    )
+/// The bottom line: a transient status on the left, the shortcut hint on the
+/// right so the key sheet can be found without knowing the `?` key.
+fn footer(state: &State, p: Palette) -> El {
+    let message = state
+        .status
+        .as_ref()
+        .map(|status| status.text.clone())
+        .unwrap_or_default();
+    row()
+        .w_full()
+        .h(24.0)
+        .px(52.0)
+        .center_y()
+        .justify_between()
+        .fill(p.bg)
+        .child(text(message).font(theme::ui(11.5, 400.0)).color(p.muted))
+        .child(
+            text("keys")
+                .font(theme::mono(10.5))
+                .color(p.muted)
+                .role("button")
+                .label("keyboard shortcuts")
+                .on_press(|state: &mut State| {
+                    state.overlay = if state.overlay == Overlay::Keys {
+                        Overlay::None
+                    } else {
+                        Overlay::Keys
+                    };
+                }),
+        )
 }
 
 fn onboarding(state: &State, p: Palette) -> El {
@@ -2395,32 +2722,51 @@ fn onboarding(state: &State, p: Palette) -> El {
 
 fn feed_view(state: &State, p: Palette) -> El {
     if state.posts.is_empty() {
+        let message = if state.feed_pending {
+            "loading"
+        } else {
+            "no matches"
+        };
         return col()
             .w_full()
             .h_full()
             .justify_center()
             .items_center()
-            .child(text("no matches").font(theme::serif(24.0)).color(p.muted));
+            .child(text(message).font(theme::serif(24.0)).color(p.muted));
     }
-    let mut list = col().w_full().pt(64.0).pb(200.0);
+    // SPEC section 2: a 64px rhythm between posts. Each post carries 32px of
+    // air above and below, so same-day neighbours sit 64px apart and a saved-day
+    // rule takes the place of the one 1px line inside that rhythm.
+    let mut list = col().w_full().pt(32.0).pb(200.0);
     for (index, post) in state.posts.iter().enumerate() {
         if index > 0 && post.date != state.posts[index - 1].date {
             list = list.child(
                 row()
                     .w_full()
                     .justify_center()
-                    .mt(32.0)
-                    .mb(32.0)
                     .child(el().w(CONTENT).h(1.0).fill(p.line)),
             );
         }
-        list = list.child(post_view(state, post, index, p, false));
+        list = list.child(post_view(state, post, index, p, false).pt(32.0).pb(32.0));
+    }
+    if state.feed_pending && state.feed_has_more {
+        list = list.child(
+            row()
+                .w_full()
+                .justify_center()
+                .child(text("loading").font(theme::mono(10.5)).color(p.muted)),
+        );
     }
     list.scroll(ScrollSpec {
         stick_bottom: false,
     })
     .grow(1.0)
     .min_h(0.0)
+    .on_at_bottom(|state: &mut State, at| {
+        if at {
+            state.load_more_feed();
+        }
+    })
 }
 
 fn detail_view(state: &State, p: Palette) -> El {
@@ -2441,40 +2787,94 @@ fn detail_view(state: &State, p: Palette) -> El {
         .min_h(0.0)
 }
 
+fn directory_field(state: &State, p: Palette, placeholder: &str, total: i64) -> El {
+    let editing = state.directory_editing;
+    let filtering = !state.directory_filter.trim().is_empty();
+    let shown = if editing || filtering {
+        format!("{}|", state.directory_filter)
+    } else {
+        placeholder.to_string()
+    };
+    let color = if filtering || editing { p.ink } else { p.muted };
+    let trailing = if editing {
+        "esc".to_string()
+    } else {
+        total.to_string()
+    };
+    let mut field = row()
+        .w(720.0)
+        .h(36.0)
+        .center_y()
+        .justify_between()
+        .border_sides(
+            [0.0, 0.0, 1.0, 0.0],
+            if editing { p.accent } else { p.line },
+        )
+        .role("searchbox")
+        .label(placeholder.to_string())
+        .child(text(shown).font(theme::ui(13.0, 400.0)).color(color))
+        .child(text(trailing).font(theme::mono(10.5)).color(p.muted));
+    if !editing {
+        field = field.on_press(|state: &mut State| state.directory_editing = true);
+    }
+    field
+}
+
 fn authors_view(state: &State, p: Palette) -> El {
-    let mut list = col().w(720.0).gap(2.0);
+    let filtering = !state.directory_filter.trim().is_empty();
+    let mut list = col().w(720.0).gap(4.0);
+    if state.authors.is_empty() {
+        let message = if filtering {
+            "no matches"
+        } else if state.authors_pending {
+            "loading"
+        } else {
+            "no authors"
+        };
+        list = list.child(
+            row()
+                .w(720.0)
+                .pt(18.0)
+                .child(text(message).font(theme::serif(24.0)).color(p.muted)),
+        );
+    }
     for (index, author) in state.authors.iter().enumerate() {
         let handle = author.handle.clone();
         let selected = index == state.directory_index;
         list = list.child(
             row()
-                .key(format!("author-{}", index))
+                .key(format!("author-{index}"))
                 .w(720.0)
-                .h(44.0)
+                .h(56.0)
                 .center_y()
-                .gap(11.0)
+                .gap(12.0)
+                .hover(p.band)
                 .on_press(move |state: &mut State| state.filter_author(&handle))
                 .child(
                     el().w(2.0)
-                        .h(20.0)
+                        .h(24.0)
                         .fill(if selected { p.accent } else { p.bg }),
                 )
                 .child(avatar(
                     state,
                     author.profile_image.as_deref(),
                     &author.name,
-                    24.0,
+                    32.0,
                     p,
                 ))
                 .child(
-                    text(author.name.clone())
-                        .font(theme::ui(13.0, 500.0))
-                        .color(p.ink),
-                )
-                .child(
-                    text(format!("@{}", author.handle))
-                        .font(theme::ui(12.0, 400.0))
-                        .color(p.muted),
+                    col()
+                        .gap(1.0)
+                        .child(
+                            text(author.name.clone())
+                                .font(theme::ui(13.5, 500.0))
+                                .color(p.ink),
+                        )
+                        .child(
+                            text(format!("@{}", author.handle))
+                                .font(theme::ui(12.0, 400.0))
+                                .color(p.muted),
+                        ),
                 )
                 .child(el().grow(1.0))
                 .child(
@@ -2484,11 +2884,27 @@ fn authors_view(state: &State, p: Palette) -> El {
                 ),
         );
     }
+    if state.authors_pending && !state.authors.is_empty() {
+        list = list.child(
+            row()
+                .w(720.0)
+                .h(30.0)
+                .center_y()
+                .child(text("loading").font(theme::mono(10.5)).color(p.muted)),
+        );
+    }
     directory_shell(
         col()
             .w_full()
             .pt(64.0)
             .pb(200.0)
+            .gap(20.0)
+            .child(row().w_full().justify_center().child(directory_field(
+                state,
+                p,
+                "filter authors",
+                state.authors_total,
+            )))
             .child(row().w_full().justify_center().child(list)),
     )
     .on_at_bottom(|state: &mut State, at| {
@@ -2499,26 +2915,43 @@ fn authors_view(state: &State, p: Palette) -> El {
 }
 
 fn topics_view(state: &State, p: Palette) -> El {
-    let mut list = col().w(720.0).gap(2.0);
+    let filtering = !state.directory_filter.trim().is_empty();
+    let mut list = col().w(720.0).gap(4.0);
+    if state.topics.is_empty() {
+        let message = if filtering {
+            "no matches"
+        } else if state.topics_pending {
+            "loading"
+        } else {
+            "no topics"
+        };
+        list = list.child(
+            row()
+                .w(720.0)
+                .pt(18.0)
+                .child(text(message).font(theme::serif(24.0)).color(p.muted)),
+        );
+    }
     for (index, topic) in state.topics.iter().enumerate() {
         let tag = topic.tag.clone();
         let selected = index == state.directory_index;
         list = list.child(
             row()
-                .key(format!("topic-{}", index))
+                .key(format!("topic-{index}"))
                 .w(720.0)
-                .h(40.0)
+                .h(48.0)
                 .center_y()
-                .gap(11.0)
+                .gap(12.0)
+                .hover(p.band)
                 .on_press(move |state: &mut State| state.filter_topic(&tag))
                 .child(
                     el().w(2.0)
-                        .h(18.0)
+                        .h(20.0)
                         .fill(if selected { p.accent } else { p.bg }),
                 )
                 .child(
-                    text(topic.tag.clone())
-                        .font(theme::ui(13.0, 400.0))
+                    text(format!("#{}", topic.tag))
+                        .font(theme::ui(13.5, 400.0))
                         .color(p.ink),
                 )
                 .child(el().grow(1.0))
@@ -2529,11 +2962,27 @@ fn topics_view(state: &State, p: Palette) -> El {
                 ),
         );
     }
+    if state.topics_pending && !state.topics.is_empty() {
+        list = list.child(
+            row()
+                .w(720.0)
+                .h(30.0)
+                .center_y()
+                .child(text("loading").font(theme::mono(10.5)).color(p.muted)),
+        );
+    }
     directory_shell(
         col()
             .w_full()
             .pt(64.0)
             .pb(200.0)
+            .gap(20.0)
+            .child(row().w_full().justify_center().child(directory_field(
+                state,
+                p,
+                "filter topics",
+                state.topics_total,
+            )))
             .child(row().w_full().justify_center().child(list)),
     )
     .on_at_bottom(|state: &mut State, at| {
@@ -2910,13 +3359,15 @@ fn overlay_view(state: &State, p: Palette) -> El {
                 )
         }
         Overlay::Keys => {
+            // A clean, minimizable tooltip anchored at the bottom right: no
+            // scrim, and a press anywhere outside folds it back to the hint.
             let rows = [
                 "j k move",
                 "enter open",
                 "esc close",
                 "/ search",
-                ": commands",
-                "? keys",
+                "mouse back back",
+                "mouse forward forward",
                 "f favorite",
                 "c copy link",
                 "o open on x",
@@ -2925,18 +3376,36 @@ fn overlay_view(state: &State, p: Palette) -> El {
                 "space play",
                 "x select",
                 "shift j k extend",
-                "cmd a page · cmd shift a all",
+                "cmd a page",
+                "cmd shift a all",
                 "t tags",
                 "d delete",
-                "u read · r unread",
+                "u unread · r read",
                 "h history",
                 "e export",
+                ": commands",
             ];
-            let mut panel = col().w(300.0).fill(p.bg).border(1.0, p.line).radius(2.0);
+            let mut panel = col()
+                .w(320.0)
+                .fill(p.bg)
+                .border(1.0, p.line)
+                .radius(2.0)
+                .on_press(|_state: &mut State| {})
+                .role("dialog")
+                .label("keyboard shortcuts")
+                .child(
+                    row()
+                        .h(38.0)
+                        .px(14.0)
+                        .center_y()
+                        .justify_between()
+                        .child(text("keys").font(theme::serif(15.0)).color(p.ink))
+                        .child(text("esc").font(theme::mono(10.5)).color(p.muted)),
+                );
             for row_text in rows {
                 panel = panel.child(
                     row()
-                        .h(28.0)
+                        .h(25.0)
                         .px(14.0)
                         .center_y()
                         .child(text(row_text).font(theme::mono(10.5)).color(p.muted)),
@@ -2945,14 +3414,14 @@ fn overlay_view(state: &State, p: Palette) -> El {
             el().w_full()
                 .h_full()
                 .absolute(0.0, 0.0)
-                .child(scrim)
+                .on_press(|state: &mut State| state.overlay = Overlay::None)
                 .child(
                     row()
                         .w_full()
                         .h_full()
-                        .items_start()
+                        .items_end()
                         .justify_end()
-                        .pt(80.0)
+                        .pb(40.0)
                         .pr(52.0)
                         .child(panel),
                 )
@@ -4147,6 +4616,15 @@ fn clear_caches(state: &mut State, now: f64) {
     state.images.clear_cache();
     if let Some(cache) = state.video_cache.as_ref() {
         let _ = cache.clear();
+    }
+    for post in &mut state.posts {
+        if !post.media.is_empty() {
+            post.media_loaded = false;
+        }
+    }
+    request_avatars(state);
+    if state.auto_media {
+        request_all_media(state);
     }
     state.set_status("cache cleared", now);
 }

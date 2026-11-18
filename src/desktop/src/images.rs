@@ -8,7 +8,7 @@ use std::path::Path;
 
 use eterea_media::{CacheStats, DiskCacheConfig};
 
-use eterea_media::{ImageKind, MediaEvent, MediaManager, MediaManagerConfig};
+use eterea_media::{ImageKind, MediaError, MediaEvent, MediaManager, MediaManagerConfig};
 use rune::{Image, ImageCache};
 
 pub struct ImageStore {
@@ -18,6 +18,9 @@ pub struct ImageStore {
     pending: HashMap<u64, String>,
     requested: HashSet<String>,
     failed: HashSet<String>,
+    /// Keys the bounded worker queue refused; re-driven from `poll` once room
+    /// frees up instead of being marked failed for the session.
+    deferred: Vec<(String, ImageKind)>,
     next_id: u64,
 }
 
@@ -32,6 +35,7 @@ impl ImageStore {
             pending: HashMap::new(),
             requested: HashSet::new(),
             failed: HashSet::new(),
+            deferred: Vec::new(),
             next_id: 1,
         }
     }
@@ -54,6 +58,7 @@ impl ImageStore {
             pending: HashMap::new(),
             requested: HashSet::new(),
             failed: HashSet::new(),
+            deferred: Vec::new(),
             next_id: 1,
         }
     }
@@ -84,16 +89,30 @@ impl ImageStore {
         self.pending.len()
     }
 
+    /// Keys the worker queue refused that are waiting for room.
+    pub fn has_deferred(&self) -> bool {
+        !self.deferred.is_empty()
+    }
+
     pub fn cache_stats(&self) -> Option<CacheStats> {
         self.manager
             .as_ref()
             .and_then(|manager| manager.cache_stats())
     }
 
-    pub fn clear_cache(&self) -> bool {
-        self.manager
+    /// Clear the disk cache and forget every in-memory slot, so a cleared
+    /// cache can repopulate from the network instead of keeping stale failures.
+    pub fn clear_cache(&mut self) -> bool {
+        let cleared = self
+            .manager
             .as_ref()
-            .is_some_and(|manager| manager.clear_cache().unwrap_or(false))
+            .is_some_and(|manager| manager.clear_cache().unwrap_or(false));
+        self.images.clear();
+        self.pending.clear();
+        self.requested.clear();
+        self.failed.clear();
+        self.deferred.clear();
+        cleared
     }
 
     /// Queue one HTTPS image if it has not been requested.
@@ -101,35 +120,50 @@ impl ImageStore {
         if self.images.contains_key(key)
             || self.failed.contains(key)
             || self.requested.contains(key)
+            || self.deferred.iter().any(|(queued, _)| queued == key)
         {
             return;
         }
-        let Some(manager) = self.manager.as_ref() else {
+        if self.manager.is_none() {
             self.failed.insert(key.to_string());
             return;
-        };
+        }
         if !eterea_logic::is_safe_https_url(key) {
             self.failed.insert(key.to_string());
             return;
         }
+        self.enqueue_or_defer(key, kind);
+    }
+
+    fn enqueue_or_defer(&mut self, key: &str, kind: ImageKind) {
+        let Some(manager) = self.manager.as_ref() else {
+            self.failed.insert(key.to_string());
+            return;
+        };
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1).max(1);
-        if manager.enqueue(id, key, kind).is_ok() {
-            self.pending.insert(id, key.to_string());
-            self.requested.insert(key.to_string());
-        } else {
-            self.failed.insert(key.to_string());
+        match manager.enqueue(id, key, kind) {
+            Ok(()) => {
+                self.pending.insert(id, key.to_string());
+                self.requested.insert(key.to_string());
+            }
+            // Retryable: the workers hold a bounded queue. Keep the key and
+            // flush it later; only terminal errors belong in `failed`.
+            Err(MediaError::QueueFull) => self.deferred.push((key.to_string(), kind)),
+            Err(_) => {
+                self.failed.insert(key.to_string());
+            }
         }
     }
 
     /// Request a set of keys and decode completed events. Returns true when a
     /// visible image became available or failed.
     pub fn poll(&mut self) -> bool {
-        let Some(manager) = self.manager.as_ref() else {
+        if self.manager.is_none() {
             return false;
-        };
+        }
         let mut changed = false;
-        while let Some(event) = manager.try_recv() {
+        while let Some(event) = self.manager.as_ref().and_then(|manager| manager.try_recv()) {
             match event {
                 MediaEvent::ImageReady { id, bytes, .. } => {
                     if let Some(key) = self.pending.remove(&id.value()) {
@@ -145,6 +179,26 @@ impl ImageStore {
                         self.failed.insert(key);
                         changed = true;
                     }
+                }
+            }
+        }
+        // The request queue drained while events were handled: give deferred
+        // keys another try before waiting for the next poll.
+        while let Some((key, kind)) = self.deferred.first().cloned() {
+            let Some(manager) = self.manager.as_ref() else {
+                break;
+            };
+            let id = self.next_id;
+            self.next_id = self.next_id.wrapping_add(1).max(1);
+            match manager.enqueue(id, &key, kind) {
+                Ok(()) => {
+                    self.deferred.remove(0);
+                    self.pending.insert(id, key.clone());
+                    self.requested.insert(key);
+                }
+                Err(MediaError::QueueFull) => break,
+                Err(_) => {
+                    self.deferred.remove(0);
                 }
             }
         }

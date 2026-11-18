@@ -5,6 +5,9 @@ use tempfile::TempDir;
 
 const SAMPLE_JSON: &str = include_str!("../../../../fixtures/import/bookmarks.json");
 
+/// One plain JSON bookmark row for migration tests that need a known id.
+const MIGRATION_JSON: &str = r#"[{"tweet_url":"https://x.com/migrate/status/1","full_text":"post migration row","tweeted_at":"2024-05-01T00:00:00Z","screen_name":"migrate","name":"Migrate"}]"#;
+
 #[test]
 fn initializes_empty_database_with_current_schema() -> crate::Result<()> {
     let temp_dir = TempDir::new()?;
@@ -25,7 +28,10 @@ fn initializes_empty_database_with_current_schema() -> crate::Result<()> {
     assert_index_exists(&db.conn, "idx_quoted_tweets_author_handle")?;
     assert_index_exists(&db.conn, "idx_bookmarks_unread_date")?;
     assert_index_exists(&db.conn, "idx_history_events_created")?;
-    assert_eq!(current_user_version(&db.conn)?, 2);
+    assert_table_exists(&db.conn, "bookmarks_search_docs")?;
+    assert_table_absent(&db.conn, LEGACY_FTS_CONTENT_TABLE)?;
+    assert_index_exists(&db.conn, "idx_bookmarks_search_docs_bookmark")?;
+    assert_eq!(current_user_version(&db.conn)?, CURRENT_SCHEMA_USER_VERSION);
     assert_eq!(
         db.get_metadata(AUTHOR_STATS_METADATA_KEY)?.as_deref(),
         Some("ready")
@@ -57,7 +63,10 @@ fn reopens_existing_current_schema_idempotently() -> crate::Result<()> {
     assert_column_exists(&reopened.conn, "has_media")?;
     assert_media_metadata_columns_exist(&reopened.conn)?;
     assert_table_exists(&reopened.conn, "quoted_tweets")?;
-    assert_eq!(current_user_version(&reopened.conn)?, 2);
+    assert_eq!(
+        current_user_version(&reopened.conn)?,
+        CURRENT_SCHEMA_USER_VERSION
+    );
     Ok(())
 }
 
@@ -73,7 +82,7 @@ fn migrates_legacy_bookmarks_shape_idempotently() -> crate::Result<()> {
     assert_column_exists(&db.conn, "has_media")?;
     assert_media_metadata_columns_exist(&db.conn)?;
     assert_table_exists(&db.conn, "quoted_tweets")?;
-    assert_eq!(current_user_version(&db.conn)?, 2);
+    assert_eq!(current_user_version(&db.conn)?, CURRENT_SCHEMA_USER_VERSION);
     let has_media: i64 = db.conn.query_row(
         "SELECT has_media FROM bookmarks WHERE id = 'legacy-1'",
         [],
@@ -102,24 +111,35 @@ fn migrates_legacy_bookmarks_shape_idempotently() -> crate::Result<()> {
             .query_row("SELECT COUNT(*) FROM author_stats", [], |row| row.get(0))?;
     assert_eq!(row_count, 1);
     assert_eq!(author_count, 1);
-    assert_eq!(current_user_version(&reopened.conn)?, 2);
+    assert_eq!(
+        current_user_version(&reopened.conn)?,
+        CURRENT_SCHEMA_USER_VERSION
+    );
     assert_table_exists(&reopened.conn, "quoted_tweets")?;
     Ok(())
 }
 
 #[test]
-fn migrates_v1_schema_to_v2_without_data_loss() -> crate::Result<()> {
+fn migrates_v1_schema_to_current_without_data_loss() -> crate::Result<()> {
     // A database from the shipped v1 schema (user_version 1, no reader/links
-    // columns, no playback URL, no tag_colors/history_events) must upgrade in
-    // place: rows survive, new columns/tables appear, and the media playback
-    // URL is backfilled from the stored variants.
+    // columns, no playback URL, no tag_colors/history_events, legacy FTS
+    // document table) must upgrade in place: rows survive, new columns/tables
+    // appear, the media playback URL is backfilled from the stored variants and
+    // the search index is rebuilt.
     let temp_dir = TempDir::new()?;
     let db_path = temp_dir.path().join("v1-upgrade.db");
     create_v1_database(&db_path)?;
 
     let db = Database::open(&db_path)?;
 
-    assert_eq!(current_user_version(&db.conn)?, 2);
+    assert_eq!(current_user_version(&db.conn)?, CURRENT_SCHEMA_USER_VERSION);
+    assert_table_exists(&db.conn, "bookmarks_search_docs")?;
+    assert_table_absent(&db.conn, LEGACY_FTS_CONTENT_TABLE)?;
+    assert_eq!(
+        db.search("v1 row", 10)?.len(),
+        1,
+        "the FTS index is rebuilt for rows written before the document-table rename"
+    );
     for column_name in ["is_read", "links_json", "is_favorite", "has_media"] {
         assert_column_exists(&db.conn, column_name)?;
     }
@@ -153,7 +173,10 @@ fn migrates_v1_schema_to_v2_without_data_loss() -> crate::Result<()> {
 
     // Reopening the upgraded database is a no-op.
     let reopened = Database::open(&db_path)?;
-    assert_eq!(current_user_version(&reopened.conn)?, 2);
+    assert_eq!(
+        current_user_version(&reopened.conn)?,
+        CURRENT_SCHEMA_USER_VERSION
+    );
     assert_eq!(reopened.count_bookmarks()?, 1);
     Ok(())
 }
@@ -282,7 +305,7 @@ fn upgrades_previous_schema_and_keeps_fixture_parity() -> crate::Result<()> {
 
     let db = Database::open(&db_path)?;
 
-    assert_eq!(current_user_version(&db.conn)?, 2);
+    assert_eq!(current_user_version(&db.conn)?, CURRENT_SCHEMA_USER_VERSION);
     assert_table_exists(&db.conn, "quoted_tweets")?;
     assert_media_metadata_columns_exist(&db.conn)?;
     assert_index_exists(&db.conn, "idx_quoted_tweets_tweet_url")?;
@@ -302,7 +325,10 @@ fn upgrades_previous_schema_and_keeps_fixture_parity() -> crate::Result<()> {
     drop(db);
 
     let reopened = Database::open(&db_path)?;
-    assert_eq!(current_user_version(&reopened.conn)?, 2);
+    assert_eq!(
+        current_user_version(&reopened.conn)?,
+        CURRENT_SCHEMA_USER_VERSION
+    );
     assert_eq!(reopened.count_bookmarks()?, 4);
     let quotes: i64 = reopened
         .conn
@@ -413,7 +439,7 @@ fn repairs_quoted_tweet_table_from_an_earlier_draft_shape() -> crate::Result<()>
     ] {
         assert_table_column_exists(&db.conn, "quoted_tweets", column_name)?;
     }
-    assert_eq!(current_user_version(&db.conn)?, 2);
+    assert_eq!(current_user_version(&db.conn)?, CURRENT_SCHEMA_USER_VERSION);
     Ok(())
 }
 
@@ -430,6 +456,125 @@ fn file_backed_database_uses_wal_journal_mode() -> crate::Result<()> {
     Ok(())
 }
 
+#[test]
+fn migrates_v2_fts_shadow_table_and_preserves_search() -> crate::Result<()> {
+    // A v2 database stored the FTS document table under the FTS5 shadow-table
+    // name `bookmarks_fts_content`. Schema v3 must move the rows to
+    // `bookmarks_search_docs`, recreate the virtual table and triggers, rebuild
+    // the postings, and leave search working for both old and new rows.
+    let temp_dir = TempDir::new()?;
+    let db_path = temp_dir.path().join("v2-fts-upgrade.db");
+    create_v2_fts_shadow_database(&db_path)?;
+
+    let db = Database::open(&db_path)?;
+    assert_eq!(current_user_version(&db.conn)?, CURRENT_SCHEMA_USER_VERSION);
+    assert_table_exists(&db.conn, "bookmarks_search_docs")?;
+    assert_table_absent(&db.conn, LEGACY_FTS_CONTENT_TABLE)?;
+    assert_eq!(db.count_bookmarks()?, 1);
+    assert_eq!(
+        db.search("migrated fts row", 10)?.len(),
+        1,
+        "the rebuilt index keeps pre-migration matches"
+    );
+
+    // New writes keep syncing through the new document table and triggers.
+    let parsed = crate::ingestion::Ingester::new().parse_content("json", MIGRATION_JSON)?;
+    assert_eq!(db.insert_bookmarks(&parsed)?, 1);
+    assert_eq!(db.search("post migration row", 10)?.len(), 1);
+    let document_rows: i64 =
+        db.conn
+            .query_row("SELECT COUNT(*) FROM bookmarks_search_docs", [], |row| {
+                row.get(0)
+            })?;
+    assert_eq!(document_rows, 2, "one document row per bookmark");
+    drop(db);
+
+    // The whole point of the rename: clients using a newer SQLite (which
+    // rejects triggers on shadow tables) must be able to open the migrated file.
+    match query_with_system_sqlite3(&db_path) {
+        None => eprintln!("skipping external readability check: sqlite3 not on PATH"),
+        Some(result) => {
+            let rows = result.map_err(|stderr| {
+                crate::Error::Other(format!(
+                    "system sqlite3 cannot open the migrated database: {stderr}"
+                ))
+            })?;
+            assert_eq!(rows, "2");
+        }
+    }
+
+    // Reopening a migrated database performs no further work and keeps search.
+    let reopened = Database::open(&db_path)?;
+    assert_eq!(
+        current_user_version(&reopened.conn)?,
+        CURRENT_SCHEMA_USER_VERSION
+    );
+    assert_eq!(reopened.search("migrated fts row", 10)?.len(), 1);
+    assert_eq!(reopened.search("post migration row", 10)?.len(), 1);
+    Ok(())
+}
+
+#[test]
+fn fresh_database_is_readable_by_system_sqlite() -> crate::Result<()> {
+    // Regression for the B-CD-1 reproduction: a database created by current
+    // code must be openable by the system `sqlite3` (3.54 rejects triggers on
+    // FTS5 shadow tables). Skipped when sqlite3 is not installed.
+    let temp_dir = TempDir::new()?;
+    let db_path = temp_dir.path().join("fresh-external.db");
+    {
+        let db = Database::open(&db_path)?;
+        let parsed = crate::ingestion::Ingester::new().parse_content("json", MIGRATION_JSON)?;
+        assert_eq!(db.insert_bookmarks(&parsed)?, 1);
+    }
+    match query_with_system_sqlite3(&db_path) {
+        None => eprintln!("skipping external readability check: sqlite3 not on PATH"),
+        Some(result) => {
+            let rows = result.map_err(|stderr| {
+                crate::Error::Other(format!(
+                    "system sqlite3 cannot open the fresh database: {stderr}"
+                ))
+            })?;
+            assert_eq!(rows, "1");
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn schema_never_creates_triggers_on_fts_shadow_tables() -> crate::Result<()> {
+    // Cheap, bundled-version-independent guard for the B-CD-1 class: no user
+    // trigger may live on a table named after an FTS5 shadow table.
+    let temp_dir = TempDir::new()?;
+    let db_path = temp_dir.path().join("no-shadow-triggers.db");
+    let db = Database::open(&db_path)?;
+    let shadow_tables = [
+        "bookmarks_fts_data",
+        "bookmarks_fts_idx",
+        "bookmarks_fts_content",
+        "bookmarks_fts_docsize",
+        "bookmarks_fts_config",
+    ];
+    let mut stmt = db
+        .conn
+        .prepare("SELECT name, tbl_name FROM sqlite_master WHERE type = 'trigger'")?;
+    let triggers = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    assert!(
+        !triggers.is_empty(),
+        "the schema should create sync triggers"
+    );
+    for (trigger, table) in triggers {
+        assert!(
+            !shadow_tables.contains(&table.as_str()),
+            "trigger {trigger} is created on FTS shadow table {table}"
+        );
+    }
+    Ok(())
+}
+
 fn create_legacy_database(path: &Path) -> crate::Result<()> {
     let conn = Connection::open(path)?;
     create_legacy_schema(&conn)?;
@@ -443,7 +588,7 @@ fn create_legacy_database(path: &Path) -> crate::Result<()> {
 
 fn create_future_version_database(path: &Path) -> crate::Result<()> {
     let conn = Connection::open(path)?;
-    conn.execute_batch("PRAGMA user_version = 3;")?;
+    conn.execute_batch("PRAGMA user_version = 4;")?;
     create_legacy_schema(&conn)?;
     insert_legacy_bookmark(&conn)
 }
@@ -513,6 +658,8 @@ fn create_v1_database(path: &Path) -> crate::Result<()> {
             unavailable INTEGER NOT NULL DEFAULT 0
         );
         CREATE TABLE app_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        -- Deliberately the pre-v3 shadow-named document table: this fixture
+        -- must keep exercising the migration that renames it.
         CREATE TABLE bookmarks_fts_content (
             rowid INTEGER PRIMARY KEY,
             bookmark_id TEXT NOT NULL,
@@ -778,5 +925,91 @@ fn assert_table_exists(conn: &Connection, table_name: &str) -> crate::Result<()>
         |row| row.get(0),
     )?;
     assert_eq!(exists, 1);
+    Ok(())
+}
+
+fn assert_table_absent(conn: &Connection, table_name: &str) -> crate::Result<()> {
+    let exists: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+        [table_name],
+        |row| row.get(0),
+    )?;
+    assert_eq!(exists, 0, "unexpected legacy table {table_name}");
+    Ok(())
+}
+
+/// Run `SELECT COUNT(*) FROM bookmarks` through the system `sqlite3` binary.
+///
+/// Returns `None` when sqlite3 is not installed (the readability check is then
+/// skipped), `Some(Ok(count))` on success and `Some(Err(stderr))` when the
+/// client could not open the database. This is what catches the B-CD-1 class on
+/// machines with SQLite >= the shadow-trigger check; on older clients the file
+/// opens and the shadow-table invariant test above is the guard.
+fn query_with_system_sqlite3(path: &Path) -> Option<std::result::Result<String, String>> {
+    let output = std::process::Command::new("sqlite3")
+        .arg(path)
+        .arg("SELECT COUNT(*) FROM bookmarks;")
+        .output()
+        .ok()?;
+    if output.status.success() {
+        Some(Ok(String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .to_string()))
+    } else {
+        Some(Err(String::from_utf8_lossy(&output.stderr)
+            .trim()
+            .to_string()))
+    }
+}
+
+/// Recreate the pre-v3 FTS storage shape on a v2 database: the virtual table
+/// uses `content='bookmarks_fts_content'` and the sync triggers live on that
+/// shadow-named table. This is exactly the on-disk state every user library
+/// had before schema v3.
+fn create_v2_fts_shadow_database(path: &Path) -> crate::Result<()> {
+    {
+        // Create a current-schema file, then rewire only its FTS storage to the
+        // pre-v3 shape so the upgrade path is exercised with realistic data.
+        let _db = Database::open(path)?;
+    }
+    let conn = Connection::open(path)?;
+    conn.execute_batch(
+        r#"
+        DROP TRIGGER IF EXISTS bookmarks_fts_insert;
+        DROP TRIGGER IF EXISTS bookmarks_fts_delete;
+        DROP TRIGGER IF EXISTS bookmarks_fts_update;
+        DROP TABLE IF EXISTS bookmarks_fts;
+        DROP TABLE IF EXISTS bookmarks_search_docs;
+        CREATE TABLE bookmarks_fts_content (
+            rowid INTEGER PRIMARY KEY,
+            bookmark_id TEXT NOT NULL,
+            content TEXT,
+            note_text TEXT,
+            author_handle TEXT,
+            author_name TEXT,
+            tags_text TEXT
+        );
+        CREATE VIRTUAL TABLE bookmarks_fts USING fts5(
+            content, note_text, author_handle, author_name, tags_text,
+            content='bookmarks_fts_content', content_rowid='rowid',
+            tokenize='porter unicode61'
+        );
+        CREATE INDEX idx_fts_content_bookmark ON bookmarks_fts_content(bookmark_id);
+        CREATE TRIGGER bookmarks_fts_insert AFTER INSERT ON bookmarks_fts_content BEGIN
+            INSERT INTO bookmarks_fts(rowid, content, note_text, author_handle, author_name, tags_text)
+            VALUES (NEW.rowid, NEW.content, NEW.note_text, NEW.author_handle, NEW.author_name, NEW.tags_text);
+        END;
+        INSERT INTO bookmarks
+            (id, tweet_url, content, tweeted_at, imported_at, author_handle, author_name)
+        VALUES
+            ('v2-fts-1', 'https://x.com/v2/status/1', 'migrated fts row', 1714564800, 1714564800,
+             'v2', 'V2 Author');
+        INSERT INTO bookmarks_fts_content
+            (bookmark_id, content, note_text, author_handle, author_name, tags_text)
+        VALUES
+            ('v2-fts-1', 'migrated fts row', NULL, 'v2', 'V2 Author', 'rust');
+        PRAGMA user_version = 2;
+        "#,
+    )?;
     Ok(())
 }

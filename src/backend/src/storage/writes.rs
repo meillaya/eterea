@@ -70,7 +70,7 @@ impl<'conn> BookmarkInsertStatements<'conn> {
                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)"#,
             )?,
             fts_content: conn.prepare_cached(
-                r#"INSERT INTO bookmarks_fts_content
+                r#"INSERT INTO bookmarks_search_docs
                    (bookmark_id, content, note_text, author_handle, author_name, tags_text)
                    VALUES (?1, ?2, ?3, ?4, ?5, ?6)"#,
             )?,
@@ -324,7 +324,7 @@ impl Database {
 
     /// Delete bookmark rows by id inside the caller's transaction.
     ///
-    /// `bookmarks_fts_content` is deleted explicitly: relying on the foreign-key
+    /// `bookmarks_search_docs` is deleted explicitly: relying on the foreign-key
     /// cascade alone left stale FTS rows behind, so a deleted bookmark could
     /// still match a search. Related rows (tags junction, media, quote) cascade.
     pub(crate) fn delete_bookmark_ids(&self, ids: &[String]) -> Result<usize> {
@@ -335,7 +335,7 @@ impl Database {
         let params = ids.iter().map(|id| id.as_str()).collect::<Vec<&str>>();
 
         self.conn.execute(
-            &format!("DELETE FROM bookmarks_fts_content WHERE bookmark_id IN ({placeholders})"),
+            &format!("DELETE FROM bookmarks_search_docs WHERE bookmark_id IN ({placeholders})"),
             rusqlite::params_from_iter(params.iter()),
         )?;
         self.conn.execute(
@@ -505,7 +505,7 @@ mod tests {
         let fts_rows: i64 = db
             .conn
             .query_row(
-                "SELECT COUNT(*) FROM bookmarks_fts_content WHERE bookmark_id = ?1",
+                "SELECT COUNT(*) FROM bookmarks_search_docs WHERE bookmark_id = ?1",
                 params![id],
                 |row| row.get(0),
             )

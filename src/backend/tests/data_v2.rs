@@ -567,3 +567,38 @@ fn delete_removes_the_bookmark_from_search() {
     assert!(db.search("rich bookmark", 10).unwrap().is_empty());
     assert!(db.search("héllo", 10).unwrap().is_empty());
 }
+
+#[test]
+fn millisecond_epoch_imports_with_the_true_date_and_keeps_calendar_working() {
+    // B-CD-3 regression: a 13-digit Date.getTime() epoch used to be stored as
+    // year 56302, which sorted to the top of the feed and made the calendar
+    // query return a NULL day (a route error). It must import as the true
+    // instant and the calendar day query must stay usable.
+    let db = Database::open_memory().unwrap();
+    let parsed = Ingester::new()
+        .parse_content(
+            "json",
+            r#"[{"tweet_url":"https://x.com/ms/status/1","timestamp":1714564800000,"full_text":"millisecond epoch post","screen_name":"ms","name":"Ms"}]"#,
+        )
+        .unwrap();
+    assert_eq!(parsed.len(), 1);
+    assert_eq!(
+        parsed[0].tweeted_at,
+        Utc.with_ymd_and_hms(2024, 5, 1, 12, 0, 0).unwrap()
+    );
+    db.insert_bookmarks(&parsed).unwrap();
+
+    let loaded = db.get_bookmarks(0, 10).unwrap();
+    assert_eq!(loaded.len(), 1);
+    assert_eq!(loaded[0].tweeted_at, parsed[0].tweeted_at);
+    assert_eq!(
+        loaded[0].tweeted_at.format("%Y-%m-%d").to_string(),
+        "2024-05-01"
+    );
+
+    let entries = db.get_bookmark_day_entries(0, i64::MAX).unwrap();
+    assert_eq!(
+        entries,
+        vec![("2024-05-01".to_string(), loaded[0].id.clone())]
+    );
+}

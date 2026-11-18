@@ -24,7 +24,7 @@ impl Database {
                       b.author_handle, b.author_name, b.author_profile_url, b.author_profile_image,
                       b.comments, b.is_favorite, b.is_read, b.links_json
                FROM bookmarks b
-               JOIN bookmarks_fts_content fc ON fc.bookmark_id = b.id
+               JOIN bookmarks_search_docs fc ON fc.bookmark_id = b.id
                JOIN bookmarks_fts fts ON fts.rowid = fc.rowid
                WHERE bookmarks_fts MATCH ?1
                ORDER BY bm25(bookmarks_fts), b.tweeted_at DESC, b.id DESC
@@ -216,7 +216,7 @@ impl Database {
                 // No outer JOIN → no row multiplication, no DISTINCT needed.
                 conditions.push(
                     "id IN (SELECT fc.bookmark_id FROM bookmarks_fts fts \
-                     JOIN bookmarks_fts_content fc ON fc.rowid = fts.rowid \
+                     JOIN bookmarks_search_docs fc ON fc.rowid = fts.rowid \
                      WHERE bookmarks_fts MATCH ?)"
                         .to_string(),
                 );

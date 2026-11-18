@@ -6,6 +6,7 @@
 //! and links. Importing an export restores tags, media metadata,
 //! quoted posts, URL entities, favorite, and read state.
 
+use super::date_parse::parse_epoch_candidate;
 use crate::models::{
     Bookmark, BookmarkBuilder, LinkEntity, Media, QuotedTweet, MAX_MEDIA_PER_BOOKMARK,
 };
@@ -225,7 +226,7 @@ fn optional_date(value: &str) -> Option<DateTime<Utc>> {
                 .trim()
                 .parse::<i64>()
                 .ok()
-                .and_then(|timestamp| DateTime::<Utc>::from_timestamp(timestamp, 0))
+                .and_then(parse_epoch_candidate)
         })
 }
 

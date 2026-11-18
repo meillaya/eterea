@@ -26,12 +26,22 @@ pub enum MediaError {
     HttpStatus(u16),
     /// The response exceeded the configured byte cap.
     TooLarge,
+    /// The response `Content-Type` is not a media type this crate can decode.
+    ///
+    /// Image fetches only accept the `eterea_logic::is_image_mime` allowlist;
+    /// video downloads accept progressive MP4 and generic binary types. The
+    /// bytes are never handed to a decoder or written to a cache.
+    UnsupportedType,
     /// The server sent an empty body, which is never a usable image or video.
     EmptyResponse,
     /// A redirect was refused: relative, unsafe, or too many hops.
     RedirectRefused,
     /// `ffmpeg` is not installed or not usable; video frames cannot decode.
     DecoderUnavailable,
+    /// The decoder ran but produced no usable frames (it failed or the local
+    /// file is not decodable). Looping is abandoned instead of respawning the
+    /// decoder forever.
+    DecodeFailed,
     /// `ffplay` is not installed or could not start; sound cannot play.
     AudioUnavailable,
     /// The request or destination path was invalid.
@@ -52,11 +62,13 @@ impl fmt::Display for MediaError {
             Self::Connection => f.write_str("connection failed"),
             Self::HttpStatus(status) => write!(f, "server returned HTTP {status}"),
             Self::TooLarge => f.write_str("response too large"),
+            Self::UnsupportedType => f.write_str("unsupported media content type"),
             Self::EmptyResponse => f.write_str("empty response"),
             Self::RedirectRefused => f.write_str("redirect refused"),
             Self::DecoderUnavailable => {
                 f.write_str("ffmpeg not found: install ffmpeg or add it to PATH")
             }
+            Self::DecodeFailed => f.write_str("video decoder failed"),
             Self::AudioUnavailable => f.write_str(
                 "ffplay not found: install ffmpeg (it includes ffplay) or add it to PATH",
             ),

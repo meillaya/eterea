@@ -3,7 +3,7 @@
 //! Bulk operations take a [`BookmarkSelection`]: `Ids` uses one `IN` list, a
 //! `Query` uses the shared SQL predicate so a filter match never materializes
 //! 10,000 ids. Every mutation keeps `tags`, `bookmark_tags`,
-//! `bookmarks_fts_content.tags_text` (and therefore FTS) in sync in the same
+//! `bookmarks_search_docs.tags_text` (and therefore FTS) in sync in the same
 //! transaction as its history event.
 
 use super::database::Database;
@@ -205,13 +205,13 @@ impl Database {
             )?;
         }
         self.conn.execute(
-            r#"UPDATE bookmarks_fts_content
+            r#"UPDATE bookmarks_search_docs
                SET tags_text = COALESCE((
                    SELECT group_concat(name, ' ')
                    FROM (
                        SELECT t.name FROM bookmark_tags bt
                        JOIN tags t ON t.id = bt.tag_id
-                       WHERE bt.bookmark_id = bookmarks_fts_content.bookmark_id
+                       WHERE bt.bookmark_id = bookmarks_search_docs.bookmark_id
                        ORDER BY t.name
                    )
                ), '')
@@ -304,18 +304,18 @@ impl Database {
         Ok(())
     }
 
-    /// Recompute `bookmarks_fts_content.tags_text` for the materialized
+    /// Recompute `bookmarks_search_docs.tags_text` for the materialized
     /// selection. The FTS triggers on the content table keep the search index
     /// in sync.
     fn sync_fts_tags_for_selection(&self) -> Result<()> {
         self.conn.execute(
-            r#"UPDATE bookmarks_fts_content
+            r#"UPDATE bookmarks_search_docs
                SET tags_text = COALESCE((
                    SELECT group_concat(name, ' ')
                    FROM (
                        SELECT t.name FROM bookmark_tags bt
                        JOIN tags t ON t.id = bt.tag_id
-                       WHERE bt.bookmark_id = bookmarks_fts_content.bookmark_id
+                       WHERE bt.bookmark_id = bookmarks_search_docs.bookmark_id
                        ORDER BY t.name
                    )
                ), '')
@@ -334,7 +334,7 @@ impl Database {
         };
         self.conn.execute(
             &format!(
-                "DELETE FROM bookmarks_fts_content \
+                "DELETE FROM bookmarks_search_docs \
                  WHERE bookmark_id IN (SELECT id FROM bookmarks WHERE {predicate})"
             ),
             params_from_iter(where_params.iter()),

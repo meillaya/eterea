@@ -74,7 +74,7 @@ Exit codes: `0` pass, `1` verification failure, `2` usage or environment error.
 
 ## Matrix
 
-82 captures. Scenes run at all three sizes and both themes; routes, datasets and
+88 captures. Scenes run at all three sizes and both themes; routes, datasets and
 scripts run at `1440x900` in both themes. Everything uses `--scale 1`, so PNG
 pixels equal the requested point size.
 
@@ -110,7 +110,7 @@ schema for `.work/ui-harness/datasets/empty`. Captures read them through
 - the accessibility root has non-zero bounds `[0, 0, W, H]`;
 - no accessibility node has negative width/height, and no node without a
   `clips` state ancestor extends past the window (clipping/overflow signal);
-- expected accessibility text exists: brand, the eight nav labels
+- expected accessibility text exists: brand, the nav labels
   (`feed authors topics graph calendar import history settings`), and
   scene/route/script-specific copy — viewer actions (`favorited`, `copy link`,
   `open on x`, `edit tags`, `delete`), quote-card text, media alt labels
@@ -230,7 +230,7 @@ corrupt, if a hash/signature does not match, or if an input file changed.
   code, not a silent pass.
 - **Cost.** Each capture is a full offscreen app launch (debug build, GPU init,
   virtual frames): roughly 17-18 s for a demo scene and 2-5 s for a
-  database/script route; the full 82-case matrix took ~95-104 s on this host
+  database/script route; the full 88-case matrix took ~85-105 s on this host
   with the default 8 workers (plus the cargo build). The debug `eterea` binary
   is ~650 MB.
 - **copy-lint scope.** It lints the aggregate of accessibility and paint text

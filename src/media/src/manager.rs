@@ -826,6 +826,41 @@ mod tests {
     }
 
     #[test]
+    fn unsupported_content_type_failures_are_typed_and_never_cached() {
+        let scratch = ScratchDir::new("manager-mime-reject");
+        let url = "https://pbs.twimg.com/media/not-an-image.jpg";
+        // The real HttpsFetcher returns UnsupportedType from the response
+        // Content-Type gate in http.rs before it reads the body; the manager
+        // contract under test is "typed failure, no cache write, no poisoning".
+        let fetcher = FakeFetcher::new(Box::new(|_| Err(MediaError::UnsupportedType)));
+        let config = test_config().with_cache(DiskCacheConfig::new(scratch.path()));
+        let manager = manager_with(Arc::clone(&fetcher), config);
+
+        manager
+            .enqueue(11_u64, url, ImageKind::Image)
+            .expect("enqueue");
+        let (id, error) = expect_failed(next_event(&manager));
+        assert_eq!(id, RequestId(11));
+        assert_eq!(error, MediaError::UnsupportedType);
+        assert_eq!(
+            manager.cache_stats().expect("cache stats").entries,
+            0,
+            "a rejected content type must not be cached"
+        );
+
+        // A second request must go back to the network: the failure did not
+        // create a cache entry that would be served without re-validation.
+        manager
+            .enqueue(12_u64, url, ImageKind::Image)
+            .expect("retry enqueue");
+        let (id, error) = expect_failed(next_event(&manager));
+        assert_eq!(id, RequestId(12));
+        assert_eq!(error, MediaError::UnsupportedType);
+        assert_eq!(fetcher.calls(), 2);
+        assert_eq!(manager.cache_stats().expect("cache stats").entries, 0);
+    }
+
+    #[test]
     fn fetches_populate_the_cache_and_clear_empties_it() {
         let scratch = ScratchDir::new("manager-cache-write");
         let url = "https://pbs.twimg.com/media/written.jpg";

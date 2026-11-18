@@ -112,13 +112,18 @@ CREATE VIRTUAL TABLE IF NOT EXISTS bookmarks_fts USING fts5(
     author_handle,
     author_name,
     tags_text,
-    content='bookmarks_fts_content',
+    content='bookmarks_search_docs',
     content_rowid='rowid',
     tokenize='porter unicode61'
 );
 
--- Content table for FTS5
-CREATE TABLE IF NOT EXISTS bookmarks_fts_content (
+-- External-content document table for FTS5.
+--
+-- The name deliberately avoids the FTS5 shadow-table namespace: FTS5 owns
+-- `<vtab>_data`, `<vtab>_idx`, `<vtab>_content`, `<vtab>_docsize` and
+-- `<vtab>_config`, and newer SQLite refuses to create triggers on shadow
+-- tables. Do not rename it back to `bookmarks_fts_content`.
+CREATE TABLE IF NOT EXISTS bookmarks_search_docs (
     rowid INTEGER PRIMARY KEY,
     bookmark_id TEXT NOT NULL,
     content TEXT,
@@ -145,20 +150,20 @@ CREATE INDEX IF NOT EXISTS idx_bookmark_tags_tag ON bookmark_tags(tag_id);
 CREATE INDEX IF NOT EXISTS idx_media_bookmark ON media(bookmark_id);
 CREATE INDEX IF NOT EXISTS idx_quoted_tweets_tweet_url ON quoted_tweets(tweet_url);
 CREATE INDEX IF NOT EXISTS idx_quoted_tweets_author_handle ON quoted_tweets(author_handle);
-CREATE INDEX IF NOT EXISTS idx_fts_content_bookmark ON bookmarks_fts_content(bookmark_id);
+CREATE INDEX IF NOT EXISTS idx_bookmarks_search_docs_bookmark ON bookmarks_search_docs(bookmark_id);
 
 -- Triggers to keep FTS index in sync
-CREATE TRIGGER IF NOT EXISTS bookmarks_fts_insert AFTER INSERT ON bookmarks_fts_content BEGIN
+CREATE TRIGGER IF NOT EXISTS bookmarks_fts_insert AFTER INSERT ON bookmarks_search_docs BEGIN
     INSERT INTO bookmarks_fts(rowid, content, note_text, author_handle, author_name, tags_text)
     VALUES (NEW.rowid, NEW.content, NEW.note_text, NEW.author_handle, NEW.author_name, NEW.tags_text);
 END;
 
-CREATE TRIGGER IF NOT EXISTS bookmarks_fts_delete AFTER DELETE ON bookmarks_fts_content BEGIN
+CREATE TRIGGER IF NOT EXISTS bookmarks_fts_delete AFTER DELETE ON bookmarks_search_docs BEGIN
     INSERT INTO bookmarks_fts(bookmarks_fts, rowid, content, note_text, author_handle, author_name, tags_text)
     VALUES ('delete', OLD.rowid, OLD.content, OLD.note_text, OLD.author_handle, OLD.author_name, OLD.tags_text);
 END;
 
-CREATE TRIGGER IF NOT EXISTS bookmarks_fts_update AFTER UPDATE ON bookmarks_fts_content BEGIN
+CREATE TRIGGER IF NOT EXISTS bookmarks_fts_update AFTER UPDATE ON bookmarks_search_docs BEGIN
     INSERT INTO bookmarks_fts(bookmarks_fts, rowid, content, note_text, author_handle, author_name, tags_text)
     VALUES ('delete', OLD.rowid, OLD.content, OLD.note_text, OLD.author_handle, OLD.author_name, OLD.tags_text);
     INSERT INTO bookmarks_fts(rowid, content, note_text, author_handle, author_name, tags_text)

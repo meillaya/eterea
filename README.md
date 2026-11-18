@@ -107,6 +107,10 @@ Build-space and headless render measurements are in
 
 ### First run
 
+The header's `search` item and its footer `keys` hint are ordinary pointer
+targets, so neither the search field nor the shortcut sheet takes a memorized
+key to find.
+
 The empty archive offers one action: import bookmarks. The importer accepts one
 or many CSV, JSON or X archive files by picker or drag and drop, previews every
 file, and writes the batch only after you confirm. Duplicate tweet URLs are
@@ -123,11 +127,14 @@ The archive lives at `<platform data dir>/eterea/bookmarks.db`. On Linux that is
 
 - Imports CSV, JSON and X archive exports, one file or many, by picker or drop.
   Preview before write; duplicate tweet URLs are skipped.
-- Searches text, names, handles and tags over SQLite FTS5. Paged author and topic
-  lists filter the feed and scroll without a demo cap.
+- Searches text, names, handles and tags over SQLite FTS5. The feed, and with it
+  every search result, pages in as you scroll, so the whole archive is reachable
+  rather than a demo cap. Author and topic lists filter and page the same way,
+  with an inline filter field (`/` while the list is open).
 - Loads avatars and media automatically for the visible archive, at the best
   rendition, through a bounded disk cache. Images and video files are cached
-  outside SQLite; the cache can be measured and cleared in settings.
+  outside SQLite; the cache can be measured and cleared in settings. The media
+  queue retries keys that arrive while it is full instead of dropping them.
 - Renders X media carousels up to 20 items, with a lightbox across the whole set.
   Tweet and quote URLs are removed from the reading surface; external links keep
   their display URL and quotes show as cards.
@@ -179,8 +186,11 @@ The archive lives at `<platform data dir>/eterea/bookmarks.db`. On Linux that is
 | `Cmd/Ctrl-F` | Search |
 | `Cmd/Ctrl-P` | Command palette |
 | `Cmd/Ctrl-,` | Settings |
+| mouse back / forward | Leave an overlay or step between routes |
 
-Mouse selections, bylines, tags, media and navigation work too.
+The footer's `keys` hint opens the same shortcut sheet without the keyboard, and
+`/` filters the authors or topics list when that route is open. Mouse
+selections, bylines, tags, media and navigation work too.
 
 ---
 

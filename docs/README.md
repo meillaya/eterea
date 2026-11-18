@@ -9,9 +9,11 @@
 5. [`verification/ui-harness.md`](verification/ui-harness.md): headless UI matrix and limits.
 6. [`performance.md`](performance.md): build space and headless render measurements.
 7. [`operations/release-readiness.md`](operations/release-readiness.md): release evidence and known gaps.
+8. [`audit/2026-11-17-critical-audit.md`](audit/2026-11-17-critical-audit.md): the 2026-11-17 critical audit, the defects it fixed and the ranked feature backlog.
 
 ## Supporting areas
 
 - `design/`: approved direction, copy deck and component spec.
 - `verification/`: evidence contract and coverage tables.
+- `audit/`: dated critical audits and their follow-ups.
 - `assets/`: brand marks and README captures.

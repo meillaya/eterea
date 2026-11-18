@@ -190,6 +190,15 @@ fn media_errors_are_typed_and_actionable() {
     assert!(eterea_media::MediaError::AudioUnavailable
         .to_string()
         .contains("ffplay"));
+    // Typed media-policy failures introduced with the MIME/decode hardening.
+    assert_eq!(
+        eterea_media::MediaError::UnsupportedType.to_string(),
+        "unsupported media content type"
+    );
+    assert_eq!(
+        eterea_media::MediaError::DecodeFailed.to_string(),
+        "video decoder failed"
+    );
 }
 
 #[test]
@@ -265,6 +274,7 @@ fn playback_state_is_constructible_from_the_public_api() {
         looping: false,
         ended: false,
         error: None,
+        error_kind: None,
         position: Duration::ZERO,
         duration: Some(Duration::from_secs(1)),
         from_cache: Some(true),

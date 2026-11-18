@@ -48,9 +48,10 @@ eterea is a local reading app for an X/Twitter bookmark archive. It imports a CS
 ### Layout
 
 - Window: 1280x820 default, minimum 960x640. Remember size and position.
-- Header: 56px tall, 52px side padding. 20px translucent purple orb + wordmark 20px at the left; nav 12.5px at the right with 26px gaps: feed, authors, topics, graph, calendar, import, history, settings.
-- Feed: reading column 720px centered. Marginalia rail 150px wide, right-aligned, ending 30px left of the column. Content starts 64px below the header.
-- Post rhythm: 64px between posts. One 1px `line` only when the saved day changes, spanning the reading column.
+- Header: 56px tall, 52px side padding. 20px translucent purple orb + wordmark 20px at the left; nav 12.5px at the right with 26px gaps: feed, authors, topics, graph, calendar, import, history, settings, search.
+- Footer: 24px tall, 52px side padding. A transient status message at the left; the `keys` shortcut hint at the right. The hint is the minimizable form of the key sheet: the sheet is a clean tooltip with no scrim, and pressing anywhere outside or `esc` folds it back to the hint.
+- Feed: reading column 720px centered. Marginalia rail 86px wide, right-aligned, ending 12px left of the column. The 150px rail ending 30px left from the Daylight prototype does not fit a 720px column inside the 960px minimum window, so the rail stays narrow; a wider rail is a follow-up once the column is responsive. Content starts 64px below the header.
+- Post rhythm: 64px between posts, carried as 32px above and below each post. A saved-day change puts one 1px `line` inside that rhythm; it does not add to it.
 - Selection: 2px `ink` rule at 14px left of the reading column, full post height. Selected post scrolls into view.
 - Detail: same column, 740px when media needs the room, vertically centered when short. Back returns to the previous scroll position. Viewer tags are editable, the last line carries `edit tags` and `delete`; delete confirms before writing.
 - Media: column width. One image 720x420; two 358x252 with 3px gaps; three: one 720x360 plus two 358x252; four: 2x2 at 358x252. Radius 2px. Always reserve the aspect ratio.
@@ -105,11 +106,15 @@ No visual/multi-select mode. One selected post at a time.
 | `,` | settings | settings | no |
 | `g` then `g` | top of feed | top | no |
 | `G` | end of loaded feed | end | no |
+| mouse back | close overlay or text mode, then previous route | back to feed | close |
+| mouse forward | return to the route back left | no | no |
 
-- `Esc` never traps. It closes the top overlay, then search, then leaves detail.
-- Text fields swallow keys. The palette and search are the only text contexts outside import and settings.
+- `Esc` never traps. It closes the top overlay, then search, then leaves a non-feed route, then clears the feed filter.
+- Text fields swallow keys. The palette, search and the directory filter are the only text contexts outside import and settings.
 - No global shortcut uses Ctrl or Cmd except `Ctrl/Cmd-P` for the palette, `Ctrl/Cmd-F` for search, `Ctrl/Cmd-,` for settings, and clipboard/quit shortcuts reserved by the OS.
-- The key sheet is generated from the same table the handler uses. It cannot drift.
+- Mouse back and forward buttons are first-class: back closes the top overlay or text mode, then returns to the previous route; forward returns to the route back left. Both walk the same route stack the keyboard leaves.
+- On authors and topics, `/` focuses the directory filter instead of opening feed search.
+- The key sheet is hand-maintained next to the handler. Generating it from one shared keymap table is a tracked follow-up: `eterea_ui_model::action_for` exists but the shell does not consume it yet.
 
 ### Selection
 
@@ -121,8 +126,8 @@ No visual/multi-select mode. One selected post at a time.
 
 ### Status
 
-- 24px bottom area, 11.5px text, 52px left inset. It exists only while it has a message: `link copied`, an import result, or an error. It clears after 2s or on the next action.
-- No permanent shortcut hints, mode badges, counts, line/column numbers, theme names, or version strings.
+- 24px footer, 11.5px status text at the left, 52px inset. The status exists only while it has a message: `link copied`, an import result, or an error. It clears after 2s or on the next action.
+- The footer's right side carries one permanent hint, `keys`, the minimizable key sheet. It is the only permanent hint; no mode badges, counts, line/column numbers, theme names, or version strings.
 
 ## 4. Screens and components
 
@@ -148,7 +153,7 @@ Same column; 740px when a gallery needs it. Post, media at full size, quote, edi
 
 ### Header search
 
-`/` or `Ctrl/Cmd-F` reveals a 360px field at the right, replacing the nav with a 160ms fade. Placeholder `search`. Typing filters the feed over text, name, handle, tags. Enter opens the first result. Esc clears and closes. No result count, no "results" label. A palette command `unread` filters unread posts.
+`/` or `Ctrl/Cmd-F` reveals a 360px field at the right, replacing the nav with a 160ms fade. The nav's rightmost item is the word `search`, so the field is discoverable with a pointer as well; it opens the same field. Placeholder `search`. Typing filters the feed over text, name, handle, tags. Enter opens the first result. Esc clears and closes. The feed pages as it scrolls, so a broad query reaches every match. No result count, no "results" label. A palette command `unread` filters unread posts.
 
 ### Command palette
 
@@ -156,11 +161,11 @@ Same column; 740px when a gallery needs it. Post, media at full size, quote, edi
 
 ### Key sheet
 
-`?`. Right-aligned 300px panel, 1px `line`, 2px radius. Rows generated from the keymap: `j k move`, `enter open`, `esc close`, `/ search`, `: commands`, `? keys`, `f favorite`, `c copy link`, `o open on x`, `m load media`, `← → media`, `space play`. No all-caps, no categories, no letter-spacing.
+`?` or the footer's `keys` hint. A clean tooltip anchored at the bottom right, 320px, 1px `line`, 2px radius, no scrim. A `keys` header row carries `esc`; a press anywhere outside folds it back to the hint. Rows: `j k move`, `enter open`, `esc close`, `/ search`, `mouse back back`, `mouse forward forward`, `f favorite`, `c copy link`, `o open on x`, `m media / sound`, `← → carousel`, `space play`, `x select`, `shift j k extend`, `cmd a page`, `cmd shift a all`, `t tags`, `d delete`, `u unread · r read`, `h history`, `e export`, `: commands`. No all-caps, no categories, no letter-spacing.
 
 ### Authors, topics
 
-Paged list at the reading column: avatar 24, name 13, handle 12, count only if it is a data count (10.5px mono, right). Real scroll viewport, 100 rows per page, next page loaded at the bottom. Click filters the feed by author/tag and closes the route. Up/down moves, Enter filters, Esc returns. `/` filters the directory. No cards, no grid.
+A filter row at the top of the column: 720px wide, 36px tall, 1px `line` bottom border, placeholder `filter authors` / `filter topics` at the left, and the total data count at the right (10.5px mono). Pressing the row or `/` focuses the filter; typing filters the directory on the store, with an accent underline while editing and `esc` at the right. `esc` clears a non-empty filter before leaving the route. Rows: authors are 56px tall with a 2px selection rule, 32px avatar, a two-line name/handle block, and the post count right-aligned in 10.5px mono; topics are 48px tall with `#tag` and the count. Rows take a `band` hover fill. Real scroll viewport, 100 rows per page, the next page loads at the bottom, and a muted `loading` row appears while it arrives. Click filters the feed by author/tag and closes the route. Up/down moves, Enter filters, Esc returns to the feed. Empty filtered results show `no matches`. No cards, no grid.
 
 ### Graph
 
@@ -213,7 +218,7 @@ System decorations on Linux. 1280x820 default, minimum 960x640. Remember size/po
 - Focus ring: 1px accent, 2px offset, visible on keyboard focus only.
 - Pointer targets: at least 24x24px for text actions; 32px for nav rows; the full post row is the target for selection.
 - Every icon-only control has a name. Every image has alt text or is marked decorative.
-- Screen reader: Rune roles and labels for nav, post, author, media, favorite, quote, dialog, list, graph, calendar. The headless UI harness checks the accessibility tree on every route.
+- Screen reader: Rune roles and labels for nav, post, author, media, favorite, quote, dialog, list, graph, calendar. The search field and directory filter expose a `searchbox` role and a name; the footer `keys` hint and the header `search` item expose a `button` role with a name; the key sheet exposes a `dialog` role with a name. The headless UI harness checks the accessibility tree on every route.
 - Text scale from settings does not clip; layouts reflow at 125%.
 - `prefers-reduced-motion` is honored.
 - No keyboard trap. Text fields suppress globals, and Esc always returns.

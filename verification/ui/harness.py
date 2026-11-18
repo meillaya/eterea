@@ -32,7 +32,11 @@ Capture modes:
            with twenty images) for the media carousel.
   script   a Rune `--script` interaction on one of the archives (export sheet
            via `e`, selection bar via `x` + `shift+j`, carousel pages via `m` +
-           `Right`). Keys press at fixed virtual times; captures are deterministic.
+           `Right`, key sheet via `?`, search via `/` + typing, directory filter
+           via `/` on authors/topics, route back via the mouse back button).
+           Keys press at fixed virtual times; captures are deterministic.
+           A script case may set `"nav": false` when the interaction replaces
+           the nav (search) and `"absent"` for copy that must not render.
 
 Database-backed captures run with `ETEREA_HIDE_MEDIA=1` and avatars off in an
 isolated settings dir: remote references are never fetched, so screenshots are
@@ -262,7 +266,8 @@ def build_cases(matrix: dict) -> list[Case]:
 
     for script_case in matrix.get("script_cases") or []:
         visible = tuple(script_case.get("visible_expect", []))
-        a11y = tuple([expect["brand"]] + expect["nav"] + list(script_case.get("expect", [])))
+        nav = expect["nav"] if script_case.get("nav", True) else []
+        a11y = tuple([expect["brand"]] + nav + list(script_case.get("expect", [])))
         for theme in script_case["themes"]:
             cases.append(
                 Case(
@@ -277,6 +282,7 @@ def build_cases(matrix: dict) -> list[Case]:
                     use_route_env=False,
                     a11y_expect=a11y,
                     visible_expect=visible,
+                    absent=tuple(script_case.get("absent", [])),
                     min_texts=int(script_case.get("min_texts", 8)),
                     visible_min=int(script_case.get("min_visible_texts", len(visible))),
                 )

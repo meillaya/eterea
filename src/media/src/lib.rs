@@ -33,7 +33,13 @@
 //! `ffplay`. ffmpeg and ffplay never receive a remote URL. [`MediaTools`]
 //! reports typed, actionable availability for the UI; sound is muted by
 //! default, looping is optional, and pause/mute/volume/stop/ended/error state
-//! plus current position and duration are exposed for polling.
+//! plus current position and duration are exposed for polling. A decoder that
+//! exits without producing frames is reported as [`MediaError::DecodeFailed`]
+//! and never restarted, so a looping player cannot respawn a broken decoder
+//! forever. Image fetches enforce the `eterea_logic` image MIME allowlist and
+//! video downloads enforce a progressive-MP4/binary type gate; a disallowed
+//! `Content-Type` fails with [`MediaError::UnsupportedType`] before the body is
+//! read, decoded or cached.
 //!
 //! # Known limits
 //!

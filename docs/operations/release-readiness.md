@@ -20,7 +20,7 @@ python3 scripts/check-doc-links.py README.md 'docs/**/*.md'
 |:---|:---|:---|
 | Workspace tests | `cargo test --workspace` passes on the reference host. | Host toolchain has no rustfmt or clippy; devenv supplies them. |
 | Verification | `scripts/verify/ci.sh` passes Verus, the five gated Kani harnesses and Miri; `scripts/verify/fuzz.sh` passes URL and import targets. | Seven expensive URL/MIME Kani harnesses are advisory only. See `verification/COVERAGE.md`. |
-| UI matrix | Headless captures and accessibility-tree checks in `verification/ui/`; 82/82 pass with no clipping warnings. | Software Vulkan (lavapipe); interaction flows are script-captured, not exhaustively driven. |
+| UI matrix | Headless captures and accessibility-tree checks in `verification/ui/`; 88/88 pass with no clipping warnings. | Software Vulkan (lavapipe); interaction flows are script-captured, not exhaustively driven. |
 | Draft release workflow | YAML validates; builds and packages `eterea` with bundled non-GPU runtime libs, icons, desktop entry and checksums; direct ELF and launcher pass fresh-Xvfb `--snap/--tree` and process smokes. | No GitHub-hosted run has been observed. The artifact is unsigned. |
 
 ## Known gaps

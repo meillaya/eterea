@@ -6,7 +6,14 @@ use crate::{Error, Result};
 use rusqlite::types::ValueRef;
 use tracing::debug;
 
-const CURRENT_SCHEMA_USER_VERSION: i64 = 2;
+const CURRENT_SCHEMA_USER_VERSION: i64 = 3;
+
+/// Pre-v3 FTS external-content document table. The name ended with `_content`,
+/// which is an FTS5 shadow-table suffix for the `bookmarks_fts` virtual table;
+/// SQLite releases after the bundled one refuse to create triggers on shadow
+/// tables, so such a database cannot be opened by newer clients. Schema v3
+/// renames it to `bookmarks_search_docs` (see `migrate_fts_shadow_table`).
+const LEGACY_FTS_CONTENT_TABLE: &str = "bookmarks_fts_content";
 
 const BOOKMARK_V2_COLUMNS: &[(&str, &str)] = &[
     ("is_read", "INTEGER NOT NULL DEFAULT 0"),
@@ -40,6 +47,7 @@ impl Database {
         // migration must leave the previous database byte-identical instead of
         // claiming a newer user_version with a half-applied shape.
         self.conn.execute("BEGIN IMMEDIATE", [])?;
+        let mut fts_documents_migrated = false;
         let migrated = (|| -> Result<()> {
             self.ensure_legacy_bookmark_columns()?;
             self.ensure_bookmark_v2_columns()?;
@@ -48,8 +56,19 @@ impl Database {
             // creates the quote indexes that reference those columns.
             self.ensure_quoted_tweets_table()?;
 
+            // Rename the legacy shadow-named FTS document table before `SCHEMA`
+            // runs: `CREATE VIRTUAL TABLE IF NOT EXISTS bookmarks_fts` would
+            // keep the old table when the virtual table still exists.
+            fts_documents_migrated = self.migrate_fts_shadow_table()?;
+
             // Create schema (fresh tables, indexes, triggers).
             self.conn.execute_batch(SCHEMA)?;
+
+            if fts_documents_migrated {
+                // Recreate the search postings from the migrated document rows
+                // while still inside the migration transaction.
+                self.rebuild_search_index()?;
+            }
 
             self.ensure_is_favorite_column()?;
             self.ensure_media_metadata_columns()?;
@@ -322,6 +341,74 @@ GROUP BY author_handle;
             }
         }
 
+        Ok(())
+    }
+
+    /// Rename the pre-v3 FTS external-content document table out of the FTS5
+    /// shadow-table namespace and drop the old virtual table/triggers.
+    ///
+    /// `bookmarks_fts_content` matched the shadow-table name pattern of the
+    /// `bookmarks_fts` virtual table. SQLite allows creating triggers on shadow
+    /// tables only in older releases, so any newer client rejects the whole
+    /// database with "cannot create triggers on shadow tables". This step is
+    /// safe to attempt on every open: it returns `false` (no-op) once the
+    /// legacy table is gone, so reopening a migrated database performs no work.
+    ///
+    /// Data handling: the rows are copied with their `rowid` values first, so
+    /// the follow-up [`Self::rebuild_search_index`] rebuilds the same postings.
+    /// FTS5 only drops the `<vtab>_content` table when it owns normalized
+    /// content; this virtual table is external-content, so the legacy document
+    /// table is dropped explicitly after the virtual table.
+    fn migrate_fts_shadow_table(&self) -> Result<bool> {
+        if !self.table_exists(LEGACY_FTS_CONTENT_TABLE)? {
+            return Ok(false);
+        }
+
+        debug!("migrating legacy FTS document table out of the shadow namespace");
+        self.conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS bookmarks_search_docs (
+                rowid INTEGER PRIMARY KEY,
+                bookmark_id TEXT NOT NULL,
+                content TEXT,
+                note_text TEXT,
+                author_handle TEXT,
+                author_name TEXT,
+                tags_text TEXT,
+                FOREIGN KEY (bookmark_id) REFERENCES bookmarks(id) ON DELETE CASCADE
+            );
+            "#,
+        )?;
+        self.conn.execute(
+            r#"INSERT OR IGNORE INTO bookmarks_search_docs
+                   (rowid, bookmark_id, content, note_text, author_handle, author_name, tags_text)
+               SELECT rowid, bookmark_id, content, note_text, author_handle, author_name, tags_text
+               FROM bookmarks_fts_content"#,
+            [],
+        )?;
+        self.conn.execute_batch(
+            r#"
+            DROP TRIGGER IF EXISTS bookmarks_fts_insert;
+            DROP TRIGGER IF EXISTS bookmarks_fts_delete;
+            DROP TRIGGER IF EXISTS bookmarks_fts_update;
+            DROP TABLE IF EXISTS bookmarks_fts;
+            DROP TABLE IF EXISTS bookmarks_fts_content;
+            DROP INDEX IF EXISTS idx_fts_content_bookmark;
+            "#,
+        )?;
+        Ok(true)
+    }
+
+    /// Rebuild the FTS5 index from the external-content document table.
+    ///
+    /// Runs inside the caller-owned migration transaction. The FTS5 'rebuild'
+    /// command walks `bookmarks_search_docs` by `rowid` and recreates every
+    /// posting, which is how a migrated database keeps matching old searches.
+    fn rebuild_search_index(&self) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO bookmarks_fts(bookmarks_fts) VALUES('rebuild')",
+            [],
+        )?;
         Ok(())
     }
 

@@ -10,20 +10,17 @@
 
 use super::date_parse::{fill_extracted_hashtags, parse_date_candidates, tweet_url_for};
 use super::export_parser::parse_eterea_export_json;
-use super::media_metadata::{extract_media, media_from_value};
+use super::media_metadata::extract_media;
 use super::quote_metadata::{
     bare_quoted_id, embedded_quoted_object, media_from_media_keys, quoted_reference_id,
     quoted_tweet_from_object, quoted_tweet_from_v2,
 };
 use super::url_entities::extract_links;
-use crate::models::{Bookmark, BookmarkBuilder, Media, QuotedTweet};
+use crate::models::{Bookmark, BookmarkBuilder, QuotedTweet};
 use crate::{Error, Result};
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::BufReader;
 use std::path::Path;
 use tracing::{debug, warn};
 
@@ -36,34 +33,16 @@ impl JsonParser {
     }
 
     pub fn parse(&self, path: &Path) -> Result<Vec<Bookmark>> {
-        let file = File::open(path)?;
-        match serde_json::from_reader::<_, Vec<FlatJsonBookmark>>(BufReader::new(file)) {
-            Ok(bookmarks) => match Self::try_map_flat_bookmarks(bookmarks) {
-                Some(bookmarks) => {
-                    debug!("Parsed {} bookmarks from JSON fast path", bookmarks.len());
-                    Ok(bookmarks)
-                }
-                None => {
-                    let raw = std::fs::read_to_string(path)?;
-                    self.parse_str(&raw)
-                }
-            },
-            Err(_) => {
-                let raw = std::fs::read_to_string(path)?;
-                self.parse_str(&raw)
-            }
-        }
+        // There is intentionally no serde "fast path" over a narrower row
+        // struct here: a second row-to-bookmark mapping silently dropped the
+        // fields only `convert_raw` understands (content, author_handle, tags,
+        // quotes, links). One parser path keeps every supported shape equal.
+        let raw = std::fs::read_to_string(path)?;
+        self.parse_str(&raw)
     }
 
     pub fn parse_str(&self, raw: &str) -> Result<Vec<Bookmark>> {
         let payload = self.extract_payload(raw)?;
-
-        if let Ok(bookmarks) = serde_json::from_str::<Vec<FlatJsonBookmark>>(payload) {
-            if let Some(bookmarks) = Self::try_map_flat_bookmarks(bookmarks) {
-                debug!("Parsed {} bookmarks from JSON fast path", bookmarks.len());
-                return Ok(bookmarks);
-            }
-        }
 
         let root: Value = serde_json::from_str(payload)?;
 
@@ -116,73 +95,6 @@ impl JsonParser {
         }
 
         Ok(Some(bookmarks))
-    }
-
-    fn from_flat_bookmark(raw: FlatJsonBookmark) -> Result<Bookmark> {
-        let flat_links = flat_bookmark_links(&raw);
-        let tweet_url = raw
-            .tweet_url
-            .or_else(|| {
-                raw.screen_name
-                    .as_ref()
-                    .zip(raw.id_str.as_ref())
-                    .map(|(screen_name, id)| format!("https://x.com/{screen_name}/status/{id}"))
-            })
-            .ok_or_else(|| Error::Other("Missing tweet URL".into()))?;
-        let author_handle = raw.screen_name.unwrap_or_default();
-        let author_name = raw.name.unwrap_or_else(|| author_handle.clone());
-        let tweeted_at = parse_date_candidates([
-            raw.tweeted_at.as_deref(),
-            raw.bookmark_date.as_deref(),
-            raw.created_at.as_deref(),
-        ])?;
-
-        let mut builder = BookmarkBuilder::new()
-            .tweet_url(tweet_url)
-            .content(raw.full_text.unwrap_or_default())
-            .note_text(raw.note_tweet_text.unwrap_or_default())
-            .tweeted_at(tweeted_at)
-            .author_handle(author_handle)
-            .author_name(author_name)
-            .author_profile_image(raw.profile_image_url_https.unwrap_or_default());
-
-        if let Some(media) = raw.extended_media.or(raw.media) {
-            for item in media {
-                if let Some(media) = item.into_media() {
-                    builder = builder.add_media_metadata(media);
-                }
-            }
-        }
-
-        for link in flat_links {
-            builder = builder.add_link(link);
-        }
-
-        if let Some(quote) = quote_from_flat_fields(
-            raw.quoted_status,
-            raw.quoted_status_id_str.or_else(|| {
-                raw.quoted_status_id
-                    .and_then(|id| value_to_scalar_string(&id))
-            }),
-        ) {
-            builder = builder.quoted(quote);
-        }
-
-        let mut bookmark = builder.build().map_err(|e| Error::Other(e.to_string()))?;
-        fill_extracted_hashtags(&mut bookmark);
-
-        Ok(bookmark)
-    }
-
-    fn try_map_flat_bookmarks(bookmarks: Vec<FlatJsonBookmark>) -> Option<Vec<Bookmark>> {
-        let mut mapped = Vec::with_capacity(bookmarks.len());
-        for bookmark in bookmarks {
-            match Self::from_flat_bookmark(bookmark) {
-                Ok(bookmark) => mapped.push(bookmark),
-                Err(_) => return None,
-            }
-        }
-        Some(mapped)
     }
 
     fn extract_payload<'a>(&self, raw: &'a str) -> Result<&'a str> {
@@ -626,17 +538,6 @@ impl JsonParser {
     }
 }
 
-/// Build the quote of a flat fast-path bookmark from its optional fields.
-fn quote_from_flat_fields(
-    quoted_status: Option<Value>,
-    quoted_id: Option<String>,
-) -> Option<QuotedTweet> {
-    quoted_status
-        .as_ref()
-        .and_then(quoted_tweet_from_object)
-        .or_else(|| quoted_id.map(|id| QuotedTweet::unavailable(tweet_url_for("", &id))))
-}
-
 /// `(data rows, includes object)` when the root looks like an X API v2 response.
 fn v2_sections(root: &Value) -> Option<(&Vec<Value>, &Value)> {
     let includes = root.get("includes")?;
@@ -700,99 +601,6 @@ fn value_to_scalar_string(value: &Value) -> Option<String> {
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct FlatJsonBookmark {
-    #[serde(default)]
-    id_str: Option<String>,
-    #[serde(default)]
-    bookmark_date: Option<String>,
-    #[serde(default)]
-    profile_image_url_https: Option<String>,
-    #[serde(default)]
-    screen_name: Option<String>,
-    #[serde(default)]
-    name: Option<String>,
-    #[serde(default)]
-    full_text: Option<String>,
-    #[serde(default)]
-    note_tweet_text: Option<String>,
-    #[serde(default)]
-    tweeted_at: Option<String>,
-    #[serde(default)]
-    created_at: Option<String>,
-    #[serde(default)]
-    tweet_url: Option<String>,
-    #[serde(default)]
-    extended_media: Option<Vec<FlatMedia>>,
-    #[serde(default)]
-    media: Option<Vec<FlatMedia>>,
-    #[serde(default)]
-    quoted_status: Option<Value>,
-    #[serde(default)]
-    quoted_status_id_str: Option<String>,
-    #[serde(default)]
-    quoted_status_id: Option<Value>,
-    #[serde(default)]
-    entities: Option<Value>,
-    #[serde(default)]
-    links: Option<Value>,
-    #[serde(default)]
-    urls: Option<Value>,
-}
-
-/// URL entities from the flat fast-path fields, in any supported shape.
-fn flat_bookmark_links(raw: &FlatJsonBookmark) -> Vec<crate::models::LinkEntity> {
-    if raw.entities.is_none() && raw.links.is_none() && raw.urls.is_none() {
-        return Vec::new();
-    }
-    let composite = serde_json::json!({
-        "entities": raw.entities.clone(),
-        "links": raw.links.clone(),
-        "urls": raw.urls.clone(),
-    });
-    extract_links(&composite)
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct FlatMedia {
-    #[serde(default)]
-    media_url_https: Option<String>,
-    #[serde(default)]
-    media_url: Option<String>,
-    #[serde(default)]
-    url: Option<String>,
-    #[serde(default, alias = "type")]
-    source_type: Option<String>,
-    #[serde(default)]
-    media_key: Option<String>,
-    #[serde(default)]
-    alt_text: Option<String>,
-    #[serde(default)]
-    ext_alt_text: Option<String>,
-    #[serde(default)]
-    width: Option<i64>,
-    #[serde(default)]
-    height: Option<i64>,
-    #[serde(default)]
-    preview_image_url: Option<String>,
-    #[serde(default)]
-    variants: Option<Vec<Value>>,
-    #[serde(default)]
-    video_info: Option<Value>,
-    #[serde(default)]
-    duration_ms: Option<i64>,
-    #[serde(default)]
-    duration_millis: Option<i64>,
-}
-
-impl FlatMedia {
-    fn into_media(self) -> Option<Media> {
-        serde_json::to_value(self)
-            .ok()
-            .and_then(|value| media_from_value(&value))
-    }
-}
-
 impl Default for JsonParser {
     fn default() -> Self {
         Self::new()
@@ -807,7 +615,7 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn parses_flat_json_fast_path() {
+    fn parses_flat_json_row() {
         let bookmarks = JsonParser::new()
             .parse_str(
                 r#"[{"bookmark_date":"2025-08-25T17:25:01.047Z","profile_image_url_https":"https://pbs.twimg.com/profile.jpg","screen_name":"cinesansar","name":"persona","full_text":"hello #rust","tweeted_at":"2025-08-25T10:52:35.000Z","extended_media":[{"media_url_https":"https://pbs.twimg.com/media/test.jpg","type":"photo"}],"tweet_url":"https://x.com/cinesansar/status/123"}]"#,
@@ -820,7 +628,56 @@ mod tests {
     }
 
     #[test]
-    fn parses_flat_media_metadata_fast_path() {
+    fn array_and_wrapper_shapes_produce_equal_bookmarks() {
+        // Regression for B-CD-2: the removed serde fast path mapped only
+        // full_text/screen_name and silently blanked rows that carried the
+        // generic keys (content/author_handle/tags). Both shapes must route
+        // through the same converter and produce identical Bookmarks.
+        let row = r#"{"tweet_url":"https://x.com/a/status/1","tweeted_at":"2024-05-01T00:00:00Z","content":"hello world","author_handle":"a","author_name":"A","tags":["rust","design"]}"#;
+        let array = JsonParser::new().parse_str(&format!("[{row}]")).unwrap();
+        let wrapper = JsonParser::new()
+            .parse_str(&format!(r#"{{"items":[{row}]}}"#))
+            .unwrap();
+
+        assert_eq!(array.len(), 1);
+        assert_eq!(wrapper.len(), 1);
+        assert_eq!(array[0].content, "hello world");
+        assert_eq!(array[0].author_handle, "a");
+        assert_eq!(array[0].author_name, "A");
+        assert_eq!(
+            array[0].tags,
+            vec!["rust".to_string(), "design".to_string()]
+        );
+
+        // ids/import timestamps are generated per parse; equalize them so the
+        // whole model value can be compared field-for-field.
+        let mut actual = array[0].clone();
+        let mut expected = wrapper[0].clone();
+        expected.id = actual.id.clone();
+        expected.imported_at = actual.imported_at;
+        assert_eq!(actual, expected);
+        actual.id.push_str("-moved");
+        assert_ne!(actual, expected, "comparison must actually be value-based");
+    }
+
+    #[test]
+    fn millisecond_epoch_timestamp_parses_to_the_true_date() {
+        // Regression for B-CD-3: Date.getTime()-style 13-digit epochs used to
+        // be stored as seconds (year 56302) and broke the calendar.
+        let bookmarks = JsonParser::new()
+            .parse_str(
+                r#"[{"tweet_url":"https://x.com/a/status/1","timestamp":1714564800000,"full_text":"ms epoch","screen_name":"a","name":"A"}]"#,
+            )
+            .unwrap();
+        assert_eq!(bookmarks.len(), 1);
+        assert_eq!(
+            bookmarks[0].tweeted_at,
+            chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 5, 1, 12, 0, 0).unwrap()
+        );
+    }
+
+    #[test]
+    fn parses_flat_media_metadata_row() {
         let bookmarks = JsonParser::new()
             .parse_str(
                 r#"[{"bookmark_date":"2025-08-25T17:25:01.047Z","screen_name":"media","name":"Media","full_text":"hello","tweeted_at":"2025-08-25T10:52:35.000Z","extended_media":[{"media_key":"7_fast","type":"video","preview_image_url":"https://pbs.twimg.com/media/preview.jpg","alt_text":"Alt from export","width":640,"height":480,"video_info":{"duration_millis":42000,"variants":[{"url":"https://video.twimg.com/fast/360.mp4","bit_rate":832000,"content_type":"video/mp4"},{"url":"https://video.twimg.com/fast/hls.m3u8","content_type":"application/x-mpegURL"}]} }],"tweet_url":"https://x.com/media/status/123"}]"#,
