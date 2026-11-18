@@ -6,6 +6,10 @@ has actually been captured.
 
 ## Unreleased
 
+- Search index coverage (schema v5): quoted-post text, media alt text and
+  expanded link targets are indexed alongside the body, with the document table
+  and FTS postings rebuilt during migration and refreshed when a duplicate
+  import enriches an existing row with a quote, media or links.
 - Import honesty: X archive `.zip` files are imported directly (entries are
   parsed individually, malformed ones skipped), imports report real progress
   (`reading files n/m · rows`, then `saving posts`), `esc` cancels cooperatively

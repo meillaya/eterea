@@ -121,6 +121,9 @@ CREATE VIRTUAL TABLE IF NOT EXISTS bookmarks_fts USING fts5(
     author_handle,
     author_name,
     tags_text,
+    quote_text,
+    alt_text,
+    links_text,
     content='bookmarks_search_docs',
     content_rowid='rowid',
     tokenize='porter unicode61'
@@ -140,6 +143,9 @@ CREATE TABLE IF NOT EXISTS bookmarks_search_docs (
     author_handle TEXT,
     author_name TEXT,
     tags_text TEXT,
+    quote_text TEXT,
+    alt_text TEXT,
+    links_text TEXT,
     FOREIGN KEY (bookmark_id) REFERENCES bookmarks(id) ON DELETE CASCADE
 );
 
@@ -163,20 +169,28 @@ CREATE INDEX IF NOT EXISTS idx_bookmarks_search_docs_bookmark ON bookmarks_searc
 
 -- Triggers to keep FTS index in sync
 CREATE TRIGGER IF NOT EXISTS bookmarks_fts_insert AFTER INSERT ON bookmarks_search_docs BEGIN
-    INSERT INTO bookmarks_fts(rowid, content, note_text, author_handle, author_name, tags_text)
-    VALUES (NEW.rowid, NEW.content, NEW.note_text, NEW.author_handle, NEW.author_name, NEW.tags_text);
+    INSERT INTO bookmarks_fts(rowid, content, note_text, author_handle, author_name, tags_text,
+                              quote_text, alt_text, links_text)
+    VALUES (NEW.rowid, NEW.content, NEW.note_text, NEW.author_handle, NEW.author_name,
+            NEW.tags_text, NEW.quote_text, NEW.alt_text, NEW.links_text);
 END;
 
 CREATE TRIGGER IF NOT EXISTS bookmarks_fts_delete AFTER DELETE ON bookmarks_search_docs BEGIN
-    INSERT INTO bookmarks_fts(bookmarks_fts, rowid, content, note_text, author_handle, author_name, tags_text)
-    VALUES ('delete', OLD.rowid, OLD.content, OLD.note_text, OLD.author_handle, OLD.author_name, OLD.tags_text);
+    INSERT INTO bookmarks_fts(bookmarks_fts, rowid, content, note_text, author_handle, author_name,
+                              tags_text, quote_text, alt_text, links_text)
+    VALUES ('delete', OLD.rowid, OLD.content, OLD.note_text, OLD.author_handle, OLD.author_name,
+            OLD.tags_text, OLD.quote_text, OLD.alt_text, OLD.links_text);
 END;
 
 CREATE TRIGGER IF NOT EXISTS bookmarks_fts_update AFTER UPDATE ON bookmarks_search_docs BEGIN
-    INSERT INTO bookmarks_fts(bookmarks_fts, rowid, content, note_text, author_handle, author_name, tags_text)
-    VALUES ('delete', OLD.rowid, OLD.content, OLD.note_text, OLD.author_handle, OLD.author_name, OLD.tags_text);
-    INSERT INTO bookmarks_fts(rowid, content, note_text, author_handle, author_name, tags_text)
-    VALUES (NEW.rowid, NEW.content, NEW.note_text, NEW.author_handle, NEW.author_name, NEW.tags_text);
+    INSERT INTO bookmarks_fts(bookmarks_fts, rowid, content, note_text, author_handle, author_name,
+                              tags_text, quote_text, alt_text, links_text)
+    VALUES ('delete', OLD.rowid, OLD.content, OLD.note_text, OLD.author_handle, OLD.author_name,
+            OLD.tags_text, OLD.quote_text, OLD.alt_text, OLD.links_text);
+    INSERT INTO bookmarks_fts(rowid, content, note_text, author_handle, author_name, tags_text,
+                              quote_text, alt_text, links_text)
+    VALUES (NEW.rowid, NEW.content, NEW.note_text, NEW.author_handle, NEW.author_name,
+            NEW.tags_text, NEW.quote_text, NEW.alt_text, NEW.links_text);
 END;
 
 -- Keep author directory summaries current without forcing read-time GROUP BYs.

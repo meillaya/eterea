@@ -267,7 +267,16 @@ insert's exact conflict rules (existing URLs and ids plus repeats within the
 file and across the batch). Covered by ingester zip tests and service tests for
 cancel, progress and preview/commit parity.
 
-### 2.13 Documentation corrected in this pass
+### 2.13 Search coverage (approved follow-up)
+
+The FTS index now covers quoted-post text, media alt text and expanded link
+targets, not just the body/note/authors/handles/tags (schema v5 rebuilds the
+document table, FTS postings and triggers, with a guarded backfill for old
+databases and a refresh whenever a duplicate import enriches a row). Covered by
+quote/alt/link search tests, including the merge path, and the existing search
+coverage assertions.
+
+### 2.14 Documentation corrected in this pass
 
 - `docs/design/SPEC.md`: header nav now includes `search`; footer hint and
   scrimless key sheet; 64 px rhythm wording; rail width documented as 86 px

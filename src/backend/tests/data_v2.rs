@@ -287,7 +287,11 @@ fn x_api_v2_url_entities_are_classified_deduped_and_sorted() {
     db.insert_bookmarks(&parsed).unwrap();
     let loaded = db.get_bookmarks(0, 10).unwrap().remove(0);
     assert_eq!(loaded.links, links, "links persist through storage");
-    assert!(db.search("deep-dive", 10).unwrap().is_empty());
+    assert_eq!(
+        db.search("deep-dive", 10).unwrap().len(),
+        1,
+        "expanded link targets are part of the search index (schema v5)"
+    );
 }
 
 #[test]

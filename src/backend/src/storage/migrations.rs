@@ -6,7 +6,7 @@ use crate::{Error, Result};
 use rusqlite::types::ValueRef;
 use tracing::debug;
 
-pub const CURRENT_SCHEMA_USER_VERSION: i64 = 4;
+pub const CURRENT_SCHEMA_USER_VERSION: i64 = 5;
 
 /// Pre-v3 FTS external-content document table. The name ended with `_content`,
 /// which is an FTS5 shadow-table suffix for the `bookmarks_fts` virtual table;
@@ -47,7 +47,6 @@ impl Database {
         // migration must leave the previous database byte-identical instead of
         // claiming a newer user_version with a half-applied shape.
         self.conn.execute("BEGIN IMMEDIATE", [])?;
-        let mut fts_documents_migrated = false;
         let migrated = (|| -> Result<()> {
             self.ensure_legacy_bookmark_columns()?;
             self.ensure_bookmark_v2_columns()?;
@@ -59,16 +58,21 @@ impl Database {
             // Rename the legacy shadow-named FTS document table before `SCHEMA`
             // runs: `CREATE VIRTUAL TABLE IF NOT EXISTS bookmarks_fts` would
             // keep the old table when the virtual table still exists.
-            fts_documents_migrated = self.migrate_fts_shadow_table()?;
+            let fts_documents_migrated = self.migrate_fts_shadow_table()?;
+
+            // Schema v5: index the quoted post, media alt text and link targets
+            // alongside the body. This rebuilds the FTS table on v4 archives;
+            // it runs before SCHEMA so the triggers are recreated from the new
+            // definitions.
+            let reshaped = self.ensure_search_doc_text_coverage()?;
+            if fts_documents_migrated && !reshaped {
+                // A shadow-table migration rebuilt the document rows but found
+                // the new shape already present.
+                self.rebuild_search_index()?;
+            }
 
             // Create schema (fresh tables, indexes, triggers).
             self.conn.execute_batch(SCHEMA)?;
-
-            if fts_documents_migrated {
-                // Recreate the search postings from the migrated document rows
-                // while still inside the migration transaction.
-                self.rebuild_search_index()?;
-            }
 
             self.ensure_is_favorite_column()?;
             self.ensure_media_metadata_columns()?;
@@ -106,6 +110,87 @@ impl Database {
         .into_iter()
         .map(|name| Ok((name.to_string(), self.pragma_value(name)?)))
         .collect()
+    }
+
+    /// Schema v5: FTS coverage for quoted text, media alt text and link targets.
+    ///
+    /// Adds the three columns to the document table, recreates the FTS virtual
+    /// table with the new shape, backfills every existing document from its
+    /// tables and rebuilds the postings. Runs before `SCHEMA`, which recreates
+    /// the triggers against the new shape.
+    fn ensure_search_doc_text_coverage(&self) -> Result<bool> {
+        if !self.table_exists("bookmarks_search_docs")? {
+            return Ok(false);
+        }
+        let docs_have = self.table_column_exists("bookmarks_search_docs", "quote_text")?;
+        let fts_have = self.table_column_exists("bookmarks_fts", "quote_text")?;
+        if docs_have && fts_have {
+            return Ok(false);
+        }
+        debug!("migrating FTS documents to cover quote, alt and link text");
+        if !self.table_column_exists("bookmarks_search_docs", "quote_text")? {
+            self.conn.execute_batch(
+                r#"ALTER TABLE bookmarks_search_docs ADD COLUMN quote_text TEXT;
+                   ALTER TABLE bookmarks_search_docs ADD COLUMN alt_text TEXT;
+                   ALTER TABLE bookmarks_search_docs ADD COLUMN links_text TEXT;"#,
+            )?;
+        }
+        self.conn.execute_batch(
+            r#"DROP TRIGGER IF EXISTS bookmarks_fts_insert;
+               DROP TRIGGER IF EXISTS bookmarks_fts_delete;
+               DROP TRIGGER IF EXISTS bookmarks_fts_update;
+               DROP TABLE IF EXISTS bookmarks_fts;
+
+               CREATE VIRTUAL TABLE bookmarks_fts USING fts5(
+                   content,
+                   note_text,
+                   author_handle,
+                   author_name,
+                   tags_text,
+                   quote_text,
+                   alt_text,
+                   links_text,
+                   content='bookmarks_search_docs',
+                   content_rowid='rowid',
+                   tokenize='porter unicode61'
+               );"#,
+        )?;
+        // Backfill while no triggers exist: an FTS5 external-content delete
+        // against a freshly created empty table is invalid, so the rebuild
+        // happens after the data is in place and `SCHEMA` adds the triggers.
+        let quote_text = if self.table_exists("quoted_tweets")? {
+            "COALESCE((SELECT content || ' ' || author_name || ' ' || author_handle
+                       FROM quoted_tweets
+                       WHERE bookmark_id = bookmarks_search_docs.bookmark_id), '')"
+        } else {
+            "''"
+        };
+        let alt_text = if self.table_exists("media")? {
+            "COALESCE((SELECT group_concat(alt_text, ' ') FROM media
+                       WHERE bookmark_id = bookmarks_search_docs.bookmark_id
+                         AND alt_text IS NOT NULL AND alt_text <> ''), '')"
+        } else {
+            "''"
+        };
+        let links_text = if self.table_column_exists("bookmarks", "links_json")? {
+            "COALESCE((SELECT group_concat(target, ' ') FROM (
+                           SELECT json_extract(value, '$.expanded_url') AS target
+                           FROM json_each((SELECT links_json FROM bookmarks
+                                           WHERE id = bookmarks_search_docs.bookmark_id))
+                           UNION
+                           SELECT json_extract(value, '$.url')
+                           FROM json_each((SELECT links_json FROM bookmarks
+                                           WHERE id = bookmarks_search_docs.bookmark_id))
+                       ) WHERE target IS NOT NULL AND target <> ''), '')"
+        } else {
+            "''"
+        };
+        self.conn.execute_batch(&format!(
+            "UPDATE bookmarks_search_docs SET quote_text = {quote_text}, \
+             alt_text = {alt_text}, links_text = {links_text};"
+        ))?;
+        self.rebuild_search_index()?;
+        Ok(true)
     }
 
     fn ensure_supported_user_version(&self) -> Result<()> {

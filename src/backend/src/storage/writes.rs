@@ -82,8 +82,9 @@ impl<'conn> BookmarkInsertStatements<'conn> {
             )?,
             fts_content: conn.prepare_cached(
                 r#"INSERT INTO bookmarks_search_docs
-                   (bookmark_id, content, note_text, author_handle, author_name, tags_text)
-                   VALUES (?1, ?2, ?3, ?4, ?5, ?6)"#,
+                   (bookmark_id, content, note_text, author_handle, author_name, tags_text,
+                    quote_text, alt_text, links_text)
+                   VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)"#,
             )?,
             tag_ids: HashMap::new(),
         })
@@ -91,6 +92,38 @@ impl<'conn> BookmarkInsertStatements<'conn> {
 }
 
 impl Database {
+    /// Recompute the supplemental FTS text (quote, alt text, link targets) for
+    /// one bookmark from its own tables. Called after a duplicate merge adds a
+    /// quote, media or links to an existing row.
+    pub(crate) fn refresh_search_doc_derived(&self, bookmark_id: &str) -> Result<()> {
+        self.conn.execute(
+            r#"UPDATE bookmarks_search_docs SET
+                 quote_text = COALESCE((
+                     SELECT content || ' ' || author_name || ' ' || author_handle
+                     FROM quoted_tweets WHERE bookmark_id = bookmarks_search_docs.bookmark_id
+                 ), ''),
+                 alt_text = COALESCE((
+                     SELECT group_concat(alt_text, ' ') FROM media
+                     WHERE bookmark_id = bookmarks_search_docs.bookmark_id
+                       AND alt_text IS NOT NULL AND alt_text <> ''
+                 ), ''),
+                 links_text = COALESCE((
+                     SELECT group_concat(target, ' ') FROM (
+                         SELECT json_extract(value, '$.expanded_url') AS target
+                         FROM json_each((SELECT links_json FROM bookmarks
+                                         WHERE id = bookmarks_search_docs.bookmark_id))
+                         UNION
+                         SELECT json_extract(value, '$.url')
+                         FROM json_each((SELECT links_json FROM bookmarks
+                                         WHERE id = bookmarks_search_docs.bookmark_id))
+                     ) WHERE target IS NOT NULL AND target <> ''
+                 ), '')
+               WHERE bookmark_id = ?1"#,
+            params![bookmark_id],
+        )?;
+        Ok(())
+    }
+
     /// Insert bookmarks in one transaction and journal one import event.
     ///
     /// Returns the number of newly inserted bookmarks; duplicate tweet URLs and
@@ -292,6 +325,7 @@ impl Database {
         }
 
         let tags_text = bookmark.tags.join(" ");
+        let (quote_text, alt_text, links_text) = search_doc_extra_texts(bookmark);
         statements.fts_content.execute(params![
             bookmark.id,
             bookmark.content,
@@ -299,6 +333,9 @@ impl Database {
             bookmark.author_handle,
             bookmark.author_name,
             tags_text,
+            quote_text,
+            alt_text,
+            links_text,
         ])?;
 
         Ok(true)
@@ -497,6 +534,7 @@ impl Database {
             }
         }
 
+        self.refresh_search_doc_derived(&existing_id)?;
         Ok(true)
     }
 
@@ -697,6 +735,36 @@ fn import_label(inserted: usize, duplicates: usize) -> String {
     }
 }
 
+/// Text from things a post carries besides its body: the quoted post, media
+/// alt text and expanded link targets. They are indexed so a search finds a
+/// post by what its quote/alt text/link says, not just its body.
+fn search_doc_extra_texts(bookmark: &Bookmark) -> (String, String, String) {
+    let quote_text = bookmark
+        .quoted
+        .as_ref()
+        .map(|quote| {
+            format!(
+                "{} {} {}",
+                quote.content, quote.author_name, quote.author_handle
+            )
+        })
+        .unwrap_or_default();
+    let alt_text = bookmark
+        .media
+        .iter()
+        .filter_map(|media| media.alt_text.as_deref())
+        .filter(|alt| !alt.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let links_text = bookmark
+        .links
+        .iter()
+        .map(|link| link.expanded_url.as_deref().unwrap_or(&link.url))
+        .collect::<Vec<_>>()
+        .join(" ");
+    (quote_text, alt_text, links_text)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -846,5 +914,115 @@ mod tests {
 
         let (events, _) = db.history_list(0, 10, true).unwrap();
         assert_eq!(events[0].kind, HistoryKind::Delete);
+    }
+}
+
+#[cfg(test)]
+mod fts_coverage_tests {
+    use crate::models::{Bookmark, BookmarkBuilder, LinkEntity, Media, MediaType, QuotedTweet};
+    use crate::storage::Database;
+    use chrono::{TimeZone, Utc};
+
+    fn bookmark(tweet_id: &str) -> BookmarkBuilder {
+        BookmarkBuilder::new()
+            .tweet_url(format!("https://x.com/coverage/status/{tweet_id}"))
+            .content("body without the searchable bits")
+            .tweeted_at(Utc.with_ymd_and_hms(2024, 5, 1, 12, 0, 0).unwrap())
+            .author_handle("coverage")
+            .author_name("Coverage")
+    }
+
+    fn insert(db: &Database, bookmark: Bookmark) {
+        db.insert_bookmarks(&[bookmark]).unwrap();
+    }
+
+    #[test]
+    fn search_finds_quoted_post_text() {
+        let db = Database::open_memory().unwrap();
+        let quoted = QuotedTweet {
+            tweet_url: "https://x.com/someone/status/9".to_string(),
+            content: "the quoted post mentions phlogiston".to_string(),
+            tweeted_at: None,
+            author_handle: "someone".to_string(),
+            author_name: "Someone".to_string(),
+            author_profile_image: None,
+            media: Vec::new(),
+            unavailable: false,
+        };
+        insert(&db, bookmark("1").quoted(quoted).build().unwrap());
+
+        let hits = db.search("phlogiston", 10).unwrap();
+        assert_eq!(hits.len(), 1, "quote text should be searchable");
+    }
+
+    #[test]
+    fn search_finds_media_alt_text() {
+        let db = Database::open_memory().unwrap();
+        let media = Media {
+            url: "https://pbs.twimg.com/media/x.jpg".to_string(),
+            media_type: MediaType::Image,
+            alt_text: Some("a heron standing in mist".to_string()),
+            width: None,
+            height: None,
+            source_media_key: None,
+            source_type: None,
+            preview_url: None,
+            variant_url: None,
+            variants_json: None,
+            duration_ms: None,
+            poster_url: None,
+            playback_url: None,
+        };
+        insert(
+            &db,
+            bookmark("2").add_media_metadata(media).build().unwrap(),
+        );
+
+        let hits = db.search("heron", 10).unwrap();
+        assert_eq!(hits.len(), 1, "alt text should be searchable");
+    }
+
+    #[test]
+    fn search_finds_link_targets() {
+        let db = Database::open_memory().unwrap();
+        let link = LinkEntity {
+            url: "https://t.co/abc".to_string(),
+            expanded_url: Some("https://example.org/rare-word".to_string()),
+            display_url: None,
+            kind: crate::models::LinkKind::External,
+        };
+        insert(&db, bookmark("3").add_link(link).build().unwrap());
+
+        let hits = db.search("example.org", 10).unwrap();
+        assert_eq!(hits.len(), 1, "expanded link target should be searchable");
+    }
+
+    #[test]
+    fn a_duplicate_merge_indexes_new_quote_alt_and_link_text() {
+        let db = Database::open_memory().unwrap();
+        insert(&db, bookmark("4").build().unwrap());
+        let quoted = QuotedTweet {
+            tweet_url: "https://x.com/someone/status/10".to_string(),
+            content: "later enriched with zeppelin".to_string(),
+            tweeted_at: None,
+            author_handle: "someone".to_string(),
+            author_name: "Someone".to_string(),
+            author_profile_image: None,
+            media: Vec::new(),
+            unavailable: false,
+        };
+        let link = LinkEntity {
+            url: "https://t.co/def".to_string(),
+            expanded_url: Some("https://example.net/airship".to_string()),
+            display_url: None,
+            kind: crate::models::LinkKind::External,
+        };
+        insert(
+            &db,
+            bookmark("4").quoted(quoted).add_link(link).build().unwrap(),
+        );
+
+        assert_eq!(db.search("zeppelin", 10).unwrap().len(), 1);
+        assert_eq!(db.search("airship", 10).unwrap().len(), 1);
     }
 }
