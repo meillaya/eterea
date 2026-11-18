@@ -12,6 +12,8 @@ pub struct Palette {
     pub muted: Color,
     pub line: Color,
     pub accent: Color,
+    /// Quiet lavender used by the media-repair progress fill.
+    pub progress: Color,
     pub quote_rule: Color,
     pub band: Color,
     #[allow(dead_code)]
@@ -25,6 +27,7 @@ pub fn light() -> Palette {
         muted: color::hex("#787770").unwrap(),
         line: color::hex("#dedcd6").unwrap(),
         accent: color::hex("#2447b8").unwrap(),
+        progress: color::hex("#b3a4e8").unwrap(),
         quote_rule: color::hex("#c9c6bf").unwrap(),
         band: color::hex("#efeee9").unwrap(),
         scrim: color::hex("#0d0d0c").unwrap().alpha(0.86),
@@ -39,6 +42,7 @@ pub fn night() -> Palette {
         muted: color::hex("#98958b").unwrap(),
         line: color::hex("#2a2a25").unwrap(),
         accent: color::hex("#8fa8ff").unwrap(),
+        progress: color::hex("#c9bcff").unwrap(),
         quote_rule: color::hex("#3a3a33").unwrap(),
         band: color::hex("#1c1d19").unwrap(),
         scrim: color::hex("#050505").unwrap().alpha(0.9),

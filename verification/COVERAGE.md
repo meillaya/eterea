@@ -6,7 +6,7 @@ tests; see [`FINDINGS.md`](FINDINGS.md). The v2 reader-state/history/export
 surface is covered by the data-v2 service and store tests; the headless UI
 harness was refreshed for the new routes, selection, history, export and
 carousel, keys sheet, search, mouse back and directory filter, and now covers
-89 deterministic cases. Findings from the 2026-11-17 critical audit are tracked
+95 deterministic cases. Findings from the 2026-11-17 critical audit are tracked
 in [`../../docs/audit/2026-11-17-critical-audit.md`](../../docs/audit/2026-11-17-critical-audit.md).
 
 > **No whole-app verification claim.** The Verus layer proves a reference model
@@ -25,7 +25,7 @@ in [`../../docs/audit/2026-11-17-critical-audit.md`](../../docs/audit/2026-11-17
 | Miri `nightly-2026-11-16` | `scripts/verify/miri.sh` | 5 passed, 0 failed, no UB reported |
 | cargo-fuzz `0.13.2` | `scripts/verify/fuzz.sh` | 2 targets: `url_policy`, `import_text`; local 10 s run per target, CI 5 s |
 | plain stable Rust | `cd verification/kani && cargo test` | 10 passed, 1 ignored |
-| Rune headless harness | `bash scripts/ui-harness.sh` | 89/89 captures pass image and tree goldens, copy lint 0/0, no clipping warnings |
+| Rune headless harness | `bash scripts/ui-harness.sh` | 95/95 captures pass image and tree goldens, copy lint 0/0, no clipping warnings |
 
 Pins, URLs and sha256 are in [`../scripts/verify/versions.env`](../scripts/verify/versions.env).
 
@@ -38,7 +38,7 @@ Pins, URLs and sha256 are in [`../scripts/verify/versions.env`](../scripts/verif
 | Kani advisory | `scripts/verify/ci.sh --full` on workflow_dispatch | 7 expensive URL/MIME harnesses, never a pass gate |
 | Miri | `scripts/verify/miri.sh` | standalone pure-crate tests |
 | Fuzz | `scripts/verify/fuzz.sh` | URL/MIME policy and JSON/CSV/archive import parsers |
-| UI harness | `bash scripts/ui-harness.sh` | 89 deterministic captures: 54 scenes, 16 main routes, 4 dataset routes, 14 script captures (keys sheet, search, mouse back, directory filter, export, selection, carousel) |
+| UI harness | `bash scripts/ui-harness.sh` | 95 deterministic captures: 60 scenes, 16 main routes, 4 dataset routes, 15 script captures (keys sheet, search, mouse back, directory filter, click-to-open, export, selection, carousel) |
 | Workspace tests | `cargo test --workspace` | storage, store actor, parsers, media workers, desktop model |
 | Data v2 tests | `cargo test -p eterea-core -p eterea-app -p eterea-logic` | schema v2, batch import, tags/read/bulk, history/undo, export round-trips, 10k benchmarks |
 | Media v2 tests | `cargo test -p eterea-media` | image worker/cache, video cache, tools discovery, audio lifecycle, real local ffmpeg fixture |
@@ -105,7 +105,7 @@ It checks:
 * copy lint on all captured strings;
 * image hash and canonical tree signature against committed goldens.
 
-Final result on the reference host: **89/89 cases pass, 89/89 image and tree
+Final result on the reference host: **95/95 cases pass, 95/95 image and tree
 goldens, copy lint 0/0, 0 clipping warnings**. This is runtime validation of
 render states and geometry bounds, not proof, pixel-level QA or exhaustive
 interaction testing. Motion, contrast ratios, hover, focus traversal, clipboard,

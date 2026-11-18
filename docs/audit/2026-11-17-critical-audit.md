@@ -195,9 +195,13 @@ The shipped implementation:
   account's current name/avatar. Existing read/favorite state is untouched and
   no history event is written;
 - it is paced (320 ms default), retries with backoff on 429/5xx, treats
-  `TweetTombstone` (deleted/protected posts) as unavailable, reports progress in
-  the status line, and `esc` cancels between posts. Media bytes are not
-  pre-downloaded; the existing cache fetches them when a post is shown.
+  `TweetTombstone` (deleted/protected posts) as unavailable, and reports
+  progress in a slim footer bar (`repairing media`, rounded 180x4px track with
+  a light purple fill, `visited/total`) with a `cancel` action and a `cancel repair`
+  palette command. A first cut bound `esc` to cancellation; that was wrong
+  because `esc` is the reader's primary navigation key, so it was removed —
+  `esc` now never stops the repair. Media bytes are not pre-downloaded; the
+  existing cache fetches them when a post is shown.
 
 Verified on a copy of the live archive: the AYOMI row gained its quoted post
 with five videos, the Paulie Swan row gained its video media, and two other
@@ -223,7 +227,7 @@ way to survive handle renames.
 - `docs/architecture.md`: schema version 3 and the migration-v3 reason.
 - `verification/COVERAGE.md`, `docs/operations/release-readiness.md`,
   `docs/verification/formal-verification.md`, `verification/README.md`:
-  UI-matrix and media-test counts corrected (89 captures, 97+16 media tests).
+  UI-matrix and media-test counts corrected (95 captures, 101+16 media tests).
 
 ---
 
@@ -411,7 +415,7 @@ cannot prove real-GPU text shaping or input-device behaviour.
 | `cargo test --workspace` | PASS — every workspace test target green; `eterea-core` 114 tests (2 ignored perf), media 97 unit + 16 public-API + 1 doc-test, app/desktop tests green, 0 failures. |
 | `cargo clippy --workspace --all-targets` | PASS, 0 warnings. |
 | `cargo fmt --all -- --check` | PASS after applying `cargo fmt` to the tree (two new backend tests were unformatted). |
-| UI matrix (`scripts/ui-harness.sh --strict`) | **PASS — 89/89 cases**, goldens image 89/89 and tree 89/89, copy lint 0 errors, 0 clipping warnings; 9 scripted cases cover the keys sheet, search, mouse back, directory filter and click-to-open. |
+| UI matrix (`scripts/ui-harness.sh --strict`) | **PASS — 95/95 cases**, goldens image 95/95 and tree 95/95, copy lint 0 errors, 0 clipping warnings; 10 scripted cases cover the keys sheet, search, mouse back, directory filter, click-to-open, export, selection and carousel. |
 | `python3 scripts/check-doc-links.py README.md 'docs/**/*.md'` | PASS, 0 broken local targets. |
 | Release packaging | unchanged by this pass; `scripts/package-linux-release.sh` still the distributable path (release build not re-run here). |
 | Local archive reproducibility | Migration v3 was verified end-to-end on a copy of the live archive: 11,846 bookmarks preserved, FTS "film" = 553, `integrity_check` ok, `user_version = 3`; system SQLite 3.54 now opens the migrated file (before: shadow-trigger parse error). |

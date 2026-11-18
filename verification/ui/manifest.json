@@ -448,6 +448,54 @@
       "tree_sha256": "34e1507b3bcd99ce68c68e43f84dc4027aefcfc2e0e9910c28c0af36b445c8a7",
       "visible_texts": 25
     },
+    "scene/repair/1280x820/dark": {
+      "image_bytes": 458116,
+      "image_sha256": "44d0b5311f19fe1dfa152c1037a8187aa9cff81a11e2f1e4a13f2b278e520f86",
+      "texts": 78,
+      "tree_nodes": 93,
+      "tree_sha256": "8ce34bf675e241fac9a7256b88c551d2eb9971daab5e180ba7d821ee10d7955f",
+      "visible_texts": 60
+    },
+    "scene/repair/1280x820/light": {
+      "image_bytes": 456679,
+      "image_sha256": "89c150ca14ef0cbca99cd6e0cdd47299af14b0d82499715cadfa222156545c8f",
+      "texts": 78,
+      "tree_nodes": 93,
+      "tree_sha256": "654c85939e4dcaf79444bf766835061370cb8bf39f6a8de0f45f3b2b2742418b",
+      "visible_texts": 60
+    },
+    "scene/repair/1440x900/dark": {
+      "image_bytes": 534542,
+      "image_sha256": "bbe88374d8d49b2b2a8f8a942819d736c1fa92980141a4535ce1593d7991f2b5",
+      "texts": 78,
+      "tree_nodes": 93,
+      "tree_sha256": "650c98b47a988bcb5e386941ccddd4102780a2650a50470dfc3787f8608b161b",
+      "visible_texts": 60
+    },
+    "scene/repair/1440x900/light": {
+      "image_bytes": 532987,
+      "image_sha256": "501f7abc4b2530e565b947c129ab342ee2b8bc640de9354c524ccfae9d9c603b",
+      "texts": 78,
+      "tree_nodes": 93,
+      "tree_sha256": "0bf0aee33e760f57a75b548cb912ac3b89d547a8655687308769b7831e98345b",
+      "visible_texts": 60
+    },
+    "scene/repair/960x640/dark": {
+      "image_bytes": 385610,
+      "image_sha256": "4164a3cf359a018f101df3dded8b9223395be8bd97c93b185599c397b0f3003e",
+      "texts": 78,
+      "tree_nodes": 93,
+      "tree_sha256": "95631490225722a1974c4beb227910d2a3bd152449020e3c839e60f0d9671846",
+      "visible_texts": 60
+    },
+    "scene/repair/960x640/light": {
+      "image_bytes": 384291,
+      "image_sha256": "9b4c155b8d649137ef360bc01b9fbff45e182d0744ccb9256b0ce128ca627d63",
+      "texts": 78,
+      "tree_nodes": 93,
+      "tree_sha256": "774d82d10139af0e08e9bf9cf267055340b555dc19895177c62f0c09199c88dd",
+      "visible_texts": 60
+    },
     "scene/searching/1280x820/dark": {
       "image_bytes": 451998,
       "image_sha256": "846a0a9c71312fcb7d4bb4df19f8c89a58e63033b31ca77d2dbdfe202e81f51b",
@@ -719,7 +767,7 @@
       "fixtures/eterea-export-carousel.json": "62c2a32a0cc757ecd3c5afe2eb0b68633d396b3b3fa1597de7114976d11a9767",
       "fixtures/x-api-v2-demo.json": "1e1382c40b87d909caff7cf230b08e03e750c94c98c62350684c9dddce8c2612"
     },
-    "matrix_sha256": "40455383a10fc6e010c651c717748627c00a574e9676b42119d00511373794a8",
+    "matrix_sha256": "48fddce18eafd57d1aa9747a30f0bc4c25f312c24d8c812c8438de2c17e661e3",
     "scripts": {
       "scripts/authors-filter.json": "02435b0b928eac584118cdbbbbdd151b1f1377e43dbe4ecf9862e13971187d44",
       "scripts/carousel-page-1.json": "bf37268fd6d8b46a69ab7e5faf06ca66afc0fd1cb1b895dc7ad357e1d0bb2f51",

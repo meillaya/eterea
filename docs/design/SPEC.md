@@ -128,6 +128,7 @@ No visual/multi-select mode. One selected post at a time.
 
 - 24px footer, 11.5px status text at the left, 52px inset. The status exists only while it has a message: `link copied`, an import result, or an error. It clears after 2s or on the next action.
 - The footer's right side carries one permanent hint, `keys`, the minimizable key sheet. It is the only permanent hint; no mode badges, counts, line/column numbers, theme names, or version strings.
+- While the opt-in media repair runs, the footer's left side becomes a progress line: `repairing media`, a 180x4px rounded track with a light purple (lavender) fill, `visited/total` in 10.5px mono, and a `cancel` action on the right next to `keys`. `esc` is not overloaded: it never cancels the repair.
 
 ## 4. Screens and components
 
@@ -157,7 +158,7 @@ Same column; 740px when a gallery needs it. Post, media at full size, quote, edi
 
 ### Command palette
 
-`:` or `Ctrl/Cmd-P`. 560px wide, top 80px, centered, `bg` panel with a 1px `line` border, 2px radius. One field, one list. Commands, lowercase, no descriptions, keycaps only where a shortcut exists: feed, favorites, authors, topics, graph, calendar, import, settings, favorite, load media, copy link, open on x, clear filter, reload, repair media. `repair media` is the only command that touches the network after import; it shows progress in the status area and `esc` cancels it. Filter with substring; arrows move; Enter runs; Esc closes. No footer hints.
+`:` or `Ctrl/Cmd-P`. 560px wide, top 80px, centered, `bg` panel with a 1px `line` border, 2px radius. One field, one list. Commands, lowercase, no descriptions, keycaps only where a shortcut exists: feed, favorites, authors, topics, graph, calendar, import, settings, favorite, load media, copy link, open on x, clear filter, reload, repair media, cancel repair. `repair media` is the only command that touches the network after import; it reports progress in the footer and `cancel repair` (shown only while one is running) stops it. Filter with substring; arrows move; Enter runs; Esc closes. No footer hints.
 
 ### Key sheet
 

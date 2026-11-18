@@ -89,6 +89,7 @@ enum CommandItem {
     ClearFilter,
     Reload,
     RepairMedia,
+    CancelRepair,
 }
 
 const COMMANDS: &[(&str, CommandItem)] = &[
@@ -110,6 +111,7 @@ const COMMANDS: &[(&str, CommandItem)] = &[
     ("clear filter", CommandItem::ClearFilter),
     ("reload", CommandItem::Reload),
     ("repair media", CommandItem::RepairMedia),
+    ("cancel repair", CommandItem::CancelRepair),
 ];
 
 enum InitResult {
@@ -214,6 +216,8 @@ pub(crate) struct State {
     repair_rx: Option<Receiver<RepairEvent>>,
     repair_cancel: Option<Arc<AtomicBool>>,
     repair_active: bool,
+    /// Visited/total posts from the running repair, for the footer bar.
+    repair_progress: Option<(usize, usize)>,
     /// Avatar URLs per handle, newest first. The champion is shown on every
     /// post of that handle, so a changed account stops showing an expired
     /// profile-image URL on its older posts.
@@ -312,6 +316,7 @@ impl State {
             repair_rx: None,
             repair_cancel: None,
             repair_active: false,
+            repair_progress: None,
             avatar_variants: HashMap::new(),
             avatar_choice: HashMap::new(),
             directory_filter: String::new(),
@@ -774,6 +779,8 @@ impl State {
             .iter()
             .copied()
             .filter(|(name, _)| needle.is_empty() || name.contains(&needle))
+            // Cancelling only exists while a repair is running.
+            .filter(|(_, item)| *item != CommandItem::CancelRepair || self.repair_active)
             .collect()
     }
 
@@ -821,6 +828,7 @@ impl State {
                 let now = tx.clock();
                 start_media_repair(self, now);
             }
+            CommandItem::CancelRepair => request_cancel_repair(self),
         }
     }
 
@@ -1670,14 +1678,6 @@ fn handle_response(state: &mut State, response: Response, clock: f64) {
 }
 
 fn on_key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
-    if state.repair_active && matches!(event.key, Key::Escape) {
-        if let Some(cancel) = state.repair_cancel.as_ref() {
-            cancel.store(true, Ordering::Relaxed);
-        }
-        let now = tx.clock();
-        state.set_status("cancelling repair", now);
-        return true;
-    }
     if state.overlay != Overlay::None {
         return overlay_key(state, event, tx);
     }
@@ -2251,6 +2251,7 @@ fn start_media_repair(state: &mut State, now: f64) {
     state.repair_rx = Some(rx);
     state.repair_cancel = Some(cancel);
     state.repair_active = true;
+    state.repair_progress = Some((0, 0));
     state.set_status("repairing media", now);
     let spawned = std::thread::Builder::new()
         .name("eterea-repair".into())
@@ -2272,7 +2273,16 @@ fn start_media_repair(state: &mut State, now: f64) {
         state.repair_active = false;
         state.repair_rx = None;
         state.repair_cancel = None;
+        state.repair_progress = None;
         state.set_status("repair could not start", now);
+    }
+}
+
+/// Ask the repair worker to stop after the current post. The footer bar and
+/// the palette's `cancel repair` command share this; `esc` stays navigation.
+fn request_cancel_repair(state: &mut State) {
+    if let Some(cancel) = state.repair_cancel.as_ref() {
+        cancel.store(true, Ordering::Relaxed);
     }
 }
 
@@ -2281,10 +2291,27 @@ fn poll_media_repair(state: &mut State, clock: f64) -> bool {
         return false;
     };
     let mut events = Vec::new();
-    while let Ok(event) = rx.try_recv() {
-        events.push(event);
+    let mut disconnected = false;
+    loop {
+        match rx.try_recv() {
+            Ok(event) => events.push(event),
+            Err(TryRecvError::Empty) => break,
+            Err(TryRecvError::Disconnected) => {
+                disconnected = true;
+                break;
+            }
+        }
     }
-    let finished = events.last().is_some_and(|event| event.finished);
+    // The worker always sends a final event; a disconnect without one means it
+    // died (panic or abrupt stop). Never leave the progress bar stuck.
+    let finished = events.last().is_some_and(|event| event.finished) || disconnected;
+    if disconnected && !events.last().is_some_and(|event| event.finished) {
+        events.push(RepairEvent {
+            failed: 1,
+            finished: true,
+            ..RepairEvent::default()
+        });
+    }
     if !finished {
         state.repair_rx = Some(rx);
     }
@@ -2294,6 +2321,7 @@ fn poll_media_repair(state: &mut State, clock: f64) -> bool {
             state.repair_active = false;
             state.repair_rx = None;
             state.repair_cancel = None;
+            state.repair_progress = None;
             let message = if event.cancelled {
                 "repair cancelled".to_string()
             } else if event.failed > 0 && event.repaired == 0 {
@@ -2309,10 +2337,7 @@ fn poll_media_repair(state: &mut State, clock: f64) -> bool {
             state.set_status(message, clock);
             state.refresh_feed();
         } else {
-            state.set_status(
-                format!("repairing media {}/{}", event.done, event.total),
-                clock,
-            );
+            state.repair_progress = Some((event.done, event.total));
         }
         changed = true;
     }
@@ -2953,6 +2978,74 @@ fn header(state: &State, p: Palette, dark: bool) -> El {
 /// The bottom line: a transient status on the left, the shortcut hint on the
 /// right so the key sheet can be found without knowing the `?` key.
 fn footer(state: &State, p: Palette) -> El {
+    let keys = text("keys")
+        .font(theme::mono(10.5))
+        .color(p.muted)
+        .role("button")
+        .label("keyboard shortcuts")
+        .on_press(|state: &mut State| {
+            state.overlay = if state.overlay == Overlay::Keys {
+                Overlay::None
+            } else {
+                Overlay::Keys
+            };
+        });
+    if let (true, Some((done, total))) = (state.repair_active, state.repair_progress) {
+        // A slim rounded track with an accent fill: quiet enough for the
+        // Daylight surface, legible at a glance.
+        let fraction = if total == 0 {
+            0.0
+        } else {
+            (done as f32 / total as f32).clamp(0.0, 1.0)
+        };
+        let cancelling = state
+            .repair_cancel
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Relaxed));
+        let label = if cancelling {
+            "cancelling"
+        } else {
+            "repairing media"
+        };
+        let mut track = row().w(180.0).h(4.0).radius(2.0).fill(p.line);
+        if fraction > 0.0 {
+            track = track.child(el().w(180.0 * fraction).h(4.0).radius(2.0).fill(p.progress));
+        }
+        let count = if total == 0 {
+            String::new()
+        } else {
+            format!("{done}/{total}")
+        };
+        return row()
+            .w_full()
+            .h(24.0)
+            .px(52.0)
+            .center_y()
+            .justify_between()
+            .fill(p.bg)
+            .child(
+                row()
+                    .gap(12.0)
+                    .center_y()
+                    .child(text(label).font(theme::ui(11.5, 400.0)).color(p.muted))
+                    .child(track)
+                    .child(text(count).font(theme::mono(10.5)).color(p.muted)),
+            )
+            .child(
+                row()
+                    .gap(18.0)
+                    .center_y()
+                    .child(
+                        text("cancel")
+                            .font(theme::ui(11.5, 400.0))
+                            .color(p.muted)
+                            .role("button")
+                            .label("cancel repair")
+                            .on_press(|state: &mut State| request_cancel_repair(state)),
+                    )
+                    .child(keys),
+            );
+    }
     let message = state
         .status
         .as_ref()
@@ -2966,20 +3059,7 @@ fn footer(state: &State, p: Palette) -> El {
         .justify_between()
         .fill(p.bg)
         .child(text(message).font(theme::ui(11.5, 400.0)).color(p.muted))
-        .child(
-            text("keys")
-                .font(theme::mono(10.5))
-                .color(p.muted)
-                .role("button")
-                .label("keyboard shortcuts")
-                .on_press(|state: &mut State| {
-                    state.overlay = if state.overlay == Overlay::Keys {
-                        Overlay::None
-                    } else {
-                        Overlay::Keys
-                    };
-                }),
-        )
+        .child(keys)
 }
 
 fn onboarding(state: &State, p: Palette) -> El {
@@ -5776,6 +5856,10 @@ pub fn spec() -> AppSpec<State> {
                 s.route = Route::Feed;
                 s.lightbox = Some((1, 0));
                 s.overlay = Overlay::Lightbox;
+            }),
+            ("repair", |s: &mut State| {
+                s.repair_active = true;
+                s.repair_progress = Some((3869, 6144));
             }),
         ],
         ..AppSpec::new("eterea", (1440.0, 900.0), State::new, view)

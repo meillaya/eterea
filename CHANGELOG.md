@@ -10,8 +10,10 @@ has actually been captured.
   are filled from X's public embed payload (media and video variants, quoted
   post with its carousel, expanded links, hashtags, current author name and
   avatar) and merged into the existing row without touching read/favorite
-  state. The pass is paced, cancellable with `esc`, resumable, and skips
-  deleted/protected posts; media bytes are cached lazily, not pre-downloaded.
+  state. The footer shows a slim progress bar with `visited/total` and a
+  `cancel` action (also `cancel repair` in the palette); `esc` stays normal
+  navigation. The pass is paced, resumable and skips deleted/protected posts;
+  media bytes are cached lazily, not pre-downloaded.
 - Duplicate imports now enrich an existing post instead of skipping it: a richer
   export can backfill media, quotes, links, tags and refreshed author
   name/avatar for tweets that were first imported from a text-only CSV, without

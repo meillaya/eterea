@@ -152,9 +152,10 @@ The archive lives at `<platform data dir>/eterea/bookmarks.db`. On Linux that is
 - Repairs missing media and quotes on demand: posts imported from a text-only
   export can be filled in from the public embed payload X serves for embedded
   posts (media list, quoted post, expanded links, hashtags, current author
-  name/avatar). Opt-in via the `repair media` palette command, paced and
-  cancellable; deleted and protected posts are skipped, and media bytes still
-  fill the normal cache when shown.
+  name/avatar). Opt-in via the `repair media` palette command; the footer shows
+  a slim progress bar, `cancel` (or the palette's `cancel repair`) stops it, and
+  `esc` keeps doing normal navigation. Deleted and protected posts are skipped,
+  and media bytes still fill the normal cache when shown.
 - Exports the archive, the current filter or the selection as CSV or JSON, with
   round-trippable nested data.
 - Keeps quotes, favorites, media metadata, an interactive tag graph with persisted
