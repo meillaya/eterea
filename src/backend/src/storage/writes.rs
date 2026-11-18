@@ -60,9 +60,10 @@ impl<'conn> BookmarkInsertStatements<'conn> {
                 r#"INSERT OR IGNORE INTO bookmarks
                    (id, tweet_url, content, note_text, tweeted_at, imported_at,
                     author_handle, author_name, author_profile_url, author_profile_image,
-                    comments, is_favorite, has_media, is_read, links_json, conversation_id)
+                    comments, is_favorite, has_media, is_read, links_json, conversation_id,
+                    unavailable)
                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
-                           ?16)"#,
+                           ?16, ?17)"#,
             )?,
             tag: conn.prepare_cached("INSERT OR IGNORE INTO tags (name) VALUES (?1)")?,
             tag_id: conn.prepare_cached("SELECT id FROM tags WHERE name = ?1")?,
@@ -94,6 +95,14 @@ impl<'conn> BookmarkInsertStatements<'conn> {
 }
 
 impl Database {
+    /// Mark (or clear) a bookmark's availability after a network check.
+    pub fn set_bookmark_unavailable(&self, bookmark_id: &str, unavailable: bool) -> Result<bool> {
+        Ok(self.conn.execute(
+            "UPDATE bookmarks SET unavailable = ?2 WHERE id = ?1",
+            params![bookmark_id, unavailable as i32],
+        )? > 0)
+    }
+
     /// Set or clear the reader's note on one post and keep the search document
     /// in sync. Returns true when the row changed.
     pub fn set_note(&self, bookmark_id: &str, note: Option<&str>) -> Result<bool> {
@@ -280,6 +289,7 @@ impl Database {
             bookmark.is_read as i32,
             links_json,
             bookmark.conversation_id,
+            bookmark.unavailable as i32,
         ])?;
 
         if changed == 0 {
@@ -1096,5 +1106,47 @@ mod note_tests {
         let cleared = db.get_bookmark(&bookmark.id).unwrap().unwrap();
         assert!(cleared.note_text.is_none());
         assert!(db.search("kestrel", 10).unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod availability_tests {
+    use crate::models::BookmarkBuilder;
+    use crate::storage::Database;
+    use chrono::{TimeZone, Utc};
+
+    fn bookmark(tweet_id: &str) -> crate::models::Bookmark {
+        BookmarkBuilder::new()
+            .tweet_url(format!("https://x.com/gone/status/{tweet_id}"))
+            .content(format!("availability fixture {tweet_id}"))
+            .tweeted_at(Utc.with_ymd_and_hms(2024, 5, 1, 12, 0, 0).unwrap())
+            .author_handle("gone")
+            .author_name("Gone")
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn availability_flag_round_trips_and_clears() {
+        let db = Database::open_memory().unwrap();
+        let first = bookmark("1");
+        db.insert_bookmarks(std::slice::from_ref(&first)).unwrap();
+        let loaded = db.get_bookmark(&first.id).unwrap().unwrap();
+        assert!(!loaded.unavailable);
+
+        assert!(db.set_bookmark_unavailable(&first.id, true).unwrap());
+        let marked = db.get_bookmark(&first.id).unwrap().unwrap();
+        assert!(marked.unavailable, "flag must hydrate through the model");
+        let targets = db.bookmarks_for_availability(10).unwrap();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].0, first.id);
+
+        // A duplicate import never resurrects a row silently; only a successful
+        // availability check clears the flag.
+        db.insert_bookmarks(std::slice::from_ref(&first)).unwrap();
+        assert!(db.get_bookmark(&first.id).unwrap().unwrap().unavailable);
+
+        assert!(db.set_bookmark_unavailable(&first.id, false).unwrap());
+        assert!(!db.get_bookmark(&first.id).unwrap().unwrap().unavailable);
     }
 }

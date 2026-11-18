@@ -10,6 +10,7 @@ mod import;
 mod import_preview;
 mod mutations;
 mod query;
+mod saved_searches;
 
 #[cfg(test)]
 mod tests;

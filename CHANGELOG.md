@@ -19,6 +19,17 @@ has actually been captured.
   anchors that would collide, and `/` opens a tag filter that dims non-matching
   nodes (enter commits, esc clears); a synthetic 1,200-tag benchmark test covers
   the data-layer cap (2.1s in debug, layout included).
+- Saved searches and composable filters: the feed filter is now a composable
+  spec (query, tags, author, date range, read, favorite, media), shown as a chip
+  line with per-facet removal; named combinations save to `app_metadata` via
+  `save search` and reopen from `saved searches` (apply or delete), and
+  `add tag filter` composes tags. Backend bookmarks queries accept multiple
+  tags (AND-composed) and are covered by composed-filter tests.
+- Availability indication: schema v7 stores a per-bookmark `unavailable` flag
+  set by the opt-in repair/`check availability` pass when X's embed payload is a
+  tombstone (deleted tweet, protected author, deactivated account) and cleared
+  when a later fetch succeeds; feed and detail show a quiet "no longer available
+  on x" line (detail also explains deleted/protected/account gone).
 - Tag management: `rename tag` (+ autocomplete, merging into an existing tag),
   `prune tags` for unused tags, and a per-tag colour reset that deletes the
   stored override; renaming carries the persisted colour to the new name and

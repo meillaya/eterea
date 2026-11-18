@@ -46,6 +46,8 @@ pub struct Post {
     pub quote: Option<Quote>,
     pub media: Vec<MediaItem>,
     pub favorite: bool,
+    /// Network check reported the tweet or its author gone.
+    pub unavailable: bool,
     pub media_loaded: bool,
     pub media_page: usize,
 }
@@ -77,6 +79,7 @@ impl Post {
             quote,
             media: bookmark.media.iter().filter_map(media_item).collect(),
             favorite: bookmark.is_favorite,
+            unavailable: bookmark.unavailable,
             media_loaded: false,
             media_page: 0,
         }
@@ -236,6 +239,7 @@ pub fn demo_posts() -> Vec<Post> {
             quote,
             media,
             favorite: spec.favorite,
+            unavailable: false,
             media_loaded: spec.loaded,
             media_page: 0,
         });

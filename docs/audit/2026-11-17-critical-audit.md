@@ -315,7 +315,20 @@ with the opened post full and the rest compact; archives without conversation
 ids keep the single-post fallback. Covered by thread-order/fallback/enrichment
 tests and a v2 conversation-id import test.
 
-### 2.18 Documentation corrected in this pass
+### 2.18 Saved searches, composable filters and availability (approved follow-up)
+
+The single-variant feed filter became a composable spec (query, all-tags AND,
+author, date range, favorites, unread, media) rendered as a chip line whose
+chips remove individual facets; named specs persist in `app_metadata` and can be
+applied or deleted from `saved searches`, with `add tag filter` composing tags.
+Schema v7 adds a per-bookmark `unavailable` flag: the opt-in `check availability`
+pass (and media repair) marks tombstoned payloads — deleted tweet, protected
+author, deactivated account — and clears the flag on a later successful fetch;
+feed and detail show a quiet indication instead of silently presenting a dead
+post. Covered by composed-filter, saved-search persistence and availability
+round-trip tests.
+
+### 2.19 Documentation corrected in this pass
 
 - `docs/design/SPEC.md`: header nav now includes `search`; footer hint and
   scrimless key sheet; 64 px rhythm wording; rail width documented as 86 px
@@ -329,7 +342,7 @@ tests and a v2 conversation-id import test.
 - `docs/architecture.md`: schema version 3 and the migration-v3 reason.
 - `verification/COVERAGE.md`, `docs/operations/release-readiness.md`,
   `docs/verification/formal-verification.md`, `verification/README.md`:
-  UI-matrix and media-test counts corrected (104 captures, 101+16 media tests).
+  UI-matrix and media-test counts corrected (122 captures, 101+16 media tests).
 
 ---
 
@@ -517,7 +530,7 @@ cannot prove real-GPU text shaping or input-device behaviour.
 | `cargo test --workspace` | PASS — every workspace test target green; `eterea-core` 114 tests (2 ignored perf), media 97 unit + 16 public-API + 1 doc-test, app/desktop tests green, 0 failures. |
 | `cargo clippy --workspace --all-targets` | PASS, 0 warnings. |
 | `cargo fmt --all -- --check` | PASS after applying `cargo fmt` to the tree (two new backend tests were unformatted). |
-| UI matrix (`scripts/ui-harness.sh --strict`) | **PASS — 104/104 cases**, goldens image 104/104 and tree 103/104, copy lint 0 errors, 0 clipping warnings; 12 scripted cases cover the keys sheet, search, mouse back, directory filter, click-to-open, export, selection, carousel, feed-return and calendar browsing. |
+| UI matrix (`scripts/ui-harness.sh --strict`) | **PASS — 122/122 cases**, goldens image 122/122 and tree 121/122, copy lint 0 errors, 0 clipping warnings; 12 scripted cases cover the keys sheet, search, mouse back, directory filter, click-to-open, export, selection, carousel, feed-return and calendar browsing. |
 | `python3 scripts/check-doc-links.py README.md 'docs/**/*.md'` | PASS, 0 broken local targets. |
 | Release packaging | unchanged by this pass; `scripts/package-linux-release.sh` still the distributable path (release build not re-run here). |
 | Local archive reproducibility | Migration v3 was verified end-to-end on a copy of the live archive: 11,846 bookmarks preserved, FTS "film" = 553, `integrity_check` ok, `user_version = 3`; system SQLite 3.54 now opens the migrated file (before: shadow-trigger parse error). |

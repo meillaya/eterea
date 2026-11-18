@@ -23,7 +23,8 @@ impl Database {
             r#"SELECT b.id, b.tweet_url, b.content, b.note_text, b.tweeted_at, b.imported_at,
                       b.author_handle, b.author_name, b.author_profile_url, b.author_profile_image,
                       b.comments, b.is_favorite, b.is_read, b.links_json,
-                      b.conversation_id
+                      b.conversation_id,
+                      b.unavailable
                FROM bookmarks b
                JOIN bookmarks_search_docs fc ON fc.bookmark_id = b.id
                JOIN bookmarks_fts fts ON fts.rowid = fc.rowid
@@ -100,6 +101,7 @@ impl Database {
         let (where_clause, params) = self.build_raw_predicate(
             query,
             tag,
+            &[],
             author,
             from_date.map(|date| date.timestamp()),
             to_date.map(|date| date.timestamp()),
@@ -149,7 +151,8 @@ impl Database {
             r#"SELECT b.id, b.tweet_url, b.content, b.note_text, b.tweeted_at, b.imported_at,
                       b.author_handle, b.author_name, b.author_profile_url, b.author_profile_image,
                       b.comments, b.is_favorite, b.is_read, b.links_json,
-                      b.conversation_id
+                      b.conversation_id,
+                      b.unavailable
                FROM bookmarks b"#,
         );
         let mut conditions = String::new();
@@ -245,6 +248,7 @@ impl Database {
         Ok(self.build_raw_predicate(
             query.normalized_query().as_deref(),
             query.tag.as_deref(),
+            &query.tags,
             query.author.as_deref(),
             from_date.map(|date| date.timestamp()),
             to_date.map(|date| date.timestamp()),
@@ -261,6 +265,7 @@ impl Database {
         &self,
         query: Option<&str>,
         tag: Option<&str>,
+        tags: &[String],
         author: Option<&str>,
         from_timestamp: Option<i64>,
         to_timestamp: Option<i64>,
@@ -294,6 +299,19 @@ impl Database {
                     .to_string(),
             );
             params.push(Value::Text(t.to_string()));
+        }
+
+        for extra in tags {
+            let extra = extra.trim();
+            if extra.is_empty() {
+                continue;
+            }
+            conditions.push(
+                "id IN (SELECT bt.bookmark_id FROM bookmark_tags bt \
+                 JOIN tags t ON t.id = bt.tag_id WHERE t.name = ?)"
+                    .to_string(),
+            );
+            params.push(Value::Text(extra.to_string()));
         }
 
         if let Some(a) = author {
@@ -482,7 +500,8 @@ impl Database {
             r#"SELECT b.id, b.tweet_url, b.content, b.note_text, b.tweeted_at, b.imported_at,
                       b.author_handle, b.author_name, b.author_profile_url, b.author_profile_image,
                       b.comments, b.is_favorite, b.is_read, b.links_json,
-                      b.conversation_id
+                      b.conversation_id,
+                      b.unavailable
                FROM bookmarks b"#,
         );
         if !where_clause.is_empty() {
@@ -688,5 +707,66 @@ mod ranked_query_tests {
             .unwrap();
         assert!(items.is_empty());
         assert_eq!(total, 3);
+    }
+}
+
+#[cfg(test)]
+mod composed_filter_tests {
+    use crate::models::BookmarkBuilder;
+    use crate::storage::{BookmarkQuery, Database};
+    use chrono::{TimeZone, Utc};
+
+    fn bookmark(id: &str, tags: &[&str]) -> crate::models::Bookmark {
+        let mut builder = BookmarkBuilder::new()
+            .tweet_url(format!("https://x.com/composed/status/{id}"))
+            .content(format!("composed fixture {id}"))
+            .tweeted_at(Utc.with_ymd_and_hms(2024, 5, 1, 12, 0, 0).unwrap())
+            .author_handle("composed")
+            .author_name("Composed");
+        for tag in tags {
+            builder = builder.add_tag(*tag);
+        }
+        builder.build().unwrap()
+    }
+
+    #[test]
+    fn multiple_tags_are_combined_with_and() {
+        let db = Database::open_memory().unwrap();
+        db.insert_bookmarks(&[
+            bookmark("1", &["rust", "systems"]),
+            bookmark("2", &["rust"]),
+            bookmark("3", &["systems"]),
+        ])
+        .unwrap();
+
+        let (items, total) = db
+            .search_query_page(&BookmarkQuery {
+                tags: vec!["rust".to_string(), "systems".to_string()],
+                limit: 10,
+                ..BookmarkQuery::default()
+            })
+            .unwrap();
+        assert_eq!(total, 1);
+        assert_eq!(items[0].content, "composed fixture 1");
+    }
+
+    #[test]
+    fn composed_tags_combine_with_a_text_query() {
+        let db = Database::open_memory().unwrap();
+        db.insert_bookmarks(&[
+            bookmark("1", &["rust", "systems"]),
+            bookmark("2", &["rust", "systems"]),
+        ])
+        .unwrap();
+        let (items, _) = db
+            .search_query_page(&BookmarkQuery {
+                query: Some("fixture 1".to_string()),
+                tags: vec!["systems".to_string()],
+                limit: 10,
+                ..BookmarkQuery::default()
+            })
+            .unwrap();
+        assert_eq!(items.len(), 1);
+        assert!(items[0].content.contains("fixture 1"));
     }
 }

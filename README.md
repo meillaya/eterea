@@ -175,6 +175,13 @@ The archive lives at `<platform data dir>/eterea/bookmarks.db`. On Linux that is
 - Opens media in a lightbox with a `n / m` count, pointer and mouse-back paging,
   wheel/`+`/`-`/`0` zoom from fit to 3×, and video scrubbing with `,`/`.` (±5s,
   restart-at-offset) with a live position/duration readout.
+- Keeps filters as reusable saved searches: compose query, tags, author, date,
+  read/favorite and media facets into one predicate, save it under a name, and
+  remove facets from the chip line; `add tag filter` composes tags.
+- Flags posts that X reports as gone: a quiet “no longer available on x” line in
+  the feed and detail (with an explanation that the tweet was deleted, protected
+  or its account no longer exists). The opt-in `check availability` pass fills
+  those flags and can be cancelled; a later successful check clears them.
 - Curates tags: `rename tag` renames a tag on the selected post (merging into an
   existing tag folds both together, with autocomplete suggestions), `prune tags`
   removes unused tags, and per-tag colours can be reset to their seeded colour.

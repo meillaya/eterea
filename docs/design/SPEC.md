@@ -198,6 +198,12 @@ Browses the archive by month and year without leaving the reading column.
 
 `cmd-n` or the palette's `next unread` opens the next unread post after the current selection and marks the current post read; when the loaded view has no unread posts left it switches to the unread filter and starts from the newest unread. The `unread` route remains the full list; the queue is the one-key path through it.
 
+### Filters, saved searches and availability
+
+Any filter is a composable spec: text query, all-tags (AND), author, date range, favorites, unread and has-media. The feed shows a chip line (10.5px mono) with one chip per facet; pressing a chip removes just that facet, `clear filters` clears them all, and `add tag filter` composes another tag. `save search` names the current spec and stores it in `app_metadata`; `saved searches` lists them (enter applies, backspace deletes, esc closes). Empty filters cannot be saved.
+
+Schema v7 adds a per-bookmark `unavailable` flag. Only a network check sets it: the opt-in `check availability` pass (and the media repair pass) marks rows whose embed payload is a tombstone — deleted tweet, protected author, deactivated account — and clears the flag when a payload succeeds. Feed rows show a 10.5px mono “no longer available on x” line; detail adds “deleted, protected, or the account no longer exists”. Nothing is fetched automatically.
+
 ### Notes
 
 `n` or the palette's `edit note` opens a note editor for the selected post (420–620px panel, multi-line field, `save`/`clear`, cmd-enter saves, esc closes). A saved note renders under the post body in detail, is part of the FTS document (schema v2 column, v5 index) and round-trips through CSV/JSON exports. Notes are local-only and never sent anywhere.

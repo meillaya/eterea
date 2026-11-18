@@ -11,6 +11,72 @@ pub use eterea_core::{
     LinkEntity, LinkKind, TagColor, TagMutation, UndoResult,
 };
 
+/// Composable filter predicate shared by the feed, saved searches and bulk
+/// operations. Every populated field narrows the set; an empty spec means "all".
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FilterSpec {
+    #[serde(default)]
+    pub query: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub author: Option<String>,
+    #[serde(default)]
+    pub from_date: Option<String>,
+    #[serde(default)]
+    pub to_date: Option<String>,
+    #[serde(default)]
+    pub favorites_only: bool,
+    #[serde(default)]
+    pub unread_only: bool,
+    #[serde(default)]
+    pub has_media: Option<bool>,
+}
+
+impl FilterSpec {
+    pub fn is_empty(&self) -> bool {
+        self.query
+            .as_deref()
+            .is_none_or(|query| query.trim().is_empty())
+            && self.tags.is_empty()
+            && self.author.is_none()
+            && self.from_date.is_none()
+            && self.to_date.is_none()
+            && !self.favorites_only
+            && !self.unread_only
+            && self.has_media.is_none()
+    }
+
+    /// Materialize the predicate as a paged [`BookmarkQuery`].
+    pub fn to_query(&self, offset: usize, limit: usize) -> BookmarkQuery {
+        BookmarkQuery {
+            query: self
+                .query
+                .as_deref()
+                .map(str::trim)
+                .filter(|query| !query.is_empty())
+                .map(str::to_string),
+            tag: None,
+            tags: self.tags.clone(),
+            author: self.author.clone(),
+            from_date: self.from_date.clone(),
+            to_date: self.to_date.clone(),
+            favorites_only: self.favorites_only,
+            unread_only: self.unread_only,
+            has_media: self.has_media,
+            offset,
+            limit,
+        }
+    }
+}
+
+/// One persisted named filter combination.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SavedSearch {
+    pub name: String,
+    pub spec: FilterSpec,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PaginatedResponse<T> {
     pub items: Vec<T>,

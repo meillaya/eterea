@@ -18,7 +18,8 @@ CREATE TABLE IF NOT EXISTS bookmarks (
     has_media INTEGER DEFAULT 0,    -- Denormalized: 1 if any media rows exist (avoids JOIN on filter)
     is_read INTEGER NOT NULL DEFAULT 0,  -- Reader state: 1 once the post is read
     links_json TEXT NOT NULL DEFAULT '[]', -- URL entities from the export, sorted JSON
-    conversation_id TEXT           -- Thread/conversation id when the source carried one
+    conversation_id TEXT,          -- Thread/conversation id when the source carried one
+    unavailable INTEGER NOT NULL DEFAULT 0 -- 1 when X reports the post/author gone
 );
 
 -- Materialized author directory. The Authors screen must not GROUP BY the

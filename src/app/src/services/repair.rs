@@ -130,14 +130,22 @@ pub fn repair_missing_media(
             continue;
         };
         match fetch_with_retry(&client, &tweet_id, &cancel) {
-            Ok(SyndicationOutcome::Unavailable) => summary.unavailable += 1,
+            Ok(SyndicationOutcome::Unavailable) => {
+                summary.unavailable += 1;
+                if db.set_bookmark_unavailable(bookmark_id, true).is_err() {
+                    summary.failed += 1;
+                }
+            }
             Ok(SyndicationOutcome::Tweet(payload)) => {
                 match bookmark_from_payload(bookmark_id, tweet_url, payload.as_ref()) {
-                    Some(bookmark) => match db.enrich_bookmarks(&[bookmark]) {
-                        Ok(1) => summary.repaired += 1,
-                        Ok(_) => {}
-                        Err(_) => summary.failed += 1,
-                    },
+                    Some(bookmark) => {
+                        match db.enrich_bookmarks(&[bookmark]) {
+                            Ok(1) => summary.repaired += 1,
+                            Ok(_) => {}
+                            Err(_) => summary.failed += 1,
+                        }
+                        let _ = db.set_bookmark_unavailable(bookmark_id, false);
+                    }
                     None => summary.failed += 1,
                 }
             }
@@ -238,6 +246,7 @@ fn bookmark_from_payload(
         // The embed payload carries no conversation id; enrichment never
         // invents thread identity.
         conversation_id: None,
+        unavailable: false,
     })
 }
 
@@ -318,6 +327,74 @@ fn map_quote(quote: &SyndicatedQuote) -> Option<QuotedTweet> {
     quoted.author_profile_image = quote.author.avatar_url.clone();
     quoted.media = quote.media.iter().map(map_media).collect();
     Some(quoted)
+}
+
+/// Check every bookmark's availability against X's public embed payload.
+///
+/// Same opt-in, paced, cancellable worker shape as [`repair_missing_media`]:
+/// a tombstone (deleted tweet, protected author, deactivated account) marks the
+/// row unavailable, a successful payload clears the flag, and other failures
+/// are counted without changing anything. `repaired` counts rows newly known
+/// to be present, `unavailable` counts rows known to be gone.
+pub fn check_availability(
+    db_path: &Path,
+    options: RepairOptions,
+    cancel: Arc<AtomicBool>,
+    mut on_event: impl FnMut(RepairEvent),
+) -> Result<RepairSummary> {
+    let db = Database::open(db_path)
+        .with_context(|| format!("failed to open database at {}", db_path.display()))?;
+    let targets = db
+        .bookmarks_for_availability(options.limit)
+        .context("failed to list bookmarks for the availability check")?;
+    let total = targets.len();
+    let client = SyndicationClient::new()?;
+    let mut summary = RepairSummary {
+        total,
+        ..RepairSummary::default()
+    };
+    let mut report = |summary: &RepairSummary, done: usize, finished: bool, cancelled: bool| {
+        on_event(RepairEvent {
+            done,
+            total,
+            repaired: summary.repaired,
+            unavailable: summary.unavailable,
+            failed: summary.failed,
+            finished,
+            cancelled,
+        });
+    };
+    for (index, (bookmark_id, tweet_url)) in targets.iter().enumerate() {
+        if cancel.load(Ordering::Relaxed) {
+            summary.cancelled = true;
+            break;
+        }
+        report(&summary, index, false, false);
+        let Some(tweet_id) = tweet_id_from_url(tweet_url) else {
+            summary.failed += 1;
+            sleep_unless_cancelled(options.delay, &cancel);
+            continue;
+        };
+        match fetch_with_retry(&client, &tweet_id, &cancel) {
+            Ok(SyndicationOutcome::Unavailable) => {
+                summary.unavailable += 1;
+                if db.set_bookmark_unavailable(bookmark_id, true).is_err() {
+                    summary.failed += 1;
+                }
+            }
+            Ok(SyndicationOutcome::Tweet(_)) => {
+                summary.repaired += 1;
+                if db.set_bookmark_unavailable(bookmark_id, false).is_err() {
+                    summary.failed += 1;
+                }
+            }
+            Err(_) => summary.failed += 1,
+        }
+        sleep_unless_cancelled(options.delay, &cancel);
+    }
+    summary.cancelled = summary.cancelled || cancel.load(Ordering::Relaxed);
+    report(&summary, summary.total, true, summary.cancelled);
+    Ok(summary)
 }
 
 #[cfg(test)]

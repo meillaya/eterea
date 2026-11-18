@@ -16,10 +16,10 @@ use chrono::{Datelike, NaiveDate, Utc};
 use eterea_app::{
     AuthorSummary, BookmarkQuery, BookmarkSelection, BookmarkStats, CalendarData, CalendarRequest,
     CalendarYearData, CalendarYearRequest, DirectoryPageRequest, ExportFormat, ExportRequest,
-    ExportScope, GraphData, GraphRequest, HistoryDetail, HistoryEvent, HistoryKind,
+    ExportScope, FilterSpec, GraphData, GraphRequest, HistoryDetail, HistoryEvent, HistoryKind,
     HistoryListRequest, HistoryState, ImportBatchPreview, ImportBatchSummary, ImportProgress,
-    RepairEvent, RepairOptions, RequestId, Response, StoreHandle, TagMutation, TagSuggestion,
-    TopicSummary,
+    RepairEvent, RepairOptions, RequestId, Response, SavedSearch, StoreHandle, TagMutation,
+    TagSuggestion, TopicSummary,
 };
 use eterea_media::{ImageKind, VideoCache, VideoCacheConfig, VideoPlayer, VideoPlayerOptions};
 use eterea_ui_model::{Mode, Route};
@@ -67,6 +67,9 @@ enum Overlay {
     Note,
     TagRename,
     GraphSearch,
+    SaveSearch,
+    SavedSearches,
+    FilterTag,
 }
 
 struct TagEdit {
@@ -105,6 +108,10 @@ enum CommandItem {
     NextUnread,
     RenameTag,
     PruneTags,
+    SaveSearch,
+    SavedSearches,
+    AddTagFilter,
+    CheckAvailability,
 }
 
 const COMMANDS: &[(&str, CommandItem)] = &[
@@ -136,6 +143,10 @@ const COMMANDS: &[(&str, CommandItem)] = &[
     ("next unread", CommandItem::NextUnread),
     ("rename tag", CommandItem::RenameTag),
     ("prune tags", CommandItem::PruneTags),
+    ("save search", CommandItem::SaveSearch),
+    ("saved searches", CommandItem::SavedSearches),
+    ("add tag filter", CommandItem::AddTagFilter),
+    ("check availability", CommandItem::CheckAvailability),
     ("retry media", CommandItem::RetryMedia),
 ];
 
@@ -217,6 +228,34 @@ enum Filter {
     Query(String),
     Favorites,
     Unread,
+    /// Composable filter produced by saved searches and chip editing.
+    Composed(FilterSpec),
+}
+
+/// Translate any filter into the composable spec.
+fn filter_spec(filter: &Filter) -> FilterSpec {
+    let mut spec = FilterSpec::default();
+    match filter {
+        Filter::Author(handle) => spec.author = Some(handle.clone()),
+        Filter::Topic(tag) => spec.tags.push(tag.clone()),
+        Filter::Day(from, to) => {
+            spec.from_date = Some(from.clone());
+            spec.to_date = Some(to.clone());
+        }
+        Filter::Query(text) => spec.query = Some(text.clone()),
+        Filter::Favorites => spec.favorites_only = true,
+        Filter::Unread => spec.unread_only = true,
+        Filter::Composed(composed) => return composed.clone(),
+    }
+    spec
+}
+
+fn spec_to_filter(spec: FilterSpec) -> Option<Filter> {
+    if spec.is_empty() {
+        None
+    } else {
+        Some(Filter::Composed(spec))
+    }
 }
 
 pub(crate) struct State {
@@ -260,6 +299,9 @@ pub(crate) struct State {
     favorite_request: Option<(u64, String)>,
     delete_request: Option<(u64, String)>,
     demo: bool,
+    /// Demo-only: post indexes a scene wants marked unavailable (the demo deck
+    /// is created after scenes are applied).
+    demo_unavailable: Vec<usize>,
     /// Test/headless switch: load every post's media after the feed arrives.
     auto_media: bool,
     authors: Vec<AuthorSummary>,
@@ -276,6 +318,8 @@ pub(crate) struct State {
     repair_active: bool,
     /// Visited/total posts from the running repair, for the footer bar.
     repair_progress: Option<(usize, usize)>,
+    /// True while the repair worker is the availability check pass.
+    availability_check: bool,
     /// Avatar URLs per handle, newest first. The champion is shown on every
     /// post of that handle, so a changed account stops showing an expired
     /// profile-image URL on its older posts.
@@ -340,6 +384,10 @@ pub(crate) struct State {
     /// Committed graph tag filter and the live search buffer while editing it.
     graph_filter: Option<String>,
     graph_search_buffer: TextEdit,
+    saved_searches: Vec<SavedSearch>,
+    saved_search_buffer: TextEdit,
+    saved_search_selected: usize,
+    filter_tag_buffer: TextEdit,
     /// Latest import progress tick and the channel it arrives on.
     import_progress: Option<ImportProgress>,
     import_progress_rx: Option<ProgressReceiver<ImportProgress>>,
@@ -413,6 +461,7 @@ impl State {
             favorite_request: None,
             delete_request: None,
             demo: false,
+            demo_unavailable: Vec::new(),
             auto_media: false,
             authors: Vec::new(),
             authors_total: 0,
@@ -425,6 +474,7 @@ impl State {
             repair_cancel: None,
             repair_active: false,
             repair_progress: None,
+            availability_check: false,
             avatar_variants: HashMap::new(),
             avatar_choice: HashMap::new(),
             directory_filter: String::new(),
@@ -472,6 +522,10 @@ impl State {
             thread_request: None,
             graph_filter: None,
             graph_search_buffer: TextEdit::new(""),
+            saved_searches: Vec::new(),
+            saved_search_buffer: TextEdit::new(""),
+            saved_search_selected: 0,
+            filter_tag_buffer: TextEdit::new(""),
             import_progress: None,
             import_progress_rx: None,
             video: None,
@@ -540,6 +594,7 @@ impl State {
             Some(Filter::Query(text)) => query.query = Some(text.clone()),
             Some(Filter::Favorites) => query.favorites_only = true,
             Some(Filter::Unread) => query.unread_only = true,
+            Some(Filter::Composed(spec)) => return spec.to_query(offset, PAGE),
             None => {}
         }
         query
@@ -1130,6 +1185,27 @@ impl State {
             CommandItem::EditNote => open_note_editor(self),
             CommandItem::NextUnread => next_unread(self),
             CommandItem::RenameTag => open_tag_rename(self),
+            CommandItem::SaveSearch => open_save_search(self, tx.clock()),
+            CommandItem::SavedSearches => {
+                if let Some(store) = self.store.as_ref() {
+                    store.saved_searches();
+                    self.pending_views += 1;
+                }
+                self.overlay = Overlay::SavedSearches;
+                self.saved_search_selected = 0;
+            }
+            CommandItem::CheckAvailability => {
+                let now = tx.clock();
+                start_availability_check(self, now);
+            }
+            CommandItem::AddTagFilter => {
+                self.overlay = Overlay::FilterTag;
+                self.filter_tag_buffer = TextEdit::new("");
+                if let Some(store) = self.store.as_ref() {
+                    store.tag_suggestions("", 40);
+                    self.pending_views += 1;
+                }
+            }
             CommandItem::PruneTags => {
                 if let Some(store) = self.store.as_ref() {
                     store.prune_tags();
@@ -1232,6 +1308,11 @@ fn setup(state: &mut State, waker: Waker) {
     if state.demo {
         state.posts = model::demo_posts();
         state.total = state.posts.len() as i64;
+        for index in state.demo_unavailable.clone() {
+            if let Some(post) = state.posts.get_mut(index) {
+                post.unavailable = true;
+            }
+        }
         preload_demo_images(state);
         request_avatars(state);
         for post in &mut state.posts {
@@ -2227,6 +2308,19 @@ fn handle_response(state: &mut State, response: Response, clock: f64) {
                 state.tag_suggestions = suggestions;
             }
         }
+        Response::SavedSearches { result, .. } => {
+            state.pending_views = state.pending_views.saturating_sub(1);
+            let now = clock;
+            match result {
+                Ok(searches) => {
+                    state.saved_searches = searches;
+                    state.saved_search_selected = state
+                        .saved_search_selected
+                        .min(state.saved_searches.len().saturating_sub(1));
+                }
+                Err(error) => state.set_status(error.message, now),
+            }
+        }
         Response::RenameTag { result, .. } => {
             state.pending_views = state.pending_views.saturating_sub(1);
             let now = clock;
@@ -2715,6 +2809,31 @@ fn overlay_key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
                 dismiss_overlay(state);
             }
         }
+        Overlay::SaveSearch => match &event.key {
+            Key::Escape => dismiss_overlay(state),
+            Key::Enter => save_search_now(state, tx.clock()),
+            _ => {}
+        },
+        Overlay::FilterTag => match &event.key {
+            Key::Escape => dismiss_overlay(state),
+            Key::Enter => compose_tag_filter(state),
+            _ => {}
+        },
+        Overlay::SavedSearches => match &event.key {
+            Key::Escape => dismiss_overlay(state),
+            Key::Up => {
+                state.saved_search_selected = state.saved_search_selected.saturating_sub(1);
+            }
+            Key::Down => {
+                if !state.saved_searches.is_empty() {
+                    state.saved_search_selected =
+                        (state.saved_search_selected + 1).min(state.saved_searches.len() - 1);
+                }
+            }
+            Key::Enter => apply_saved_search(state),
+            Key::Backspace | Key::Delete => delete_selected_search(state),
+            _ => {}
+        },
         Overlay::Note => match &event.key {
             Key::Escape => dismiss_overlay(state),
             Key::Enter if event.mods.primary() => save_note(state),
@@ -3000,6 +3119,64 @@ fn request_cancel_repair(state: &mut State) {
     }
 }
 
+fn start_availability_check(state: &mut State, now: f64) {
+    if state.repair_active {
+        return;
+    }
+    if state.demo {
+        state.set_status("availability needs the real archive", now);
+        return;
+    }
+    let Some(path) = state.db_path.clone() else {
+        state.set_status("archive path unknown", now);
+        return;
+    };
+    let limit = std::env::var("ETEREA_REPAIR_LIMIT")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(usize::MAX);
+    let delay_ms = std::env::var("ETEREA_REPAIR_DELAY_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(320);
+    let options = RepairOptions {
+        limit,
+        delay: Duration::from_millis(delay_ms.max(1)),
+    };
+    let (tx, rx) = mpsc::channel();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let worker_cancel = Arc::clone(&cancel);
+    state.repair_rx = Some(rx);
+    state.repair_cancel = Some(cancel);
+    state.repair_active = true;
+    state.repair_progress = Some((0, 0));
+    state.availability_check = true;
+    state.set_status("checking post availability", now);
+    let spawned = std::thread::Builder::new()
+        .name("eterea-availability".into())
+        .spawn(move || {
+            let result = eterea_app::check_availability(&path, options, worker_cancel, |event| {
+                let _ = tx.send(event);
+            });
+            if result.is_err() {
+                let _ = tx.send(RepairEvent {
+                    total: 0,
+                    failed: 1,
+                    finished: true,
+                    ..RepairEvent::default()
+                });
+            }
+        });
+    if spawned.is_err() {
+        state.repair_active = false;
+        state.repair_rx = None;
+        state.repair_cancel = None;
+        state.repair_progress = None;
+        state.availability_check = false;
+        state.set_status("availability check could not start", now);
+    }
+}
+
 fn poll_media_repair(state: &mut State, clock: f64) -> bool {
     let Some(rx) = state.repair_rx.take() else {
         return false;
@@ -3036,10 +3213,25 @@ fn poll_media_repair(state: &mut State, clock: f64) -> bool {
             state.repair_rx = None;
             state.repair_cancel = None;
             state.repair_progress = None;
+            let checking = state.availability_check;
+            state.availability_check = false;
             let message = if event.cancelled {
-                "repair cancelled".to_string()
-            } else if event.failed > 0 && event.repaired == 0 {
-                "repair failed".to_string()
+                if checking {
+                    "availability check cancelled".to_string()
+                } else {
+                    "repair cancelled".to_string()
+                }
+            } else if event.failed > 0 && event.repaired == 0 && event.unavailable == 0 {
+                if checking {
+                    "availability check failed".to_string()
+                } else {
+                    "repair failed".to_string()
+                }
+            } else if checking {
+                format!(
+                    "checked {} posts, {} unavailable, {} failed",
+                    event.total, event.unavailable, event.failed
+                )
             } else if event.unavailable > 0 || event.failed > 0 {
                 format!(
                     "repaired {} posts, {} unavailable, {} failed",
@@ -3415,6 +3607,124 @@ fn restore_feed_position(state: &mut State, tx: &mut Tx) {
     } else {
         tx.scroll_to_y("feed", returning.scroll);
     }
+}
+
+fn saved_search_summary(search: &SavedSearch) -> String {
+    let spec = &search.spec;
+    let mut parts = Vec::new();
+    if let Some(query) = spec
+        .query
+        .as_deref()
+        .filter(|query| !query.trim().is_empty())
+    {
+        parts.push(query.to_string());
+    }
+    for tag in &spec.tags {
+        parts.push(format!("#{tag}"));
+    }
+    if let Some(handle) = spec.author.as_deref() {
+        parts.push(format!("@{handle}"));
+    }
+    if spec.favorites_only {
+        parts.push("favorites".to_string());
+    }
+    if spec.unread_only {
+        parts.push("unread".to_string());
+    }
+    if spec.from_date.is_some() || spec.to_date.is_some() {
+        parts.push("date range".to_string());
+    }
+    if spec.has_media.is_some() {
+        parts.push("media".to_string());
+    }
+    parts.join(" · ")
+}
+
+fn open_save_search(state: &mut State, now: f64) {
+    let spec = state.filter.as_ref().map(filter_spec).unwrap_or_default();
+    if spec.is_empty() {
+        state.set_status("nothing to save: set a filter first", now);
+        return;
+    }
+    state.overlay = Overlay::SaveSearch;
+    state.saved_search_buffer = TextEdit::new("");
+}
+
+fn save_search_now(state: &mut State, now: f64) {
+    let name = state.saved_search_buffer.text.trim().to_string();
+    let spec = state.filter.as_ref().map(filter_spec).unwrap_or_default();
+    if name.is_empty() {
+        state.set_status("name the saved search", now);
+        return;
+    }
+    if spec.is_empty() {
+        state.set_status("nothing to save: set a filter first", now);
+        state.overlay = Overlay::None;
+        return;
+    }
+    if let Some(store) = state.store.as_ref() {
+        store.save_search(name, spec);
+        state.pending_views += 1;
+    }
+    state.overlay = Overlay::None;
+    state.saved_search_buffer = TextEdit::new("");
+    state.set_status("saved search", now);
+}
+
+fn compose_tag_filter(state: &mut State) {
+    let tag = state
+        .filter_tag_buffer
+        .text
+        .trim()
+        .trim_start_matches('#')
+        .to_string();
+    if tag.is_empty() {
+        state.overlay = Overlay::None;
+        return;
+    }
+    let mut spec = state.filter.as_ref().map(filter_spec).unwrap_or_default();
+    if !spec
+        .tags
+        .iter()
+        .any(|existing| existing.eq_ignore_ascii_case(&tag))
+    {
+        spec.tags.push(tag.clone());
+    }
+    state.request_feed(spec_to_filter(spec));
+    state.overlay = Overlay::None;
+    state.filter_tag_buffer = TextEdit::new("");
+}
+
+fn apply_saved_search(state: &mut State) {
+    let Some(search) = state
+        .saved_searches
+        .get(state.saved_search_selected)
+        .cloned()
+    else {
+        return;
+    };
+    state.request_feed(spec_to_filter(search.spec));
+    state.overlay = Overlay::None;
+}
+
+fn delete_selected_search(state: &mut State) {
+    let Some(search) = state
+        .saved_searches
+        .get(state.saved_search_selected)
+        .cloned()
+    else {
+        return;
+    };
+    if let Some(store) = state.store.as_ref() {
+        store.delete_saved_search(search.name.clone());
+        state.pending_views += 1;
+    }
+    state
+        .saved_searches
+        .retain(|candidate| candidate.name != search.name);
+    state.saved_search_selected = state
+        .saved_search_selected
+        .min(state.saved_searches.len().saturating_sub(1));
 }
 
 fn open_tag_rename(state: &mut State) {
@@ -3923,6 +4233,8 @@ fn footer(state: &State, p: Palette) -> El {
             .is_some_and(|flag| flag.load(Ordering::Relaxed));
         let label = if cancelling {
             "cancelling"
+        } else if state.availability_check {
+            "checking posts"
         } else {
             "repairing media"
         };
@@ -4014,32 +4326,110 @@ fn feed_filter_label(filter: &Filter) -> String {
         Filter::Query(query) => format!("filtered: {query}"),
         Filter::Favorites => "filtered: favorites".to_string(),
         Filter::Unread => "filtered: unread".to_string(),
+        Filter::Composed(spec) => {
+            let mut parts = Vec::new();
+            if let Some(query) = spec.query.as_deref().filter(|q| !q.trim().is_empty()) {
+                parts.push(query.to_string());
+            }
+            for tag in &spec.tags {
+                parts.push(format!("#{tag}"));
+            }
+            if let Some(handle) = spec.author.as_deref() {
+                parts.push(format!("@{handle}"));
+            }
+            if spec.favorites_only {
+                parts.push("favorites".to_string());
+            }
+            if spec.unread_only {
+                parts.push("unread".to_string());
+            }
+            if spec.from_date.is_some() || spec.to_date.is_some() {
+                parts.push("date range".to_string());
+            }
+            if spec.has_media.is_some() {
+                parts.push("media".to_string());
+            }
+            format!("filtered: {}", parts.join(" · "))
+        }
     }
 }
 
 fn feed_filter_line(state: &State, p: Palette) -> Option<El> {
     let filter = state.filter.as_ref()?;
-    Some(
-        row().w_full().h(20.0).justify_center().child(
+    let spec = filter_spec(filter);
+    if spec.is_empty() {
+        return None;
+    }
+    let mut chips: Vec<(String, FilterSpec)> = Vec::new();
+    if let Some(query) = spec.query.as_deref().filter(|q| !q.trim().is_empty()) {
+        let mut cleared = spec.clone();
+        cleared.query = None;
+        chips.push((query.to_string(), cleared));
+    }
+    for tag in &spec.tags {
+        let mut cleared = spec.clone();
+        cleared.tags.retain(|candidate| candidate != tag);
+        chips.push((format!("#{tag}"), cleared));
+    }
+    if let Some(handle) = spec.author.as_deref() {
+        let mut cleared = spec.clone();
+        cleared.author = None;
+        chips.push((format!("@{handle}"), cleared));
+    }
+    if spec.favorites_only {
+        let mut cleared = spec.clone();
+        cleared.favorites_only = false;
+        chips.push(("favorites".to_string(), cleared));
+    }
+    if spec.unread_only {
+        let mut cleared = spec.clone();
+        cleared.unread_only = false;
+        chips.push(("unread".to_string(), cleared));
+    }
+    if spec.from_date.is_some() || spec.to_date.is_some() {
+        let mut cleared = spec.clone();
+        cleared.from_date = None;
+        cleared.to_date = None;
+        chips.push(("date range".to_string(), cleared));
+    }
+    if spec.has_media.is_some() {
+        let mut cleared = spec.clone();
+        cleared.has_media = None;
+        chips.push(("media".to_string(), cleared));
+    }
+    let mut row_view = row()
+        .w_full()
+        .min_h(20.0)
+        .justify_center()
+        .child(row().w(CONTENT).center_y().flex_wrap().gap(16.0));
+    let mut chip_row = row().w(CONTENT).center_y().flex_wrap().gap(16.0);
+    for (label, cleared) in chips {
+        let next = spec_to_filter(cleared);
+        chip_row = chip_row.child(
             row()
-                .w(CONTENT)
                 .center_y()
-                .gap(12.0)
+                .gap(4.0)
+                .child(text(label).font(theme::mono(10.5)).color(p.muted))
                 .child(
-                    text(feed_filter_label(filter))
-                        .font(theme::mono(10.5))
-                        .color(p.muted),
-                )
-                .child(
-                    text("clear")
-                        .font(theme::mono(10.5))
+                    text("×")
+                        .font(theme::ui(12.0, 400.0))
                         .color(p.muted)
                         .role("button")
-                        .label("clear filter")
-                        .on_press(|state: &mut State| state.request_feed(None)),
+                        .label("remove this filter")
+                        .on_press(move |state: &mut State| state.request_feed(next.clone())),
                 ),
-        ),
-    )
+        );
+    }
+    chip_row = chip_row.child(
+        text("clear filters")
+            .font(theme::mono(10.5))
+            .color(p.muted)
+            .role("button")
+            .label("clear all filters")
+            .on_press(|state: &mut State| state.request_feed(None)),
+    );
+    row_view = row_view.child(chip_row);
+    Some(row_view)
 }
 
 fn feed_view(state: &State, p: Palette) -> El {
@@ -5569,6 +5959,221 @@ fn overlay_view(state: &State, p: Palette) -> El {
                         .font(theme::mono(10.5))
                         .color(p.muted),
                 );
+            el().w_full()
+                .h_full()
+                .absolute(0.0, 0.0)
+                .child(scrim)
+                .child(
+                    row()
+                        .w_full()
+                        .h_full()
+                        .justify_center()
+                        .center_y()
+                        .child(panel),
+                )
+        }
+        Overlay::SaveSearch => {
+            let panel = col()
+                .w(520.0)
+                .gap(12.0)
+                .padding(18.0)
+                .fill(p.bg)
+                .border(1.0, p.line)
+                .radius(2.0)
+                .child(text("save search").font(theme::serif(20.0)).color(p.ink))
+                .child(
+                    text(
+                        state
+                            .filter
+                            .as_ref()
+                            .map(feed_filter_label)
+                            .unwrap_or_default(),
+                    )
+                    .font(theme::mono(10.5))
+                    .color(p.muted),
+                )
+                .child(
+                    text_input(&state.saved_search_buffer, theme::ui(15.0, 400.0))
+                        .key("save-search-input")
+                        .w_full()
+                        .h(34.0)
+                        .px(8.0)
+                        .radius(2.0)
+                        .fill(p.band)
+                        .border(1.0, p.line)
+                        .color(p.ink)
+                        .placeholder("name this filter combination", p.muted)
+                        .single_line()
+                        .on_edit(|state: &mut State| &mut state.saved_search_buffer)
+                        .on_submit(|state: &mut State, tx: &mut Tx| {
+                            save_search_now(state, tx.clock())
+                        }),
+                )
+                .child(
+                    row()
+                        .w_full()
+                        .justify_between()
+                        .center_y()
+                        .child(
+                            text("enter saves, esc closes")
+                                .font(theme::mono(10.5))
+                                .color(p.muted),
+                        )
+                        .child(
+                            text("save")
+                                .font(theme::ui(12.5, 500.0))
+                                .color(p.accent)
+                                .on_press_tx(|state: &mut State, tx: &mut Tx| {
+                                    save_search_now(state, tx.clock())
+                                }),
+                        ),
+                );
+            el().w_full()
+                .h_full()
+                .absolute(0.0, 0.0)
+                .child(scrim)
+                .child(
+                    row()
+                        .w_full()
+                        .h_full()
+                        .justify_center()
+                        .center_y()
+                        .child(panel),
+                )
+        }
+        Overlay::FilterTag => {
+            let mut panel = col()
+                .w(520.0)
+                .gap(12.0)
+                .padding(18.0)
+                .fill(p.bg)
+                .border(1.0, p.line)
+                .radius(2.0)
+                .child(text("add tag filter").font(theme::serif(20.0)).color(p.ink))
+                .child(
+                    text_input(&state.filter_tag_buffer, theme::ui(15.0, 400.0))
+                        .key("filter-tag-input")
+                        .w_full()
+                        .h(34.0)
+                        .px(8.0)
+                        .radius(2.0)
+                        .fill(p.band)
+                        .border(1.0, p.line)
+                        .color(p.ink)
+                        .placeholder("tag name", p.muted)
+                        .single_line()
+                        .on_edit(|state: &mut State| &mut state.filter_tag_buffer)
+                        .on_submit(|state: &mut State, _tx: &mut Tx| compose_tag_filter(state)),
+                );
+            let prefix = state.filter_tag_buffer.text.trim().to_lowercase();
+            let mut suggestions = row().w_full().gap(10.0).flex_wrap();
+            let mut shown = 0;
+            for suggestion in &state.tag_suggestions {
+                if shown >= 8 {
+                    break;
+                }
+                if !prefix.is_empty() && !suggestion.tag.to_lowercase().starts_with(&prefix) {
+                    continue;
+                }
+                let value = suggestion.tag.clone();
+                suggestions = suggestions.child(
+                    text(format!("#{}", suggestion.tag))
+                        .font(theme::mono(11.0))
+                        .color(p.muted)
+                        .on_press(move |state: &mut State| {
+                            state.filter_tag_buffer = TextEdit::new(value.clone());
+                            compose_tag_filter(state);
+                        }),
+                );
+                shown += 1;
+            }
+            panel = panel.child(suggestions).child(
+                text("enter filters, esc closes")
+                    .font(theme::mono(10.5))
+                    .color(p.muted),
+            );
+            el().w_full()
+                .h_full()
+                .absolute(0.0, 0.0)
+                .child(scrim)
+                .child(
+                    row()
+                        .w_full()
+                        .h_full()
+                        .justify_center()
+                        .center_y()
+                        .child(panel),
+                )
+        }
+        Overlay::SavedSearches => {
+            let mut panel = col()
+                .w(620.0)
+                .gap(12.0)
+                .padding(18.0)
+                .fill(p.bg)
+                .border(1.0, p.line)
+                .radius(2.0)
+                .child(text("saved searches").font(theme::serif(20.0)).color(p.ink));
+            if state.saved_searches.is_empty() {
+                panel = panel.child(
+                    text("no saved searches yet; set a filter and use save search")
+                        .font(theme::ui(12.5, 400.0))
+                        .color(p.muted),
+                );
+            } else {
+                let mut rows = col().w_full().gap(6.0).max_h(420.0);
+                for (index, search) in state.saved_searches.iter().enumerate() {
+                    let selected = index == state.saved_search_selected;
+                    rows = rows.child(
+                        row()
+                            .w_full()
+                            .center_y()
+                            .gap(12.0)
+                            .pt(6.0)
+                            .pb(6.0)
+                            .on_press(move |state: &mut State| {
+                                state.saved_search_selected = index;
+                                apply_saved_search(state);
+                            })
+                            .child(
+                                text(if selected {
+                                    format!("› {}", search.name)
+                                } else {
+                                    format!("  {}", search.name)
+                                })
+                                .font(theme::ui(13.0, 500.0))
+                                .color(if selected {
+                                    p.accent
+                                } else {
+                                    p.ink
+                                }),
+                            )
+                            .child(el().grow(1.0))
+                            .child(
+                                text(saved_search_summary(search))
+                                    .font(theme::mono(10.5))
+                                    .color(p.muted),
+                            )
+                            .child(
+                                text("×")
+                                    .font(theme::ui(12.0, 400.0))
+                                    .color(p.muted)
+                                    .on_press(move |state: &mut State| {
+                                        state.saved_search_selected = index;
+                                        delete_selected_search(state);
+                                    }),
+                            ),
+                    );
+                }
+                panel = panel.child(rows.scroll(ScrollSpec {
+                    stick_bottom: false,
+                }));
+            }
+            panel = panel.child(
+                text("enter applies, backspace deletes, esc closes")
+                    .font(theme::mono(10.5))
+                    .color(p.muted),
+            );
             el().w_full()
                 .h_full()
                 .absolute(0.0, 0.0)
@@ -7556,6 +8161,22 @@ fn post_view(state: &State, post: &Post, index: usize, p: Palette, detail: bool)
         );
     }
 
+    if post.unavailable {
+        content = content.child(
+            row().w_full().center_y().gap(8.0).pt(12.0).child(
+                text("no longer available on x")
+                    .font(theme::mono(10.5))
+                    .color(p.muted),
+            ),
+        );
+        if detail {
+            content = content.child(
+                text("deleted, protected, or the account no longer exists")
+                    .font(theme::ui(12.0, 400.0))
+                    .color(p.muted),
+            );
+        }
+    }
     if detail {
         if let Some(note) = post.note.as_deref() {
             content = content.child(
@@ -7986,6 +8607,39 @@ pub fn spec() -> AppSpec<State> {
                 s.route = Route::Feed;
                 s.lightbox = Some((1, 0));
                 s.overlay = Overlay::Lightbox;
+            }),
+            ("unavailable", |s: &mut State| {
+                s.selected = 1;
+                s.demo_unavailable = vec![1];
+            }),
+            ("filters", |s: &mut State| {
+                s.filter = Some(Filter::Composed(FilterSpec {
+                    query: Some("film".to_string()),
+                    tags: vec!["design".to_string()],
+                    unread_only: true,
+                    ..FilterSpec::default()
+                }));
+            }),
+            ("saved", |s: &mut State| {
+                s.overlay = Overlay::SavedSearches;
+                s.saved_searches = vec![
+                    SavedSearch {
+                        name: "night reading".to_string(),
+                        spec: FilterSpec {
+                            tags: vec!["books".to_string()],
+                            unread_only: true,
+                            ..FilterSpec::default()
+                        },
+                    },
+                    SavedSearch {
+                        name: "canada design".to_string(),
+                        spec: FilterSpec {
+                            tags: vec!["design".to_string(), "canada".to_string()],
+                            ..FilterSpec::default()
+                        },
+                    },
+                ];
+                s.saved_search_selected = 1;
             }),
             ("note", |s: &mut State| {
                 s.selected = 1;

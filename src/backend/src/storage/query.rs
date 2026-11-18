@@ -14,6 +14,9 @@ use std::path::PathBuf;
 pub struct BookmarkQuery {
     pub query: Option<String>,
     pub tag: Option<String>,
+    /// Extra tags that must all be present (composable filters/saved searches).
+    #[serde(default)]
+    pub tags: Vec<String>,
     pub author: Option<String>,
     /// RFC 3339 lower bound on the posted date (inclusive).
     pub from_date: Option<String>,
@@ -35,6 +38,7 @@ impl BookmarkQuery {
             .as_deref()
             .is_some_and(|value| !value.trim().is_empty())
             || self.tag.is_some()
+            || !self.tags.is_empty()
             || self.author.is_some()
             || self.from_date.is_some()
             || self.to_date.is_some()

@@ -74,7 +74,7 @@ Exit codes: `0` pass, `1` verification failure, `2` usage or environment error.
 
 ## Matrix
 
-104 captures. Scenes run at all three sizes and both themes; routes, datasets and
+122 captures. Scenes run at all three sizes and both themes; routes, datasets and
 scripts run at `1440x900` in both themes. Everything uses `--scale 1`, so PNG
 pixels equal the requested point size.
 

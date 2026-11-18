@@ -109,7 +109,7 @@ Vulkan device. It is a local gate:
 
 ```bash
 bash scripts/ui-harness.sh
-# 104/104 cases, image 104/104, tree 103/104 (feed-return is pixel-only), copy lint 0/0, no clipping warnings
+# 122/122 cases, image 122/122, tree 121/122 (feed-return is pixel-only), copy lint 0/0, no clipping warnings
 ```
 
 ### Kani budgets and limits (explicit)
@@ -252,7 +252,7 @@ python3 scripts/test_validate_github_workflows.py
    is in `verification/verus/README.md`.
 5. **Fuzz is a smoke window**, not a security proof. It covers two parser
    surfaces for a few seconds per CI run.
-6. **UI harness is runtime validation**, not proof: 104/104 render/golden and 103/104 tree golden
+6. **UI harness is runtime validation**, not proof: 122/122 render/golden and 103/104 tree golden
    cases pass, but it does not drive interactions, network, dialogs, video or
    audio. It needs software Vulkan, so it is a local gate.
 7. **No CI evidence from GitHub has been observed yet** — the numbers above are

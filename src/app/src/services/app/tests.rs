@@ -255,3 +255,51 @@ fn preview_duplicate_count_matches_the_committed_duplicates() {
         preview.bookmark_count
     );
 }
+
+#[test]
+fn saved_searches_persist_dedupe_and_delete() {
+    use crate::types::FilterSpec;
+
+    let services = AppServices::open_memory().expect("in-memory services should open");
+    let spec = FilterSpec {
+        tags: vec!["books".to_string()],
+        unread_only: true,
+        ..FilterSpec::default()
+    };
+    let stored = services.save_search("Night reading", spec.clone()).unwrap();
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0].name, "Night reading");
+
+    // Re-saving under a different case replaces instead of duplicating.
+    let replaced = services.save_search("night reading", spec.clone()).unwrap();
+    assert_eq!(replaced.len(), 1);
+    assert_eq!(services.saved_searches().unwrap().len(), 1);
+
+    assert!(services.save_search("", spec.clone()).is_err());
+    assert!(services
+        .save_search("empty", FilterSpec::default())
+        .is_err());
+
+    let remaining = services.delete_saved_search("NIGHT READING").unwrap();
+    assert!(remaining.is_empty());
+}
+
+#[test]
+fn composed_filters_query_the_archive() {
+    use crate::types::{BookmarkQuery, FilterSpec};
+
+    let services = AppServices::open_memory().expect("in-memory services should open");
+    services
+        .import_content("sample.json", sample_json())
+        .expect("json import should succeed");
+    let spec = FilterSpec {
+        query: Some("rust".to_string()),
+        ..FilterSpec::default()
+    };
+    let query = spec.to_query(0, 20);
+    let page = services
+        .query_bookmarks(&BookmarkQuery { limit: 20, ..query })
+        .expect("composed query should succeed");
+    assert!(page.total > 0, "fixture should match a rust query");
+    assert!(FilterSpec::default().is_empty());
+}

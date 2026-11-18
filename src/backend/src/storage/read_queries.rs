@@ -13,7 +13,7 @@ impl Database {
             r#"SELECT id, tweet_url, content, note_text, tweeted_at, imported_at,
                       author_handle, author_name, author_profile_url, author_profile_image,
                       comments, is_favorite,
-                      is_read, links_json, conversation_id
+                      is_read, links_json, conversation_id, unavailable
                FROM bookmarks
                ORDER BY tweeted_at DESC, id DESC
                LIMIT ?1 OFFSET ?2"#,
@@ -49,6 +49,20 @@ impl Database {
             .map_err(Into::into)
     }
 
+    /// `(id, tweet_url)` of the newest bookmarks, for the opt-in availability
+    /// check pass.
+    pub fn bookmarks_for_availability(&self, limit: usize) -> Result<Vec<(String, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, tweet_url FROM bookmarks ORDER BY tweeted_at DESC, id DESC LIMIT ?1",
+        )?;
+        let rows = stmt
+            .query_map(params![limit as i64], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     /// Every bookmark in a thread, oldest first, anchored on the requested id.
     ///
     /// Uses `conversation_id` when the source carried one; archives without
@@ -73,7 +87,7 @@ impl Database {
             r#"SELECT id, tweet_url, content, note_text, tweeted_at, imported_at,
                       author_handle, author_name, author_profile_url, author_profile_image,
                       comments, is_favorite,
-                      is_read, links_json, conversation_id
+                      is_read, links_json, conversation_id, unavailable
                FROM bookmarks
                WHERE conversation_id = ?1
                ORDER BY tweeted_at ASC, id ASC"#,
@@ -96,7 +110,7 @@ impl Database {
             r#"SELECT b.id, b.tweet_url, b.content, b.note_text, b.tweeted_at, b.imported_at,
                       b.author_handle, b.author_name, b.author_profile_url, b.author_profile_image,
                       b.comments, b.is_favorite,
-                      b.is_read, b.links_json, b.conversation_id
+                      b.is_read, b.links_json, b.conversation_id, unavailable
                FROM bookmarks b
                JOIN bookmark_tags bt ON bt.bookmark_id = b.id
                JOIN tags t ON t.id = bt.tag_id
@@ -127,7 +141,7 @@ impl Database {
             r#"SELECT id, tweet_url, content, note_text, tweeted_at, imported_at,
                       author_handle, author_name, author_profile_url, author_profile_image,
                       comments, is_favorite,
-                      is_read, links_json, conversation_id
+                      is_read, links_json, conversation_id, unavailable
                FROM bookmarks
                WHERE author_handle = ?1
                ORDER BY tweeted_at DESC, id DESC
@@ -151,7 +165,7 @@ impl Database {
             r#"SELECT id, tweet_url, content, note_text, tweeted_at, imported_at,
                       author_handle, author_name, author_profile_url, author_profile_image,
                       comments, is_favorite,
-                      is_read, links_json, conversation_id
+                      is_read, links_json, conversation_id, unavailable
                FROM bookmarks WHERE id = ?1"#,
         )?;
 
@@ -175,7 +189,7 @@ impl Database {
             r#"SELECT id, tweet_url, content, note_text, tweeted_at, imported_at,
                       author_handle, author_name, author_profile_url, author_profile_image,
                       comments, is_favorite,
-                      is_read, links_json, conversation_id
+                      is_read, links_json, conversation_id, unavailable
                FROM bookmarks
                WHERE is_favorite = 1
                ORDER BY tweeted_at DESC, id DESC
@@ -208,7 +222,7 @@ impl Database {
             r#"SELECT id, tweet_url, content, note_text, tweeted_at, imported_at,
                       author_handle, author_name, author_profile_url, author_profile_image,
                       comments, is_favorite,
-                      is_read, links_json, conversation_id
+                      is_read, links_json, conversation_id, unavailable
                FROM bookmarks
                WHERE tweeted_at >= ?1 AND tweeted_at <= ?2
                ORDER BY tweeted_at DESC, id DESC

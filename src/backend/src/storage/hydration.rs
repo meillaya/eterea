@@ -213,6 +213,7 @@ impl Database {
             is_read: is_read != 0,
             links,
             conversation_id: row.get("conversation_id")?,
+            unavailable: row.get::<_, i32>("unavailable")? != 0,
         };
 
         // Note: tags and media are loaded separately for performance

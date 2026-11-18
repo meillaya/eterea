@@ -22,7 +22,10 @@
     "searching",
     "lightbox",
     "repair",
-    "note"
+    "note",
+    "filters",
+    "saved",
+    "unavailable"
   ],
   "scene_env": {
     "hidden": {
@@ -419,6 +422,23 @@
         "the reading-room chapter, revisit in winter",
         "cmd-enter saves",
         "save"
+      ],
+      "filters": [
+        "film",
+        "#design",
+        "unread",
+        "clear all filters"
+      ],
+      "saved": [
+        "saved searches",
+        "night reading",
+        "canada design",
+        "#books",
+        "enter applies"
+      ],
+      "unavailable": [
+        "no longer available on x",
+        "Mira Okonkwo"
       ]
     },
     "scene_no_nav": [
@@ -435,7 +455,10 @@
       "searching": 45,
       "lightbox": 50,
       "repair": 20,
-      "note": 20
+      "note": 20,
+      "filters": 20,
+      "saved": 20,
+      "unavailable": 20
     },
     "routes": {
       "feed": [

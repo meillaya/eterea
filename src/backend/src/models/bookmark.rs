@@ -65,6 +65,10 @@ pub struct Bookmark {
     /// in X API v2 or archive JSON). Bookmarks sharing it form a thread.
     #[serde(default)]
     pub conversation_id: Option<String>,
+
+    /// True when a network check reported the post (or its author) gone.
+    #[serde(default)]
+    pub unavailable: bool,
 }
 
 /// Author information (denormalized for speed)
@@ -104,6 +108,7 @@ impl Bookmark {
             is_read: false,
             links: Vec::new(),
             conversation_id: None,
+            unavailable: false,
         }
     }
 
@@ -169,6 +174,7 @@ pub struct BookmarkBuilder {
     quoted: Option<QuotedTweet>,
     links: Vec<LinkEntity>,
     conversation_id: Option<String>,
+    unavailable: bool,
     is_read: bool,
 }
 
@@ -258,6 +264,11 @@ impl BookmarkBuilder {
         self
     }
 
+    pub fn unavailable(mut self, unavailable: bool) -> Self {
+        self.unavailable = unavailable;
+        self
+    }
+
     pub fn links(mut self, links: Vec<LinkEntity>) -> Self {
         self.links = super::normalize_links(links);
         self
@@ -320,6 +331,7 @@ impl BookmarkBuilder {
         bookmark.is_read = self.is_read;
         bookmark.links = super::normalize_links(self.links);
         bookmark.conversation_id = self.conversation_id;
+        bookmark.unavailable = self.unavailable;
 
         Ok(bookmark)
     }

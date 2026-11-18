@@ -15,9 +15,10 @@
 use crate::types::{
     AuthorSummary, BookmarkPage, BookmarkQuery, BookmarkSelection, BookmarkStats, BulkResult,
     CalendarData, CalendarRequest, CalendarYearData, CalendarYearRequest, DirectoryPageRequest,
-    ExportRequest, ExportSummary, GraphData, GraphRequest, HistoryDetail, HistoryListRequest,
-    HistoryPage, ImportBatchPreview, ImportBatchSummary, ImportPreview, ImportProgress,
-    PaginatedResponse, TagColor, TagMutation, TopicSummary, UndoResult,
+    ExportRequest, ExportSummary, FilterSpec, GraphData, GraphRequest, HistoryDetail,
+    HistoryListRequest, HistoryPage, ImportBatchPreview, ImportBatchSummary, ImportPreview,
+    ImportProgress, PaginatedResponse, SavedSearch, TagColor, TagMutation, TopicSummary,
+    UndoResult,
 };
 use crate::AppServices;
 use crossbeam_channel::{unbounded, Receiver, Sender};
@@ -113,6 +114,12 @@ pub enum Command {
         from: String,
         to: String,
     },
+    ListSavedSearches,
+    SaveSearch {
+        name: String,
+        spec: FilterSpec,
+    },
+    DeleteSavedSearch(String),
     PruneTags,
     TagSuggestions {
         prefix: String,
@@ -260,6 +267,10 @@ pub enum Response {
         id: RequestId,
         result: Result<eterea_core::TagRenameReport, StoreError>,
     },
+    SavedSearches {
+        id: RequestId,
+        result: Result<Vec<SavedSearch>, StoreError>,
+    },
     PruneTags {
         id: RequestId,
         result: Result<usize, StoreError>,
@@ -357,6 +368,7 @@ impl Response {
             | Self::SetTags { id, .. }
             | Self::SetNote { id, .. }
             | Self::RenameTag { id, .. }
+            | Self::SavedSearches { id, .. }
             | Self::PruneTags { id, .. }
             | Self::TagSuggestions { id, .. }
             | Self::ResetTagColor { id, .. }
@@ -572,6 +584,21 @@ impl StoreHandle {
     }
 
     // --- schema-v2 convenience methods ------------------------------------
+
+    pub fn saved_searches(&self) -> RequestId {
+        self.issue(Command::ListSavedSearches)
+    }
+
+    pub fn save_search(&self, name: impl Into<String>, spec: FilterSpec) -> RequestId {
+        self.issue(Command::SaveSearch {
+            name: name.into(),
+            spec,
+        })
+    }
+
+    pub fn delete_saved_search(&self, name: impl Into<String>) -> RequestId {
+        self.issue(Command::DeleteSavedSearch(name.into()))
+    }
 
     pub fn rename_tag(&self, from: impl Into<String>, to: impl Into<String>) -> RequestId {
         self.issue(Command::RenameTag {
@@ -849,6 +876,20 @@ fn dispatch(services: &mut AppServices, request: Request) -> Response {
             id,
             result: services
                 .set_bookmark_tags(&bookmark_id, &tags)
+                .map_err(StoreError::from),
+        },
+        Command::ListSavedSearches => Response::SavedSearches {
+            id,
+            result: services.saved_searches().map_err(StoreError::from),
+        },
+        Command::SaveSearch { name, spec } => Response::SavedSearches {
+            id,
+            result: services.save_search(&name, spec).map_err(StoreError::from),
+        },
+        Command::DeleteSavedSearch(name) => Response::SavedSearches {
+            id,
+            result: services
+                .delete_saved_search(&name)
                 .map_err(StoreError::from),
         },
         Command::RenameTag { from, to } => Response::RenameTag {
