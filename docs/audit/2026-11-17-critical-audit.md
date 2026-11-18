@@ -249,7 +249,14 @@ copies it into the live connection with SQLite's online backup API before
 migrating it forward. Covered by backend round-trip/rotation tests and a
 store-actor end-to-end test.
 
-### 2.11 Documentation corrected in this pass
+### 2.11 Search relevance and paging totals (approved follow-up)
+
+Text queries now order by FTS `bm25` (ties by date/id) instead of recency; the
+page total is counted independently of the returned rows, closing the
+"filtered feed past the last page reports the archive as empty" defect. Covered
+by relevance-order and past-the-end paging tests.
+
+### 2.12 Documentation corrected in this pass
 
 - `docs/design/SPEC.md`: header nav now includes `search`; footer hint and
   scrimless key sheet; 64 px rhythm wording; rail width documented as 86 px

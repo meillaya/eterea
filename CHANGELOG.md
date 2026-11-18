@@ -6,6 +6,10 @@ has actually been captured.
 
 ## Unreleased
 
+- Search results for a text query are now ordered by FTS `bm25` relevance rather
+  than recency, while filters keep their usual order. Page totals are counted
+  separately, so a page scrolled past the last result reports the real total
+  instead of zero.
 - Recoverable deletes: single and bulk deletes snapshot the post into a 200-entry
   trash inside the same transaction (new schema v4 table with a pre-migration
   backup), `restore last deleted` restores the newest entry, and repeated `u`

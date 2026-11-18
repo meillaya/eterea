@@ -106,54 +106,114 @@ impl Database {
             has_media,
             false,
         );
-        self.run_filtered_page(where_clause, params, offset, limit)
+        let rank = query
+            .filter(|query| !query.trim().is_empty())
+            .map(Self::prepare_fts_query);
+        self.run_filtered_page(where_clause, params, offset, limit, rank)
     }
 
     /// Paged read for the public [`BookmarkQuery`] shape. Parses RFC 3339
     /// date filters once and applies the shared SQL predicate.
+    ///
+    /// A text query orders matches by FTS `bm25` relevance (then date, then
+    /// id), so the best match is on the first page instead of the newest one.
     pub fn search_query_page(&self, query: &BookmarkQuery) -> Result<(Vec<Bookmark>, i64)> {
-        let (where_clause, params) = self.build_query_predicate(query)?;
-        self.run_filtered_page(where_clause, params, query.offset, query.limit)
+        let rank = query
+            .normalized_query()
+            .map(|query| Self::prepare_fts_query(&query));
+        // When ranking, the FTS match lives in the ranking join; keeping the
+        // same condition in the predicate would duplicate both work and the
+        // bound term. Build the remaining filters without the text query.
+        let (where_clause, params) = if rank.is_some() {
+            let mut rest = query.clone();
+            rest.query = None;
+            self.build_query_predicate(&rest)?
+        } else {
+            self.build_query_predicate(query)?
+        };
+        self.run_filtered_page(where_clause, params, query.offset, query.limit, rank)
     }
 
     fn run_filtered_page(
         &self,
         where_clause: String,
-        mut params: Vec<Value>,
+        params: Vec<Value>,
         offset: usize,
         limit: usize,
+        rank_query: Option<String>,
     ) -> Result<(Vec<Bookmark>, i64)> {
         let overall_started = std::time::Instant::now();
 
-        // Single query: data + total count via window function (no second COUNT query)
         let mut sql = String::from(
             r#"SELECT b.id, b.tweet_url, b.content, b.note_text, b.tweeted_at, b.imported_at,
                       b.author_handle, b.author_name, b.author_profile_url, b.author_profile_image,
-                      b.comments, b.is_favorite, b.is_read, b.links_json,
-                      COUNT(*) OVER() AS total_count
+                      b.comments, b.is_favorite, b.is_read, b.links_json
                FROM bookmarks b"#,
         );
-        if !where_clause.is_empty() {
-            sql.push_str(" WHERE ");
-            sql.push_str(&where_clause);
+        let mut conditions = String::new();
+        let mut joins = String::new();
+        if rank_query.is_some() {
+            joins.push_str(
+                " JOIN (SELECT fc.bookmark_id AS ranked_bookmark_id, \
+                       bm25(bookmarks_fts) AS match_rank \
+                       FROM bookmarks_fts fts \
+                       JOIN bookmarks_search_docs fc ON fc.rowid = fts.rowid \
+                       WHERE bookmarks_fts MATCH ?) ranked \
+                 ON ranked.ranked_bookmark_id = b.id",
+            );
+            sql.push_str(&joins);
         }
-        sql.push_str(" ORDER BY b.tweeted_at DESC, b.id DESC LIMIT ? OFFSET ?");
+        if !where_clause.is_empty() {
+            if !conditions.is_empty() {
+                conditions.push_str(" AND (");
+                conditions.push_str(&where_clause);
+                conditions.push(')');
+            } else {
+                conditions.push_str(&where_clause);
+            }
+        }
+        if !conditions.is_empty() {
+            sql.push_str(" WHERE ");
+            sql.push_str(&conditions);
+        }
+        let mut query_params = params;
+        if let Some(ranked) = rank_query {
+            query_params.insert(0, Value::Text(ranked));
+            sql.push_str(" ORDER BY ranked.match_rank, b.tweeted_at DESC, b.id DESC");
+        } else {
+            sql.push_str(" ORDER BY b.tweeted_at DESC, b.id DESC");
+        }
+        sql.push_str(" LIMIT ? OFFSET ?");
 
-        params.push(Value::Integer(limit as i64));
-        params.push(Value::Integer(offset as i64));
+        let count_params = query_params.clone();
+        let mut page_params = query_params;
+        page_params.push(Value::Integer(limit as i64));
+        page_params.push(Value::Integer(offset as i64));
 
         let mut stmt = self.conn.prepare(&sql)?;
         let query_started = std::time::Instant::now();
 
-        let mut total: i64 = 0;
         let mut bookmarks = Vec::new();
-        let mut rows = stmt.query(params_from_iter(params.iter()))?;
+        let mut rows = stmt.query(params_from_iter(page_params.iter()))?;
         while let Some(row) = rows.next()? {
-            // Named column access stays safe against projection reordering
-            total = row.get::<_, i64>("total_count")?;
             bookmarks.push(self.row_to_bookmark(row)?);
         }
         let query_elapsed = query_started.elapsed();
+
+        // Site the total independently: FTS5's bm25() cannot be combined with a
+        // window function, and a page past the last row has no rows from which
+        // to read a windowed total anyway.
+        let count_sql = format!("SELECT COUNT(*) FROM bookmarks b{joins}");
+        let count_sql = if conditions.is_empty() {
+            count_sql
+        } else {
+            format!("{count_sql} WHERE {conditions}")
+        };
+        let total: i64 =
+            self.conn
+                .query_row(&count_sql, params_from_iter(count_params.iter()), |row| {
+                    row.get(0)
+                })?;
 
         let hydrate_started = std::time::Instant::now();
         self.hydrate_bookmarks(&mut bookmarks)?;
@@ -507,5 +567,75 @@ mod tests {
             .selected_ids(&BookmarkSelection::Ids(vec!["missing".to_string()]))
             .unwrap();
         assert!(empty.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod ranked_query_tests {
+    use super::*;
+    use crate::models::BookmarkBuilder;
+    use chrono::{TimeZone, Utc};
+
+    fn bookmark(tweet_id: &str, content: &str, day: u32) -> crate::models::Bookmark {
+        BookmarkBuilder::new()
+            .tweet_url(format!("https://x.com/ranked/status/{tweet_id}"))
+            .content(content.to_string())
+            .tweeted_at(Utc.with_ymd_and_hms(2024, 5, day, 12, 0, 0).unwrap())
+            .author_handle("ranked")
+            .author_name("Ranked")
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn text_queries_rank_by_relevance_not_recency() {
+        let db = Database::open_memory().unwrap();
+        // The older post mentions the term three times; the newer one once.
+        db.insert_bookmarks(&[
+            bookmark("1", "film film film essay", 1),
+            bookmark("2", "a film diary entry", 9),
+        ])
+        .unwrap();
+        let page = db
+            .search_query_page(&BookmarkQuery {
+                query: Some("film".to_string()),
+                limit: 10,
+                ..BookmarkQuery::default()
+            })
+            .unwrap();
+        assert_eq!(page.1, 2);
+        assert_eq!(page.0[0].content, "film film film essay");
+        assert_eq!(page.0[1].content, "a film diary entry");
+    }
+
+    #[test]
+    fn a_page_past_the_last_result_still_reports_the_true_total() {
+        let db = Database::open_memory().unwrap();
+        db.insert_bookmarks(&[
+            bookmark("1", "film one", 1),
+            bookmark("2", "film two", 2),
+            bookmark("3", "film three", 3),
+        ])
+        .unwrap();
+        let (items, total) = db
+            .search_query_page(&BookmarkQuery {
+                query: Some("film".to_string()),
+                offset: 10,
+                limit: 10,
+                ..BookmarkQuery::default()
+            })
+            .unwrap();
+        assert!(items.is_empty());
+        assert_eq!(total, 3);
+
+        let (items, total) = db
+            .search_query_page(&BookmarkQuery {
+                offset: 10,
+                limit: 10,
+                ..BookmarkQuery::default()
+            })
+            .unwrap();
+        assert!(items.is_empty());
+        assert_eq!(total, 3);
     }
 }
