@@ -340,7 +340,17 @@ a user token — deliberately not implemented rather than scraping conversation
 pages. Release-mode performance evidence is recorded in `docs/performance.md`
 with an ignored benchmark.
 
-### 2.20 Documentation corrected in this pass
+### 2.20 Media preload and resumable downloads (approved follow-up)
+
+Feed and detail media is requested per visible row via `on_visible` instead of
+the whole page in one burst. The video download path now keeps partial bytes and
+resumes with an HTTP `Range` request after a connection/timeout failure (three
+attempts; a 200 response restarts cleanly; the declared total is verified before
+the temp file is promoted). Unit tests cover the resume offset sequence and
+`Content-Range` total parsing. Failures remain visible in the status line and
+the explicit `retry media` command still re-requests the page.
+
+### 2.21 Documentation corrected in this pass
 
 - `docs/design/SPEC.md`: header nav now includes `search`; footer hint and
   scrimless key sheet; 64 px rhythm wording; rail width documented as 86 px

@@ -1855,7 +1855,6 @@ fn handle_response(state: &mut State, response: Response, clock: f64) {
                         }
                     }
                     request_avatars(state);
-                    request_all_media(state);
                 }
                 Err(error) => {
                     state.feed_has_more = false;
@@ -8670,6 +8669,14 @@ fn post_view(
             tx.live_only();
         });
     }
+    // Viewport-aware media: a row only requests its images/video poster when
+    // it is actually on screen, instead of the whole page up front. Scrolling
+    // back to it is a cache hit.
+    row_view = row_view.on_visible(move |state: &mut State, visible: bool, _tx: &mut Tx| {
+        if visible && state.auto_media {
+            load_media(state, index);
+        }
+    });
     if detail {
         row_view
     } else {

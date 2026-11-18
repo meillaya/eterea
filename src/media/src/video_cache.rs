@@ -97,6 +97,19 @@ pub(crate) trait VideoFetcher: Send + Sync {
         max_bytes: u64,
         cancel: &AtomicBool,
     ) -> Result<u64, MediaError>;
+
+    /// Resume a partially written body with an HTTP `Range` request. Fakes may
+    /// keep the default (restart from zero); the real client overrides it.
+    fn fetch_to_resuming(
+        &self,
+        url: &str,
+        destination: &Path,
+        max_bytes: u64,
+        cancel: &AtomicBool,
+        _resume_from: u64,
+    ) -> Result<u64, MediaError> {
+        self.fetch_to(url, destination, max_bytes, cancel)
+    }
 }
 
 struct HttpVideoFetcher {
@@ -113,6 +126,23 @@ impl VideoFetcher for HttpVideoFetcher {
     ) -> Result<u64, MediaError> {
         self.client
             .download_to_cancellable(url, destination, max_bytes, Some(cancel))
+    }
+
+    fn fetch_to_resuming(
+        &self,
+        url: &str,
+        destination: &Path,
+        max_bytes: u64,
+        cancel: &AtomicBool,
+        resume_from: u64,
+    ) -> Result<u64, MediaError> {
+        self.client.download_to_cancellable_from(
+            url,
+            destination,
+            max_bytes,
+            Some(cancel),
+            resume_from,
+        )
     }
 }
 
@@ -347,8 +377,35 @@ impl VideoCache {
         }
         let destination = self.entry_path(&key);
         let temp = self.temp_path(&key);
-        let result = self.client.fetch_to(url, &temp, max_bytes, cancel);
-        match result {
+        // A dropped connection leaves the temp file in place and the next
+        // attempt only asks for the missing bytes; a fake fetcher that ignores
+        // resume simply restarts, which is still correct.
+        let mut resume_from = 0_u64;
+        let mut result = None;
+        for attempt in 1..=3 {
+            match self
+                .client
+                .fetch_to_resuming(url, &temp, max_bytes, cancel, resume_from)
+            {
+                Ok(byte_len) => {
+                    result = Some(Ok(byte_len));
+                    break;
+                }
+                Err(error @ (MediaError::Connection | MediaError::Timeout)) if attempt < 3 => {
+                    resume_from = std::fs::metadata(&temp)
+                        .map(|metadata| metadata.len())
+                        .unwrap_or(0);
+                    std::thread::sleep(std::time::Duration::from_millis(250 * attempt));
+                    let _ = error;
+                    continue;
+                }
+                Err(error) => {
+                    result = Some(Err(error));
+                    break;
+                }
+            }
+        }
+        match result.unwrap_or(Err(MediaError::Connection)) {
             Ok(byte_len) if byte_len > 0 => {
                 if byte_len > self.max_bytes {
                     let _ = std::fs::remove_file(&temp);
@@ -680,6 +737,78 @@ mod tests {
         assert_eq!(fetcher.calls(), 1);
         assert_eq!(cache.stats().entries, 1);
         assert!(cache.stats().bytes > 0);
+    }
+
+    struct ResumeFetcher {
+        calls: AtomicUsize,
+        offsets: Mutex<Vec<u64>>,
+    }
+
+    impl VideoFetcher for ResumeFetcher {
+        fn fetch_to(
+            &self,
+            url: &str,
+            destination: &Path,
+            max_bytes: u64,
+            cancel: &AtomicBool,
+        ) -> Result<u64, MediaError> {
+            self.fetch_to_resuming(url, destination, max_bytes, cancel, 0)
+        }
+
+        fn fetch_to_resuming(
+            &self,
+            _url: &str,
+            destination: &Path,
+            _max_bytes: u64,
+            _cancel: &AtomicBool,
+            resume_from: u64,
+        ) -> Result<u64, MediaError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.offsets
+                .lock()
+                .expect("resume offsets lock")
+                .push(resume_from);
+            if resume_from == 0 {
+                std::fs::write(destination, b"1234").map_err(|_| MediaError::Io)?;
+                return Err(MediaError::Connection);
+            }
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(destination)
+                .map_err(|_| MediaError::Io)?;
+            file.write_all(b"5678").map_err(|_| MediaError::Io)?;
+            Ok(8)
+        }
+    }
+
+    #[test]
+    fn interrupted_download_resumes_from_the_partial_file() {
+        let scratch = ScratchDir::new("video-cache-resume");
+        let fetcher = Arc::new(ResumeFetcher {
+            calls: AtomicUsize::new(0),
+            offsets: Mutex::new(Vec::new()),
+        });
+        let cache = VideoCache::open_with_fetcher(
+            VideoCacheConfig::new(scratch.path()).with_max_bytes(1024 * 1024),
+            fetcher.clone(),
+        )
+        .expect("cache");
+        let cached = cache
+            .ensure("https://video.twimg.com/resume-fixture.mp4", 1024 * 1024)
+            .expect("resumed download should complete");
+        assert!(!cached.from_cache);
+        assert_eq!(cached.byte_len, 8);
+        assert_eq!(
+            std::fs::read(&cached.path).expect("cached bytes"),
+            b"12345678"
+        );
+        assert_eq!(fetcher.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            *fetcher.offsets.lock().expect("resume offsets lock"),
+            vec![0, 4],
+            "the second request must resume at the partial length"
+        );
     }
 
     #[test]

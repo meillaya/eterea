@@ -121,7 +121,7 @@ impl HttpClient {
         cancel: &AtomicBool,
         max_bytes: usize,
     ) -> Result<Vec<u8>, MediaError> {
-        let response = self.open(url, Some(cancel))?;
+        let response = self.open(url, Some(cancel), None)?;
         let content_type = response
             .headers()
             .get("content-type")
@@ -171,75 +171,153 @@ impl HttpClient {
         max_bytes: u64,
         cancel: Option<&AtomicBool>,
     ) -> Result<u64, MediaError> {
-        let response = self.open(url, cancel)?;
-        let content_type = response
-            .headers()
-            .get("content-type")
-            .and_then(|value| value.to_str().ok());
-        if !video_mime_allowed(content_type) {
-            return Err(MediaError::UnsupportedType);
-        }
-        let expected = response.body().content_length();
-        if let Some(length) = expected {
-            if length > max_bytes {
-                return Err(MediaError::TooLarge);
-            }
-        }
-        let mut reader = response
-            .into_body()
-            .into_with_config()
-            .limit(max_bytes)
-            .reader();
-        let mut file = std::fs::File::create(destination).map_err(|_| MediaError::Io)?;
-        let mut buffer = [0_u8; 32 * 1024];
-        let mut written = 0_u64;
-        loop {
-            if let Err(error) = check_cancelled(cancel) {
-                drop(reader);
-                drop(file);
-                let _ = std::fs::remove_file(destination);
-                return Err(error);
-            }
-            match reader.read(&mut buffer) {
-                Ok(0) => break,
-                Ok(read) => {
-                    written = written.saturating_add(read as u64);
-                    if written > max_bytes {
-                        drop(file);
-                        let _ = std::fs::remove_file(destination);
-                        return Err(MediaError::TooLarge);
-                    }
-                    if file.write_all(&buffer[..read]).is_err() {
-                        drop(file);
-                        let _ = std::fs::remove_file(destination);
-                        return Err(MediaError::Io);
-                    }
-                }
-                Err(error) => {
-                    drop(file);
-                    let _ = std::fs::remove_file(destination);
-                    return Err(map_body_read_error(error));
-                }
-            }
-        }
-        // A body shorter than the declared Content-Length is a cut connection;
-        // never let a truncated file be promoted into the cache (the video
-        // cache has no payload digest to catch it later).
-        if expected.is_some_and(|expected| written != expected) {
-            drop(reader);
-            drop(file);
-            let _ = std::fs::remove_file(destination);
-            return Err(MediaError::Connection);
-        }
-        if file.flush().is_err() || file.sync_all().is_err() {
-            drop(file);
-            let _ = std::fs::remove_file(destination);
-            return Err(MediaError::Io);
-        }
-        Ok(written)
+        self.download_to_cancellable_from(url, destination, max_bytes, cancel, 0)
     }
 
-    /// Execute a GET, following at most [`MAX_REDIRECTS`] hops.
+    /// Download a video body, resuming with an HTTP `Range` request after a
+    /// dropped connection instead of restarting from zero.
+    ///
+    /// At most three attempts are made. A partial body is kept between attempts
+    /// and the next request asks for the remaining bytes; a server that ignores
+    /// `Range` (answers 200) restarts the file cleanly. The destination is only
+    /// promoted once the declared total length has been written.
+    pub(crate) fn download_to_cancellable_from(
+        &self,
+        url: &str,
+        destination: &Path,
+        max_bytes: u64,
+        cancel: Option<&AtomicBool>,
+        mut resume_from: u64,
+    ) -> Result<u64, MediaError> {
+        const ATTEMPTS: u32 = 3;
+        let mut attempt = 0_u32;
+        loop {
+            attempt += 1;
+            let response = match self.open(url, cancel, (resume_from > 0).then_some(resume_from)) {
+                Ok(response) => response,
+                Err(error) if is_retryable(&error) && attempt < ATTEMPTS => {
+                    sleep_before_retry(attempt);
+                    continue;
+                }
+                Err(error) => {
+                    let _ = std::fs::remove_file(destination);
+                    return Err(error);
+                }
+            };
+            let status = response.status().as_u16();
+            let content_type = response
+                .headers()
+                .get("content-type")
+                .and_then(|value| value.to_str().ok());
+            if !video_mime_allowed(content_type) {
+                let _ = std::fs::remove_file(destination);
+                return Err(MediaError::UnsupportedType);
+            }
+            // A 200 to a ranged request means the server ignored the range:
+            // start over rather than appending duplicate bytes.
+            if resume_from > 0 && status == 200 {
+                resume_from = 0;
+            }
+            let content_range_total = response
+                .headers()
+                .get("content-range")
+                .and_then(|value| value.to_str().ok())
+                .and_then(parse_content_range_total);
+            let part_length = response.body().content_length();
+            let total = if status == 206 {
+                content_range_total.or_else(|| part_length.map(|length| resume_from + length))
+            } else {
+                part_length
+            };
+            if total.is_some_and(|total| total > max_bytes) {
+                let _ = std::fs::remove_file(destination);
+                return Err(MediaError::TooLarge);
+            }
+            let mut reader = response
+                .into_body()
+                .into_with_config()
+                .limit(max_bytes.saturating_sub(resume_from).saturating_add(1))
+                .reader();
+            let mut file = Some(if resume_from > 0 {
+                std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(destination)
+                    .map_err(|_| MediaError::Io)?
+            } else {
+                std::fs::File::create(destination).map_err(|_| MediaError::Io)?
+            });
+            let mut written = resume_from;
+            let mut buffer = [0_u8; 32 * 1024];
+            let retry = loop {
+                if let Err(error) = check_cancelled(cancel) {
+                    drop(reader);
+                    let _ = std::fs::remove_file(destination);
+                    return Err(error);
+                }
+                match reader.read(&mut buffer) {
+                    Ok(0) => break None,
+                    Ok(read) => {
+                        written = written.saturating_add(read as u64);
+                        if written > max_bytes {
+                            let _ = std::fs::remove_file(destination);
+                            return Err(MediaError::TooLarge);
+                        }
+                        if file
+                            .as_mut()
+                            .expect("download file is open")
+                            .write_all(&buffer[..read])
+                            .is_err()
+                        {
+                            let _ = std::fs::remove_file(destination);
+                            return Err(MediaError::Io);
+                        }
+                    }
+                    Err(error) => {
+                        if let Some(open) = file.take() {
+                            let _ = open.sync_all();
+                        }
+                        let mapped = map_body_read_error(error);
+                        if is_retryable(&mapped) && attempt < ATTEMPTS {
+                            break Some((written, mapped));
+                        }
+                        let _ = std::fs::remove_file(destination);
+                        return Err(mapped);
+                    }
+                }
+            };
+            if let Some((partial, _mapped)) = retry {
+                resume_from = partial;
+                sleep_before_retry(attempt);
+                continue;
+            }
+            // A body shorter than the declared total is a cut connection; never
+            // promote a truncated file into the cache (there is no payload
+            // digest to catch it later).
+            if total.is_some_and(|total| written != total) {
+                if let Some(open) = file.take() {
+                    let _ = open.sync_all();
+                }
+                if attempt < ATTEMPTS {
+                    resume_from = written;
+                    sleep_before_retry(attempt);
+                    continue;
+                }
+                let _ = std::fs::remove_file(destination);
+                return Err(MediaError::Connection);
+            }
+            let Some(mut open) = file.take() else {
+                let _ = std::fs::remove_file(destination);
+                return Err(MediaError::Io);
+            };
+            if open.flush().is_err() || open.sync_all().is_err() {
+                let _ = std::fs::remove_file(destination);
+                return Err(MediaError::Io);
+            }
+            return Ok(written);
+        }
+    }
+
+    /// Execute a GET, following at most    /// Execute a GET, following at most [`MAX_REDIRECTS`] hops.
     ///
     /// Every candidate URL (initial, and each `Location`) must pass the media
     /// policy. Redirects with a relative `Location` are refused because no URL
@@ -248,6 +326,7 @@ impl HttpClient {
         &self,
         url: &str,
         cancel: Option<&AtomicBool>,
+        range_from: Option<u64>,
     ) -> Result<ureq::http::Response<ureq::Body>, MediaError> {
         if !is_allowed_media_url(url) {
             return Err(MediaError::UnsafeUrl);
@@ -266,11 +345,11 @@ impl HttpClient {
             if !is_allowed_media_url(&current) {
                 return Err(MediaError::UnsafeUrl);
             }
-            let response = self
-                .agent
-                .get(&current)
-                .call()
-                .map_err(map_transport_error)?;
+            let mut request = self.agent.get(&current);
+            if let Some(from) = range_from {
+                request = request.header("range", format!("bytes={from}-"));
+            }
+            let response = request.call().map_err(map_transport_error)?;
             let status = response.status().as_u16();
             if (300..=399).contains(&status) {
                 if hops >= MAX_REDIRECTS {
@@ -297,6 +376,21 @@ impl HttpClient {
             return Ok(response);
         }
     }
+}
+
+fn is_retryable(error: &MediaError) -> bool {
+    matches!(error, MediaError::Connection | MediaError::Timeout)
+}
+
+fn sleep_before_retry(attempt: u32) {
+    std::thread::sleep(Duration::from_millis(250 * u64::from(attempt)));
+}
+
+/// Total resource length from a `Content-Range: bytes a-b/total` header.
+pub(crate) fn parse_content_range_total(value: &str) -> Option<u64> {
+    value
+        .rsplit_once('/')
+        .and_then(|(_, total)| total.trim().parse().ok())
 }
 
 fn check_cancelled(cancel: Option<&AtomicBool>) -> Result<(), MediaError> {
@@ -440,5 +534,20 @@ mod tests {
     fn network_io_errors_map_to_connection() {
         let io = std::io::Error::new(std::io::ErrorKind::ConnectionReset, "reset");
         assert_eq!(map_body_read_error(io), MediaError::Connection);
+    }
+}
+
+#[cfg(test)]
+mod content_range_tests {
+    use super::parse_content_range_total;
+
+    #[test]
+    fn content_range_total_is_parsed() {
+        assert_eq!(
+            parse_content_range_total("bytes 1024-2047/4096"),
+            Some(4096)
+        );
+        assert_eq!(parse_content_range_total("bytes 0-99/*"), None);
+        assert_eq!(parse_content_range_total("garbage"), None);
     }
 }

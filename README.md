@@ -177,6 +177,8 @@ The archive lives at `<platform data dir>/eterea/bookmarks.db`. On Linux that is
 - Opens media in a lightbox with a `n / m` count, pointer and mouse-back paging,
   wheel/`+`/`-`/`0` zoom from fit to 3×, and video scrubbing with `,`/`.` (±5s,
   restart-at-offset) with a live position/duration readout.
+- Loads media only for rows that are actually visible (scrolling loads more) and
+  resumes interrupted video downloads with HTTP ranges instead of restarting.
 - Keeps filters as reusable saved searches: compose query, tags, author, date,
   read/favorite and media facets into one predicate, save it under a name, and
   remove facets from the chip line; `add tag filter` composes tags.

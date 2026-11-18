@@ -19,6 +19,12 @@ has actually been captured.
   anchors that would collide, and `/` opens a tag filter that dims non-matching
   nodes (enter commits, esc clears); a synthetic 1,200-tag benchmark test covers
   the data-layer cap (2.1s in debug, layout included).
+- Media reliability: feed/detail rows request media from `on_visible` instead of
+  loading every post on the page; interrupted video downloads keep the partial
+  file and resume with an HTTP `Range` request (three attempts, clean restart if
+  the server ignores the range, content-range total verified before promotion),
+  and video failures keep surfacing through the status line. Tests cover the
+  resume offset sequence and content-range parsing.
 - Search highlighting: when a text query is active, matching terms in feed and
   detail bodies get a pale lavender mark (ASCII-insensitive, up to 40 spans).
 - Trash browser and restore safeguard: `trash` lists the newest recoverable
