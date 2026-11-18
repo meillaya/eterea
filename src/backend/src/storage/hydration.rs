@@ -185,7 +185,7 @@ impl Database {
     /// query projects these names: `id`, `tweet_url`, `content`, `note_text`,
     /// `tweeted_at`, `imported_at`, `author_handle`, `author_name`,
     /// `author_profile_url`, `author_profile_image`, `comments`, `is_favorite`,
-    /// `is_read`, `links_json`.
+    /// `is_read`, `links_json`, `conversation_id`.
     pub(crate) fn row_to_bookmark(&self, row: &rusqlite::Row) -> rusqlite::Result<Bookmark> {
         let id: String = row.get("id")?;
         let tweeted_at_ts: i64 = row.get("tweeted_at")?;
@@ -212,6 +212,7 @@ impl Database {
             is_favorite: is_favorite != 0,
             is_read: is_read != 0,
             links,
+            conversation_id: row.get("conversation_id")?,
         };
 
         // Note: tags and media are loaded separately for performance

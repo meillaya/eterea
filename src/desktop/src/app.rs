@@ -331,6 +331,10 @@ pub(crate) struct State {
     tag_suggestions: Vec<TagSuggestion>,
     /// Lightbox zoom (1.0 fits the window; keys/wheel adjust it).
     lightbox_zoom: f32,
+    /// Thread of the post open in detail, when the source carried thread ids.
+    thread: Vec<Post>,
+    thread_anchor: Option<String>,
+    thread_request: Option<RequestId>,
     /// Committed graph tag filter and the live search buffer while editing it.
     graph_filter: Option<String>,
     graph_search_buffer: TextEdit,
@@ -457,6 +461,9 @@ impl State {
             tag_rename_buffer: TextEdit::new(""),
             tag_suggestions: Vec::new(),
             lightbox_zoom: 1.0,
+            thread: Vec::new(),
+            thread_anchor: None,
+            thread_request: None,
             graph_filter: None,
             graph_search_buffer: TextEdit::new(""),
             import_progress: None,
@@ -1905,6 +1912,27 @@ fn handle_response(state: &mut State, response: Response, clock: f64) {
                 }
             }
         }
+        Response::Thread { id, result } => {
+            if state.thread_request != Some(id) {
+                return;
+            }
+            state.thread_request = None;
+            state.pending_views = state.pending_views.saturating_sub(1);
+            match result {
+                Ok(posts) => {
+                    state.thread = posts.iter().map(Post::from_bookmark).collect();
+                    for post in &state.thread {
+                        for media in &post.media {
+                            state.images.request(&media.key, ImageKind::Image);
+                        }
+                    }
+                }
+                Err(error) => {
+                    let now = clock;
+                    state.set_status(error.message, now);
+                }
+            }
+        }
         Response::RestoreDeleted { result, .. } => {
             state.pending_views = state.pending_views.saturating_sub(1);
             let now = clock;
@@ -2500,6 +2528,9 @@ fn on_key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
                 clear_selection(state);
             } else if state.route == Route::Detail {
                 stop_video(state);
+                state.thread.clear();
+                state.thread_anchor = None;
+                state.thread_request = None;
                 state.route = Route::Feed;
                 if state.back_stack.last() == Some(&Route::Feed) {
                     state.back_stack.pop();
@@ -2512,6 +2543,18 @@ fn on_key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
                 state.request_feed(None);
             } else {
                 state.status = None;
+            }
+            true
+        }
+        Key::Text(t) if t.as_str() == "," => {
+            if state.video.is_some() {
+                seek_video(state, tx, -5.0);
+            }
+            true
+        }
+        Key::Text(t) if t.as_str() == "." => {
+            if state.video.is_some() {
+                seek_video(state, tx, 5.0);
             }
             true
         }
@@ -2808,6 +2851,9 @@ fn navigate_back(state: &mut State, tx: &mut Tx) {
     if previous == Route::Feed && state.route == Route::Detail {
         // Returning to the feed that is still in memory: keep the page and
         // restore the reader's spot instead of re-querying from the top.
+        state.thread.clear();
+        state.thread_anchor = None;
+        state.thread_request = None;
         state.feed_restore = state.feed_return.take();
         state.route = Route::Feed;
         restore_feed_position(state, tx);
@@ -3034,6 +3080,16 @@ fn video_cache(state: &mut State) -> Option<Arc<VideoCache>> {
 }
 
 fn start_video_at(state: &mut State, tx: &mut Tx, post_index: usize, media_index: usize) {
+    start_video_from(state, tx, post_index, media_index, None);
+}
+
+fn start_video_from(
+    state: &mut State,
+    tx: &mut Tx,
+    post_index: usize,
+    media_index: usize,
+    start_at: Option<std::time::Duration>,
+) {
     if state.video_target == Some((post_index, media_index)) {
         if let Some(player) = state.video.as_mut() {
             player.toggle_pause();
@@ -3056,6 +3112,7 @@ fn start_video_at(state: &mut State, tx: &mut Tx, post_index: usize, media_index
         cache,
         muted,
         looping: true,
+        start_at,
         ..VideoPlayerOptions::default()
     };
     match VideoPlayer::start_with_options(url, options) {
@@ -3093,6 +3150,41 @@ fn toggle_video(state: &mut State, tx: &mut Tx) {
         .or_else(|| post.media.iter().position(|item| item.video_url.is_some()));
     if let Some(index) = found {
         start_video_at(state, tx, state.selected, index);
+    }
+}
+
+/// Scrub the current video by restarting the decoder at the new offset (input
+/// seek). Coarse but predictable; the lightbox shows position and duration.
+fn seek_video(state: &mut State, tx: &mut Tx, delta_seconds: f64) {
+    let Some((post_index, media_index)) = state.video_target else {
+        return;
+    };
+    let Some(player) = state.video.as_ref() else {
+        return;
+    };
+    let mut target = player.position().as_secs_f64() + delta_seconds;
+    target = target.max(0.0);
+    if let Some(duration) = player.duration() {
+        target = target.min((duration.as_secs_f64() - 0.5).max(0.0));
+    }
+    stop_video(state);
+    start_video_from(
+        state,
+        tx,
+        post_index,
+        media_index,
+        Some(std::time::Duration::from_secs_f64(target)),
+    );
+}
+
+fn fmt_playback_time(value: std::time::Duration) -> String {
+    let seconds = value.as_secs();
+    let minutes = seconds / 60;
+    let remainder = seconds % 60;
+    if minutes >= 60 {
+        format!("{}:{:02}:{:02}", minutes / 60, minutes % 60, remainder)
+    } else {
+        format!("{minutes}:{remainder:02}")
     }
 }
 
@@ -3416,8 +3508,12 @@ fn open_detail(state: &mut State) {
         post.is_read = true;
         post.id.clone()
     };
+    state.thread.clear();
+    state.thread_anchor = Some(id.clone());
     if let Some(store) = state.store.as_ref() {
-        store.set_read(id, true);
+        store.set_read(id.clone(), true);
+        state.thread_request = Some(store.thread(id));
+        state.pending_views += 1;
     }
 }
 
@@ -3998,13 +4094,63 @@ fn detail_view(state: &State, p: Palette) -> El {
     let Some(post) = state.posts.get(state.selected) else {
         return feed_view(state, p);
     };
-    col()
-        .w_full()
-        .grow(1.0)
-        .min_h(0.0)
-        .pt(56.0)
-        .pb(200.0)
-        .child(post_view(state, post, state.selected, p, true))
+    let mut column = col().w_full().grow(1.0).min_h(0.0).pt(56.0).pb(200.0);
+    if state.thread.len() > 1 {
+        column = column.child(
+            row().w_full().justify_center().child(
+                row().w(CONTENT).center_y().child(
+                    text(format!("thread · {} posts", state.thread.len()))
+                        .font(theme::mono(10.5))
+                        .color(p.muted),
+                ),
+            ),
+        );
+        for thread_post in &state.thread {
+            let is_anchor = thread_post.id == post.id;
+            if is_anchor {
+                column = column.child(post_view(state, post, state.selected, p, true));
+                continue;
+            }
+            column = column.child(
+                row().w_full().justify_center().child(
+                    col()
+                        .w(CONTENT)
+                        .gap(6.0)
+                        .pt(20.0)
+                        .pb(20.0)
+                        .border(1.0, p.line)
+                        .child(
+                            row()
+                                .gap(10.0)
+                                .center_y()
+                                .child(
+                                    text(thread_post.name.clone())
+                                        .font(theme::ui(12.5, 500.0))
+                                        .color(p.ink),
+                                )
+                                .child(
+                                    text(thread_post.handle.clone())
+                                        .font(theme::ui(12.0, 400.0))
+                                        .color(p.muted),
+                                )
+                                .child(
+                                    text(format!("{} · {}", thread_post.date, thread_post.time))
+                                        .font(theme::mono(10.5))
+                                        .color(p.muted),
+                                ),
+                        )
+                        .child(
+                            text(thread_post.text.clone())
+                                .font(theme::serif(16.0))
+                                .color(p.ink),
+                        ),
+                ),
+            );
+        }
+    } else {
+        column = column.child(post_view(state, post, state.selected, p, true));
+    }
+    column
         .scroll(ScrollSpec {
             stick_bottom: false,
         })
@@ -5121,6 +5267,25 @@ fn overlay_view(state: &State, p: Palette) -> El {
                             .font(theme::mono(11.0))
                             .color(Color::WHITE.alpha(0.75)),
                         )
+                        .child({
+                            let playing = state
+                                .video
+                                .as_ref()
+                                .filter(|_| state.video_target == state.lightbox);
+                            match playing {
+                                Some(player) => text(format!(
+                                    "{} / {}",
+                                    fmt_playback_time(player.position()),
+                                    player
+                                        .duration()
+                                        .map(fmt_playback_time)
+                                        .unwrap_or_else(|| "--:--".to_string())
+                                ))
+                                .font(theme::mono(11.0))
+                                .color(Color::WHITE.alpha(0.75)),
+                                None => text("").font(theme::mono(11.0)),
+                            }
+                        })
                         .child(
                             text("›")
                                 .font(theme::ui(16.0, 400.0))

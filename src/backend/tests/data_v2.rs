@@ -606,3 +606,26 @@ fn millisecond_epoch_imports_with_the_true_date_and_keeps_calendar_working() {
         vec![("2024-05-01".to_string(), loaded[0].id.clone())]
     );
 }
+
+#[test]
+fn x_api_v2_conversation_id_is_captured_for_threads() {
+    let json = r#"{
+      "data": [{
+        "id": "9101",
+        "text": "thread root",
+        "created_at": "2026-05-04T10:00:00.000Z",
+        "author_id": "u1",
+        "conversation_id": "9000",
+        "entities": {}
+      }],
+      "includes": { "users": [{ "id": "u1", "name": "Ada", "username": "ada_dev" }] }
+    }"#;
+    let parsed = Ingester::new().parse_content("json", json).unwrap();
+    assert_eq!(parsed.len(), 1);
+    assert_eq!(parsed[0].conversation_id.as_deref(), Some("9000"));
+    let db = Database::open_memory().unwrap();
+    db.insert_bookmarks(&parsed).unwrap();
+    let loaded = db.get_bookmark(&parsed[0].id).unwrap().unwrap();
+    assert_eq!(loaded.conversation_id.as_deref(), Some("9000"));
+    assert_eq!(db.thread_for_bookmark(&parsed[0].id).unwrap().len(), 1);
+}

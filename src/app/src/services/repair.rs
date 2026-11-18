@@ -235,6 +235,9 @@ fn bookmark_from_payload(
                 )),
             })
             .collect(),
+        // The embed payload carries no conversation id; enrichment never
+        // invents thread identity.
+        conversation_id: None,
     })
 }
 

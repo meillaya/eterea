@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS bookmarks (
     is_favorite INTEGER DEFAULT 0,  -- Boolean as integer (0/1)
     has_media INTEGER DEFAULT 0,    -- Denormalized: 1 if any media rows exist (avoids JOIN on filter)
     is_read INTEGER NOT NULL DEFAULT 0,  -- Reader state: 1 once the post is read
-    links_json TEXT NOT NULL DEFAULT '[]' -- URL entities from the export, sorted JSON
+    links_json TEXT NOT NULL DEFAULT '[]', -- URL entities from the export, sorted JSON
+    conversation_id TEXT           -- Thread/conversation id when the source carried one
 );
 
 -- Materialized author directory. The Authors screen must not GROUP BY the
@@ -156,6 +157,9 @@ CREATE INDEX IF NOT EXISTS idx_bookmarks_author_handle ON bookmarks(author_handl
 CREATE INDEX IF NOT EXISTS idx_bookmarks_author_date ON bookmarks(author_handle, tweeted_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_author_stats_count_handle ON author_stats(bookmark_count DESC, author_handle ASC);
 CREATE INDEX IF NOT EXISTS idx_bookmarks_imported_at ON bookmarks(imported_at DESC);
+CREATE INDEX IF NOT EXISTS idx_bookmarks_conversation
+    ON bookmarks(conversation_id, tweeted_at DESC, id DESC)
+    WHERE conversation_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_bookmarks_favorite ON bookmarks(is_favorite) WHERE is_favorite = 1;
 CREATE INDEX IF NOT EXISTS idx_bookmarks_fav_date ON bookmarks(is_favorite, tweeted_at DESC) WHERE is_favorite = 1;
 CREATE INDEX IF NOT EXISTS idx_bookmarks_unread_date ON bookmarks(tweeted_at DESC, id DESC) WHERE is_read = 0;

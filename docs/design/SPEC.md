@@ -136,11 +136,13 @@ No visual/multi-select mode. One selected post at a time.
 
 Post: rail (date, time, favorite pin, actions), byline (30px avatar, name, handle), text, media, quote. No card, no border, no shadow. Links are accent text underlined on hover. Hashtags and mentions are links to filtered views. Emoji render in color. CJK and RTL follow the font fallback.
 
+Threads: when the source carried a conversation id (X API v2 `conversation_id`), detail lists every saved post of that conversation oldest first — the opened post renders fully, the rest as compact byline+text rows — under a mono `thread · n posts` label. Without thread ids the detail stays a single post.
+
 Media: avatars, images and video posters load automatically by default, fading in 180ms; Settings can switch post media to on-demand and keep the 720x180 `band` with `load media` for that mode. Images use the best available rendition through a bounded disk cache. A post with up to 20 media renders a paged carousel (1/2/3/4 layouts; >4 pages in groups of four with `‹ n/m ›`); the lightbox covers every item. X and quote URLs are removed from the text; external links keep their display URL; quote cards use the same media rules.
 
 Video: poster fills the media slot, centered 44px hairline play circle, 10.5px mono duration at bottom right. Playback resolves the best progressive MP4 variant, caches the file persistently, and uses `ffmpeg` for frames. Inline playback is muted and looping in the feed. Detail and lightbox carry sound; `m` toggles it, and `ffplay` supplies audio from the cached local file. Missing ffmpeg/ffplay is a status error, not silence.
 
-Images: click or Enter opens the lightbox. The lightbox is `scrim` with the image centered, close at top right, previous/next controls at the sides and in the bottom bar with a mono `n / m` count. `+`/`-`/wheel zoom (0.5–3×) and `0` resets to fit; mouse back/forward and the side zones page too; Esc closes. No captions.
+Images: click or Enter opens the lightbox. The lightbox is `scrim` with the image centered, close at top right, previous/next controls at the sides and in the bottom bar with a mono `n / m` count. `+`/`-`/wheel zoom (0.5–3×) and `0` resets to fit; mouse back/forward and the side zones page too; Esc closes. Videos show position / duration in the bottom bar and `,` / `.` scrub by restarting the decoder five seconds earlier/later, clamped to the file. No captions.
 
 Empty feed: one line `nothing here yet` in Newsreader 24, one action `import a bookmarks export`. No ASCII, no illustration.
 

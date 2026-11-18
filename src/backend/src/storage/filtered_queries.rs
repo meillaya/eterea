@@ -22,7 +22,8 @@ impl Database {
         let mut stmt = self.conn.prepare(
             r#"SELECT b.id, b.tweet_url, b.content, b.note_text, b.tweeted_at, b.imported_at,
                       b.author_handle, b.author_name, b.author_profile_url, b.author_profile_image,
-                      b.comments, b.is_favorite, b.is_read, b.links_json
+                      b.comments, b.is_favorite, b.is_read, b.links_json,
+                      b.conversation_id
                FROM bookmarks b
                JOIN bookmarks_search_docs fc ON fc.bookmark_id = b.id
                JOIN bookmarks_fts fts ON fts.rowid = fc.rowid
@@ -147,7 +148,8 @@ impl Database {
         let mut sql = String::from(
             r#"SELECT b.id, b.tweet_url, b.content, b.note_text, b.tweeted_at, b.imported_at,
                       b.author_handle, b.author_name, b.author_profile_url, b.author_profile_image,
-                      b.comments, b.is_favorite, b.is_read, b.links_json
+                      b.comments, b.is_favorite, b.is_read, b.links_json,
+                      b.conversation_id
                FROM bookmarks b"#,
         );
         let mut conditions = String::new();
@@ -479,7 +481,8 @@ impl Database {
         let mut sql = String::from(
             r#"SELECT b.id, b.tweet_url, b.content, b.note_text, b.tweeted_at, b.imported_at,
                       b.author_handle, b.author_name, b.author_profile_url, b.author_profile_image,
-                      b.comments, b.is_favorite, b.is_read, b.links_json
+                      b.comments, b.is_favorite, b.is_read, b.links_json,
+                      b.conversation_id
                FROM bookmarks b"#,
         );
         if !where_clause.is_empty() {

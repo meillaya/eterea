@@ -8,7 +8,8 @@ has actually been captured.
 
 - Lightbox: a mono `n / m` count, clickable side zones plus mouse back/forward
   paging, and wheel/`+`/`-`/`0` zoom between fit and 3× (zoom resets when paging
-  or closing). Video seek/scrub is still open.
+  or closing), plus video scrubbing with `,`/`.` (±5 s, decoder restarts at the
+  offset) and a live position/duration readout while a video plays.
 - Graph finish: the layout builds 1,200 tags through a co-occurrence query
   restricted to the selected node set (no archive-wide pair scan), labels skip
   anchors that would collide, and `/` opens a tag filter that dims non-matching

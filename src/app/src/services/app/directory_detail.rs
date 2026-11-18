@@ -68,6 +68,12 @@ impl AppServices {
         ))
     }
 
+    pub fn thread_posts(&self, id: &str) -> Result<Vec<eterea_core::Bookmark>> {
+        self.db
+            .thread_for_bookmark(id)
+            .with_context(|| format!("failed to load the thread for {id}"))
+    }
+
     pub fn bookmark_detail(&self, id: &str) -> Result<Option<eterea_core::Bookmark>> {
         self.db
             .get_bookmark(id)

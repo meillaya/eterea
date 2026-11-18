@@ -75,6 +75,7 @@ impl From<anyhow::Error> for StoreError {
 pub enum Command {
     Feed(BookmarkQuery),
     Detail(String),
+    Thread(String),
     ToggleFavorite(String),
     DeleteBookmark(String),
     Stats,
@@ -178,6 +179,10 @@ pub enum Response {
     Detail {
         id: RequestId,
         result: Box<Result<Option<Bookmark>, StoreError>>,
+    },
+    Thread {
+        id: RequestId,
+        result: Result<Vec<Bookmark>, StoreError>,
     },
     ToggleFavorite {
         id: RequestId,
@@ -332,6 +337,7 @@ impl Response {
         match self {
             Self::Feed { id, .. }
             | Self::Detail { id, .. }
+            | Self::Thread { id, .. }
             | Self::ToggleFavorite { id, .. }
             | Self::DeleteBookmark { id, .. }
             | Self::Stats { id, .. }
@@ -463,6 +469,10 @@ impl StoreHandle {
 
     pub fn feed(&self, query: BookmarkQuery) -> RequestId {
         self.issue(Command::Feed(query))
+    }
+
+    pub fn thread(&self, bookmark_id: impl Into<String>) -> RequestId {
+        self.issue(Command::Thread(bookmark_id.into()))
     }
 
     pub fn detail(&self, bookmark_id: impl Into<String>) -> RequestId {
@@ -729,6 +739,12 @@ fn dispatch(services: &mut AppServices, request: Request) -> Response {
         Command::Feed(query) => Response::Feed {
             id,
             result: services.query_bookmarks(&query).map_err(StoreError::from),
+        },
+        Command::Thread(bookmark_id) => Response::Thread {
+            id,
+            result: services
+                .thread_posts(&bookmark_id)
+                .map_err(StoreError::from),
         },
         Command::Detail(bookmark_id) => Response::Detail {
             id,

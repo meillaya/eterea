@@ -6,7 +6,7 @@ use crate::{Error, Result};
 use rusqlite::types::ValueRef;
 use tracing::debug;
 
-pub const CURRENT_SCHEMA_USER_VERSION: i64 = 5;
+pub const CURRENT_SCHEMA_USER_VERSION: i64 = 6;
 
 /// Pre-v3 FTS external-content document table. The name ended with `_content`,
 /// which is an FTS5 shadow-table suffix for the `bookmarks_fts` virtual table;
@@ -19,6 +19,9 @@ const BOOKMARK_V2_COLUMNS: &[(&str, &str)] = &[
     ("is_read", "INTEGER NOT NULL DEFAULT 0"),
     ("links_json", "TEXT NOT NULL DEFAULT '[]'"),
 ];
+
+/// Schema v6: conversation/thread id carried by the source export.
+const BOOKMARK_V6_COLUMNS: &[(&str, &str)] = &[("conversation_id", "TEXT")];
 
 const MEDIA_METADATA_COLUMNS: &[(&str, &str)] = &[
     ("alt_text", "TEXT"),
@@ -50,6 +53,7 @@ impl Database {
         let migrated = (|| -> Result<()> {
             self.ensure_legacy_bookmark_columns()?;
             self.ensure_bookmark_v2_columns()?;
+            self.ensure_bookmark_v6_columns()?;
 
             // Repair any earlier development quote-table shape before `SCHEMA`
             // creates the quote indexes that reference those columns.
@@ -246,6 +250,20 @@ impl Database {
             }
         }
 
+        Ok(())
+    }
+
+    fn ensure_bookmark_v6_columns(&self) -> Result<()> {
+        if !self.table_exists("bookmarks")? {
+            return Ok(());
+        }
+        for (column_name, column_definition) in BOOKMARK_V6_COLUMNS {
+            if !self.bookmarks_column_exists(column_name)? {
+                let statement =
+                    format!("ALTER TABLE bookmarks ADD COLUMN {column_name} {column_definition}");
+                self.conn.execute(&statement, [])?;
+            }
+        }
         Ok(())
     }
 

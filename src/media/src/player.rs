@@ -97,6 +97,9 @@ pub struct VideoPlayerOptions {
     pub scratch_dir: Option<PathBuf>,
     /// Probe the file duration with ffmpeg before playing. Default `true`.
     pub probe_duration: bool,
+    /// Start decoding this far into the file (input seek). Used by the lightbox
+    /// to scrub by restarting the player at the requested offset.
+    pub start_at: Option<Duration>,
 }
 
 impl Default for VideoPlayerOptions {
@@ -110,6 +113,7 @@ impl Default for VideoPlayerOptions {
             tools: None,
             scratch_dir: None,
             probe_duration: true,
+            start_at: None,
         }
     }
 }
@@ -265,6 +269,7 @@ pub struct VideoPlayer {
     error: Option<String>,
     error_kind: Option<MediaError>,
     local_path: Option<PathBuf>,
+    seek_origin: Duration,
     volume: u8,
     muted: bool,
 }
@@ -351,6 +356,7 @@ impl VideoPlayer {
             error: None,
             error_kind: None,
             local_path: None,
+            seek_origin: options.start_at.unwrap_or_default(),
             volume,
             muted,
         })
@@ -481,7 +487,7 @@ impl VideoPlayer {
 
     /// Approximate position within the file, derived from delivered frames.
     pub fn position(&self) -> Duration {
-        Duration::from_secs_f64(self.frames as f64 / PLAYBACK_FPS as f64)
+        self.seek_origin + Duration::from_secs_f64(self.frames as f64 / PLAYBACK_FPS as f64)
     }
 
     /// File duration when ffmpeg could probe it.
@@ -752,11 +758,12 @@ fn video_thread(
     }
 
     let mut loops: u32 = 0;
+    let mut seek = options.start_at;
     'playback: loop {
         if control.stop.load(Ordering::SeqCst) {
             break;
         }
-        let mut child = match spawn_decoder(&ffmpeg, &path) {
+        let mut child = match spawn_decoder(&ffmpeg, &path, seek) {
             Ok(child) => child,
             Err(error) => {
                 let _ = events.send(PlaybackEvent::Failed {
@@ -842,6 +849,8 @@ fn video_thread(
 
         if control.looping.load(Ordering::SeqCst) {
             loops = loops.saturating_add(1);
+            // A loop restarts from the beginning, not from the seek offset.
+            seek = None;
             if events.send(PlaybackEvent::Looped { count: loops }).is_err() {
                 break;
             }
@@ -882,17 +891,27 @@ fn resolve_source(
     }
 }
 
-fn spawn_decoder(ffmpeg: &Path, path: &Path) -> Result<Child, MediaError> {
+fn spawn_decoder(
+    ffmpeg: &Path,
+    path: &Path,
+    start_at: Option<Duration>,
+) -> Result<Child, MediaError> {
     let filter = format!(
         "scale={PLAYBACK_WIDTH}:{PLAYBACK_HEIGHT}:force_original_aspect_ratio=decrease,\
          pad={PLAYBACK_WIDTH}:{PLAYBACK_HEIGHT}:(ow-iw)/2:(oh-ih)/2"
     );
-    Command::new(ffmpeg)
-        .args(["-loglevel", "error", "-nostdin", "-i"])
-        .arg(path)
-        .args([
-            "-an", "-vf", &filter, "-r", "30", "-f", "rawvideo", "-pix_fmt", "rgba", "-",
-        ])
+    let mut command = Command::new(ffmpeg);
+    command.args(["-loglevel", "error", "-nostdin"]);
+    if let Some(start_at) = start_at.filter(|at| !at.is_zero()) {
+        command
+            .args(["-ss"])
+            .arg(format!("{:.3}", start_at.as_secs_f64()));
+    }
+    command.arg("-i").arg(path);
+    command.args([
+        "-an", "-vf", &filter, "-r", "30", "-f", "rawvideo", "-pix_fmt", "rgba", "-",
+    ]);
+    command
         .stdout(Stdio::piped())
         // stderr carries the decoder's diagnostic for failure messages; it is
         // drained on a helper thread so a chatty decoder cannot block on a

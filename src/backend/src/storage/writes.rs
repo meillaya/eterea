@@ -39,6 +39,7 @@ type ExistingBookmarkRow = (
     String,
     Option<String>,
     Option<String>,
+    String,
 );
 
 struct BookmarkInsertStatements<'conn> {
@@ -59,8 +60,9 @@ impl<'conn> BookmarkInsertStatements<'conn> {
                 r#"INSERT OR IGNORE INTO bookmarks
                    (id, tweet_url, content, note_text, tweeted_at, imported_at,
                     author_handle, author_name, author_profile_url, author_profile_image,
-                    comments, is_favorite, has_media, is_read, links_json)
-                   VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)"#,
+                    comments, is_favorite, has_media, is_read, links_json, conversation_id)
+                   VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
+                           ?16)"#,
             )?,
             tag: conn.prepare_cached("INSERT OR IGNORE INTO tags (name) VALUES (?1)")?,
             tag_id: conn.prepare_cached("SELECT id FROM tags WHERE name = ?1")?,
@@ -277,6 +279,7 @@ impl Database {
             has_media_flag,
             bookmark.is_read as i32,
             links_json,
+            bookmark.conversation_id,
         ])?;
 
         if changed == 0 {
@@ -374,7 +377,8 @@ impl Database {
             .conn
             .query_row(
                 r#"SELECT id, has_media, COALESCE(links_json, ''), content,
-                          COALESCE(note_text, ''), author_profile_image, author_profile_url
+                          COALESCE(note_text, ''), author_profile_image, author_profile_url,
+                          COALESCE(conversation_id, '')
                    FROM bookmarks WHERE id = ?1 OR tweet_url = ?2 LIMIT 1"#,
                 params![bookmark.id, bookmark.tweet_url],
                 |row| {
@@ -386,6 +390,7 @@ impl Database {
                         row.get(4)?,
                         row.get(5)?,
                         row.get(6)?,
+                        row.get(7)?,
                     ))
                 },
             )
@@ -398,6 +403,7 @@ impl Database {
             existing_note,
             _,
             _,
+            existing_conversation,
         )) = existing
         else {
             return Ok(false);
@@ -549,6 +555,19 @@ impl Database {
                     media_json,
                     quoted.unavailable as i32,
                 ])?;
+            }
+        }
+
+        if existing_conversation.trim().is_empty() {
+            if let Some(conversation_id) = bookmark
+                .conversation_id
+                .as_deref()
+                .filter(|id| !id.trim().is_empty())
+            {
+                self.conn.execute(
+                    "UPDATE bookmarks SET conversation_id = ?2 WHERE id = ?1",
+                    params![existing_id, conversation_id],
+                )?;
             }
         }
 

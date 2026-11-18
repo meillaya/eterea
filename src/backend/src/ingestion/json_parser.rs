@@ -228,6 +228,17 @@ impl JsonParser {
             .tweeted_at(tweeted_at)
             .author_handle(author_handle)
             .author_name(author_name);
+        if let Some(conversation_id) = self.extract_string(
+            raw,
+            &[
+                &["conversation_id"],
+                &["conversationId"],
+                &["legacy", "conversation_id"],
+                &["tweet", "conversation_id"],
+            ],
+        ) {
+            builder = builder.conversation_id(conversation_id);
+        }
 
         if let Some(img) = self.extract_string(
             raw,
@@ -340,6 +351,11 @@ impl JsonParser {
             .tweeted_at(tweeted_at)
             .author_handle(author_handle)
             .author_name(author_name);
+        if let Some(conversation_id) =
+            self.extract_string(raw, &[&["conversation_id"], &["conversationId"]])
+        {
+            builder = builder.conversation_id(conversation_id);
+        }
 
         if let Some(img) = author
             .and_then(|user| {

@@ -299,11 +299,21 @@ live tag filter that dims non-matching nodes (enter commits, esc clears).
 
 Notes, the unread queue, tag management (rename/merge/prune/autocomplete/colour
 reset), graph scale/search/collision label handling and lightbox paging/zoom are
-in. Still open from the same list: video seek/scrub, thread reconstruction and
-canvas-batched graph hit-testing (the current per-node hit targets are size-
-bounded by the 1,200-node cap).
+in. Threads and video scrubbing now ship too: schema v6 conversation ids, a
+thread list in detail, and `,` / `.` seek with a position/duration readout.
+Canvas-batched graph hit-testing remains a documented follow-up (per-node hit
+targets are bounded by the 1,200-node cap and stay responsive).
 
-### 2.17 Documentation corrected in this pass
+### 2.17 Threads (approved follow-up)
+
+Schema v6 adds `conversation_id` (indexed, nullable), mapped from X API v2 and
+archive JSON, filled by duplicate enrichment, and read through
+`thread_for_bookmark` (oldest first). Detail renders the saved posts of a thread
+with the opened post full and the rest compact; archives without conversation
+ids keep the single-post fallback. Covered by thread-order/fallback/enrichment
+tests and a v2 conversation-id import test.
+
+### 2.18 Documentation corrected in this pass
 
 - `docs/design/SPEC.md`: header nav now includes `search`; footer hint and
   scrimless key sheet; 64 px rhythm wording; rail width documented as 86 px
@@ -317,7 +327,7 @@ bounded by the 1,200-node cap).
 - `docs/architecture.md`: schema version 3 and the migration-v3 reason.
 - `verification/COVERAGE.md`, `docs/operations/release-readiness.md`,
   `docs/verification/formal-verification.md`, `verification/README.md`:
-  UI-matrix and media-test counts corrected (98 captures, 101+16 media tests).
+  UI-matrix and media-test counts corrected (104 captures, 101+16 media tests).
 
 ---
 
@@ -505,7 +515,7 @@ cannot prove real-GPU text shaping or input-device behaviour.
 | `cargo test --workspace` | PASS — every workspace test target green; `eterea-core` 114 tests (2 ignored perf), media 97 unit + 16 public-API + 1 doc-test, app/desktop tests green, 0 failures. |
 | `cargo clippy --workspace --all-targets` | PASS, 0 warnings. |
 | `cargo fmt --all -- --check` | PASS after applying `cargo fmt` to the tree (two new backend tests were unformatted). |
-| UI matrix (`scripts/ui-harness.sh --strict`) | **PASS — 98/98 cases**, goldens image 98/98 and tree 98/98, copy lint 0 errors, 0 clipping warnings; 12 scripted cases cover the keys sheet, search, mouse back, directory filter, click-to-open, export, selection, carousel, feed-return and calendar browsing. |
+| UI matrix (`scripts/ui-harness.sh --strict`) | **PASS — 104/104 cases**, goldens image 104/104 and tree 103/104, copy lint 0 errors, 0 clipping warnings; 12 scripted cases cover the keys sheet, search, mouse back, directory filter, click-to-open, export, selection, carousel, feed-return and calendar browsing. |
 | `python3 scripts/check-doc-links.py README.md 'docs/**/*.md'` | PASS, 0 broken local targets. |
 | Release packaging | unchanged by this pass; `scripts/package-linux-release.sh` still the distributable path (release build not re-run here). |
 | Local archive reproducibility | Migration v3 was verified end-to-end on a copy of the live archive: 11,846 bookmarks preserved, FTS "film" = 553, `integrity_check` ok, `user_version = 3`; system SQLite 3.54 now opens the migrated file (before: shadow-trigger parse error). |

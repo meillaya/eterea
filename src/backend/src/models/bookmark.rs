@@ -60,6 +60,11 @@ pub struct Bookmark {
     /// URL entities found in the post text, deduplicated and sorted by URL.
     #[serde(default)]
     pub links: Vec<LinkEntity>,
+
+    /// Conversation/thread id when the source carried one (`conversation_id`
+    /// in X API v2 or archive JSON). Bookmarks sharing it form a thread.
+    #[serde(default)]
+    pub conversation_id: Option<String>,
 }
 
 /// Author information (denormalized for speed)
@@ -98,6 +103,7 @@ impl Bookmark {
             is_favorite: false,
             is_read: false,
             links: Vec::new(),
+            conversation_id: None,
         }
     }
 
@@ -162,6 +168,7 @@ pub struct BookmarkBuilder {
     media: Vec<Media>,
     quoted: Option<QuotedTweet>,
     links: Vec<LinkEntity>,
+    conversation_id: Option<String>,
     is_read: bool,
 }
 
@@ -246,6 +253,11 @@ impl BookmarkBuilder {
     }
 
     /// Replace the URL entities. They are deduplicated and sorted by URL.
+    pub fn conversation_id(mut self, conversation_id: impl Into<String>) -> Self {
+        self.conversation_id = Some(conversation_id.into());
+        self
+    }
+
     pub fn links(mut self, links: Vec<LinkEntity>) -> Self {
         self.links = super::normalize_links(links);
         self
@@ -307,6 +319,7 @@ impl BookmarkBuilder {
         bookmark.is_favorite = false;
         bookmark.is_read = self.is_read;
         bookmark.links = super::normalize_links(self.links);
+        bookmark.conversation_id = self.conversation_id;
 
         Ok(bookmark)
     }

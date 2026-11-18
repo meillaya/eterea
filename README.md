@@ -164,8 +164,13 @@ The archive lives at `<platform data dir>/eterea/bookmarks.db`. On Linux that is
   shows while files are read and posts saved, `esc` cancels before the write,
   each file in a batch is reported separately (parse failures do not abort the
   rest), and the dry-run duplicate estimate uses exactly the insert's rules.
+- Reconstructs threads when the export carries conversation ids (X API v2
+  `conversation_id`) and shows the whole thread in detail, oldest first, with the
+  opened post highlighted; archives without thread ids open the single post as
+  before.
 - Opens media in a lightbox with a `n / m` count, pointer and mouse-back paging,
-  and wheel/`+`/`-`/`0` zoom from fit to 3×.
+  wheel/`+`/`-`/`0` zoom from fit to 3×, and video scrubbing with `,`/`.` (±5s,
+  restart-at-offset) with a live position/duration readout.
 - Curates tags: `rename tag` renames a tag on the selected post (merging into an
   existing tag folds both together, with autocomplete suggestions), `prune tags`
   removes unused tags, and per-tag colours can be reset to their seeded colour.
