@@ -30,6 +30,9 @@ pub struct BatchImportOutcome {
     pub history_id: Option<i64>,
 }
 
+/// Columns read from an existing row when a duplicate import arrives.
+type ExistingBookmarkRow = (String, i64, String, String, Option<String>, Option<String>);
+
 struct BookmarkInsertStatements<'conn> {
     bookmark: CachedStatement<'conn>,
     tag: CachedStatement<'conn>,
@@ -120,7 +123,7 @@ impl Database {
                     duplicates: 0,
                 };
                 for bookmark in bookmarks {
-                    if Self::insert_bookmark_internal(bookmark, &mut statements)? {
+                    if self.insert_bookmark_internal(bookmark, &mut statements)? {
                         file.inserted += 1;
                         created_ids.push(bookmark.id.clone());
                     } else {
@@ -173,7 +176,7 @@ impl Database {
         let mut statements = BookmarkInsertStatements::prepare(&self.conn)?;
         let mut inserted = 0;
         for bookmark in bookmarks {
-            if Self::insert_bookmark_internal(bookmark, &mut statements)? {
+            if self.insert_bookmark_internal(bookmark, &mut statements)? {
                 inserted += 1;
             }
         }
@@ -184,6 +187,7 @@ impl Database {
     /// ignored by the `OR IGNORE` insert), which is the duplicate accounting
     /// hook for batch imports.
     fn insert_bookmark_internal(
+        &self,
         bookmark: &Bookmark,
         statements: &mut BookmarkInsertStatements<'_>,
     ) -> Result<bool> {
@@ -217,7 +221,12 @@ impl Database {
         ])?;
 
         if changed == 0 {
-            // Existing id or tweet_url: do not write related rows.
+            // Existing id or tweet_url: a richer source (for example a JSON
+            // export after a text-only CSV) may still carry media, a quote,
+            // links, tags or refreshed author metadata for this tweet. Merge
+            // what the new copy knows; read/favorite state and existing rows
+            // stay untouched.
+            self.merge_duplicate_bookmark(bookmark, statements)?;
             return Ok(false);
         }
 
@@ -285,6 +294,177 @@ impl Database {
         ])?;
 
         Ok(true)
+    }
+
+    /// Enrich an existing bookmark from a duplicate import row.
+    ///
+    /// Only additive data is copied: refreshed author name/profile image, a
+    /// missing body, links, extra tags, media rows when the archive had none,
+    /// and a quote row when it was absent. A duplicate can never clear a field
+    /// or overwrite read/favorite state.
+    fn merge_duplicate_bookmark(
+        &self,
+        bookmark: &Bookmark,
+        statements: &mut BookmarkInsertStatements<'_>,
+    ) -> Result<()> {
+        let existing: Option<ExistingBookmarkRow> = self
+            .conn
+            .query_row(
+                r#"SELECT id, has_media, COALESCE(links_json, ''), content,
+                          author_profile_image, author_profile_url
+                   FROM bookmarks WHERE id = ?1 OR tweet_url = ?2 LIMIT 1"#,
+                params![bookmark.id, bookmark.tweet_url],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((existing_id, existing_has_media, existing_links, existing_content, _, _)) =
+            existing
+        else {
+            return Ok(());
+        };
+
+        // Author metadata is a snapshot: prefer the newest non-empty values the
+        // source provides so renamed accounts and changed avatars stop showing
+        // their old identity.
+        if !bookmark.author_name.trim().is_empty()
+            || bookmark.author_profile_image.is_some()
+            || bookmark.author_profile_url.is_some()
+        {
+            self.conn.execute(
+                r#"UPDATE bookmarks SET
+                       author_name = CASE WHEN ?2 <> '' THEN ?2 ELSE author_name END,
+                       author_profile_image = COALESCE(?3, author_profile_image),
+                       author_profile_url = COALESCE(?4, author_profile_url)
+                   WHERE id = ?1"#,
+                params![
+                    existing_id,
+                    bookmark.author_name,
+                    bookmark.author_profile_image,
+                    bookmark.author_profile_url,
+                ],
+            )?;
+        }
+
+        if existing_content.trim().is_empty() && !bookmark.content.trim().is_empty() {
+            self.conn.execute(
+                "UPDATE bookmarks SET content = ?2 WHERE id = ?1",
+                params![existing_id, bookmark.content],
+            )?;
+            self.conn.execute(
+                "UPDATE bookmarks_search_docs SET content = ?2 WHERE bookmark_id = ?1",
+                params![existing_id, bookmark.content],
+            )?;
+        }
+
+        if (existing_links.trim().is_empty() || existing_links == "[]")
+            && !bookmark.links.is_empty()
+        {
+            let links_json =
+                serde_json::to_string(&crate::models::normalize_links(bookmark.links.clone()))
+                    .map_err(|error| {
+                        Error::Other(format!("Failed to serialize bookmark links: {error}"))
+                    })?;
+            self.conn.execute(
+                "UPDATE bookmarks SET links_json = ?2 WHERE id = ?1",
+                params![existing_id, links_json],
+            )?;
+        }
+
+        if !bookmark.tags.is_empty() {
+            for tag in &bookmark.tags {
+                let tag_id = match statements.tag_ids.get(tag).copied() {
+                    Some(tag_id) => tag_id,
+                    None => {
+                        statements.tag.execute(params![tag])?;
+                        let tag_id: i64 = statements
+                            .tag_id
+                            .query_row(params![tag], |row| row.get(0))?;
+                        statements.tag_ids.insert(tag.clone(), tag_id);
+                        tag_id
+                    }
+                };
+                statements
+                    .bookmark_tag
+                    .execute(params![existing_id, tag_id])?;
+            }
+            self.conn.execute(
+                r#"UPDATE bookmarks_search_docs
+                   SET tags_text = COALESCE((
+                       SELECT group_concat(name, ' ')
+                       FROM (
+                           SELECT t.name FROM bookmark_tags bt
+                           JOIN tags t ON t.id = bt.tag_id
+                           WHERE bt.bookmark_id = bookmarks_search_docs.bookmark_id
+                           ORDER BY t.name
+                       )
+                   ), '')
+                   WHERE bookmark_id = ?1"#,
+                params![existing_id],
+            )?;
+        }
+
+        if existing_has_media == 0 && !bookmark.media.is_empty() {
+            for media in &bookmark.media {
+                statements.media.execute(params![
+                    existing_id,
+                    media.url,
+                    media.media_type.as_storage_str(),
+                    media.alt_text.as_deref(),
+                    media.width,
+                    media.height,
+                    media.source_media_key.as_deref(),
+                    media.source_type.as_deref(),
+                    media.preview_url.as_deref(),
+                    media.variant_url.as_deref(),
+                    media.variants_json.as_deref(),
+                    media.duration_ms,
+                    media.poster_url.as_deref(),
+                    media.playback_url.as_deref(),
+                ])?;
+            }
+            self.conn.execute(
+                "UPDATE bookmarks SET has_media = 1 WHERE id = ?1",
+                params![existing_id],
+            )?;
+        }
+
+        if let Some(quoted) = &bookmark.quoted {
+            let has_quote: bool = self
+                .conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM quoted_tweets WHERE bookmark_id = ?1)",
+                    params![existing_id],
+                    |row| row.get(0),
+                )
+                .unwrap_or(false);
+            if !has_quote {
+                let media_json = serde_json::to_string(&quoted.media).map_err(|error| {
+                    Error::Other(format!("Failed to serialize quoted tweet media: {error}"))
+                })?;
+                statements.quoted_tweet.execute(params![
+                    existing_id,
+                    quoted.tweet_url,
+                    quoted.content,
+                    quoted.tweeted_at.map(|tweeted_at| tweeted_at.timestamp()),
+                    quoted.author_handle,
+                    quoted.author_name,
+                    quoted.author_profile_image,
+                    media_json,
+                    quoted.unavailable as i32,
+                ])?;
+            }
+        }
+
+        Ok(())
     }
 
     /// Delete one bookmark and journal a delete event in one transaction.
@@ -359,8 +539,14 @@ INSERT INTO author_stats (
     author_handle, author_name, author_profile_image, bookmark_count, favorite_count
 )
 SELECT author_handle,
-       COALESCE(NULLIF(MAX(author_name), ''), author_handle),
-       MAX(NULLIF(author_profile_image, '')),
+       COALESCE(NULLIF((
+           SELECT author_name FROM bookmarks newest
+           WHERE newest.author_handle = bookmarks.author_handle
+           ORDER BY newest.tweeted_at DESC, newest.id DESC LIMIT 1
+       ), ''), author_handle),
+       (SELECT author_profile_image FROM bookmarks newest
+        WHERE newest.author_handle = bookmarks.author_handle
+        ORDER BY newest.tweeted_at DESC, newest.id DESC LIMIT 1),
        COUNT(*),
        SUM(CASE WHEN is_favorite = 1 THEN 1 ELSE 0 END)
 FROM bookmarks
@@ -427,7 +613,7 @@ fn import_label(inserted: usize, duplicates: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{BookmarkBuilder, HistoryKind};
+    use crate::models::{BookmarkBuilder, HistoryKind, QuotedTweet};
     use chrono::{TimeZone, Utc};
 
     fn bookmark(tweet_id: &str, tag: &str) -> Bookmark {
@@ -487,6 +673,65 @@ mod tests {
             history_before,
             "a no-op import must not add a history event"
         );
+    }
+
+    #[test]
+    fn duplicate_import_enriches_media_quote_tags_body_and_author() {
+        let db = Database::open_memory().unwrap();
+        // A text-only source (for example a CSV export) imports first.
+        let sparse = BookmarkBuilder::new()
+            .tweet_url("https://x.com/rich/status/9")
+            .tweeted_at(Utc.with_ymd_and_hms(2024, 5, 1, 12, 0, 0).unwrap())
+            .author_handle("rich")
+            .author_name("Old Name")
+            .author_profile_image("https://pbs.twimg.com/profile_images/old_normal.jpg")
+            .build()
+            .unwrap();
+        db.insert_bookmarks(&[sparse]).unwrap();
+        let sparse_id = db.get_bookmarks(0, 10).unwrap()[0].id.clone();
+        db.set_read(&sparse_id, true).unwrap();
+
+        // A richer source (JSON/archive) re-imports the same tweet.
+        let rich = BookmarkBuilder::new()
+            .tweet_url("https://x.com/rich/status/9")
+            .content("rich body https://t.co/x")
+            .tweeted_at(Utc.with_ymd_and_hms(2024, 5, 1, 12, 0, 0).unwrap())
+            .author_handle("rich")
+            .author_name("New Name")
+            .author_profile_image("https://pbs.twimg.com/profile_images/new_normal.jpg")
+            .add_tag("film")
+            .add_media("https://pbs.twimg.com/media/one.jpg")
+            .quoted(QuotedTweet::new(
+                "https://x.com/other/status/1",
+                "quoted body",
+                None,
+                "other",
+                "Other",
+            ))
+            .build()
+            .unwrap();
+        let outcome = db
+            .insert_bookmarks_batch(&[("rich.json".to_string(), vec![rich])])
+            .unwrap();
+
+        assert_eq!(outcome.inserted, 0);
+        assert_eq!(outcome.duplicates, 1);
+        assert_eq!(db.count_bookmarks().unwrap(), 1, "no duplicate row");
+
+        let stored = db.get_bookmarks(0, 10).unwrap().remove(0);
+        assert_eq!(stored.author_name, "New Name");
+        assert_eq!(
+            stored.author_profile_image.as_deref(),
+            Some("https://pbs.twimg.com/profile_images/new_normal.jpg")
+        );
+        assert_eq!(stored.content, "rich body https://t.co/x");
+        assert!(stored.is_read, "read state survives enrichment");
+        assert_eq!(stored.tags, vec!["film".to_string()]);
+        assert_eq!(stored.media.len(), 1, "media backfilled");
+        assert!(stored.media[0].url.contains("one.jpg"));
+        assert!(stored.quoted.is_some(), "quote backfilled");
+        assert_eq!(db.search("rich body", 10).unwrap().len(), 1);
+        assert_eq!(db.search("film", 10).unwrap().len(), 1);
     }
 
     #[test]

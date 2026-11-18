@@ -74,7 +74,7 @@ Exit codes: `0` pass, `1` verification failure, `2` usage or environment error.
 
 ## Matrix
 
-88 captures. Scenes run at all three sizes and both themes; routes, datasets and
+89 captures. Scenes run at all three sizes and both themes; routes, datasets and
 scripts run at `1440x900` in both themes. Everything uses `--scale 1`, so PNG
 pixels equal the requested point size.
 
@@ -230,7 +230,7 @@ corrupt, if a hash/signature does not match, or if an input file changed.
   code, not a silent pass.
 - **Cost.** Each capture is a full offscreen app launch (debug build, GPU init,
   virtual frames): roughly 17-18 s for a demo scene and 2-5 s for a
-  database/script route; the full 88-case matrix took ~85-105 s on this host
+  database/script route; the full 89-case matrix took ~85-105 s on this host
   with the default 8 workers (plus the cargo build). The debug `eterea` binary
   is ~650 MB.
 - **copy-lint scope.** It lints the aggregate of accessibility and paint text

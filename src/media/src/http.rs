@@ -55,12 +55,32 @@ pub(crate) fn video_mime_allowed(content_type: Option<&str>) -> bool {
     )
 }
 
-/// Return `true` when the image response's `Content-Type` is on the allowlist.
+/// Return `true` when the image response's `Content-Type` may be decoded.
 ///
-/// Missing or non-ASCII header values are refused: an image we cannot classify
-/// is not decoded. This is the runtime half of `INV-MED-09`.
+/// This is the runtime half of `INV-MED-09`: the image allowlist is enforced
+/// before any body byte is read. Two generic labels are also accepted —
+/// `application/octet-stream` and `binary/octet-stream` — because some avatar
+/// mirrors and CDNs serve JPEG/PNG bodies that way; the decoder remains the
+/// final validator, so a wrong body fails as a typed decode failure rather
+/// than being displayed. Missing or non-ASCII header values and obvious
+/// non-image types are still refused.
 pub(crate) fn image_content_type_allowed(content_type: Option<&str>) -> bool {
-    content_type.is_some_and(is_image_mime)
+    let Some(content_type) = content_type else {
+        return false;
+    };
+    if is_image_mime(content_type) {
+        return true;
+    }
+    let essence = content_type
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    matches!(
+        essence.as_str(),
+        "application/octet-stream" | "binary/octet-stream"
+    )
 }
 
 /// Blocking HTTP client shared by media workers.
@@ -330,6 +350,8 @@ mod tests {
             "IMAGE/PNG",
             "image/jpeg; charset=binary",
             " image/webp ; q=1",
+            "application/octet-stream",
+            "binary/octet-stream",
         ] {
             assert!(
                 image_content_type_allowed(Some(allowed)),
@@ -342,7 +364,7 @@ mod tests {
             "application/json",
             "image/svg+xml",
             "video/mp4",
-            "application/octet-stream",
+            "text/plain",
             "",
         ] {
             assert!(

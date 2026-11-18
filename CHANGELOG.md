@@ -6,6 +6,22 @@ has actually been captured.
 
 ## Unreleased
 
+- Duplicate imports now enrich an existing post instead of skipping it: a richer
+  export can backfill media, quotes, links, tags and refreshed author
+  name/avatar for tweets that were first imported from a text-only CSV, without
+  touching read or favorite state or creating a second row.
+- Avatars are resolved per account, not per archived row: the newest known
+  portrait is shown on every post of that handle, with older renditions tried as
+  fallbacks when X has deleted the current URL (404) or a mirror expires.
+  Directory rows use the newest post's name and portrait too.
+- The selection rule is a short pale accent bar in the rail gap, aligned with
+  the byline, instead of a full-height ink bar.
+- Clicking a post selects the post under the pointer before opening, tagging,
+  loading media or opening the lightbox; it no longer opens the previously
+  selected post.
+- Image fetches also accept `application/octet-stream` / `binary/octet-stream`
+  bodies (some avatar mirrors label JPEGs that way); the decoder remains the
+  validator.
 - Fixed the reading surface: the feed now carries its 64px post rhythm (same-day
   posts no longer touch), pages the next 48 posts in as you reach the bottom,
   and drops replies from superseded searches so a stale page cannot replace a

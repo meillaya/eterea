@@ -94,6 +94,11 @@ impl ImageStore {
         !self.deferred.is_empty()
     }
 
+    /// Whether a key failed terminally this session.
+    pub fn is_failed(&self, key: &str) -> bool {
+        self.failed.contains(key)
+    }
+
     pub fn cache_stats(&self) -> Option<CacheStats> {
         self.manager
             .as_ref()

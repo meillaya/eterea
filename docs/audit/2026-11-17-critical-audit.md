@@ -127,7 +127,52 @@ smaller issues; the P0 and all P1/P2 items are fixed in this pass:
   no longer page the hidden feed's carousel; deferred image keys keep the poll
   waking.
 
-### 2.6 Documentation corrected in this pass
+### 2.6 Follow-up pass from the second user report
+
+Five more defects were reproduced against the live archive (11,843 bookmarks,
+schema v3) and fixed:
+
+- **Duplicate imports now enrich instead of skipping.** The reported "media is
+  missing" tweets were imported from a Dewey CSV whose only columns are
+  profile image, handle, name, text, note, date and URL — that export carries
+  no media or quote data at all. The app cannot invent it, but it also used to
+  throw away richer data when the same tweet arrived later: `INSERT OR IGNORE`
+  skipped duplicates entirely. A duplicate now backfills media, quote rows,
+  links, tags and refreshed author name/avatar, and never rows a second post or
+  changes read/favorite state. Re-importing the richer JSON (or the older
+  legacy CSV, which has a `Media` column) now upgrades matching posts in place.
+  Verified end to end with `eterea-cli ingest` on a text-only CSV followed by a
+  media-carrying JSON: one row, media backfilled, author updated, FTS healthy.
+- **Avatars resolve per account.** Old posts kept their import-time portrait
+  URL; X deletes old profile-image renditions (a live sample returned 404 while
+  the account's newest URL returned 200), and some mirror URLs expire, so the
+  shell blacklisted the URL and every post of that handle showed a monogram.
+  The shell now groups candidates by handle from the loaded feed (newest
+  first), shows the newest portrait on all of that handle's posts, uses the
+  newest display name too, and walks older renditions when one fails. Directory
+  rows take their name and portrait from the newest matching post as well.
+  Verified against the live archive copy: `@thethoughtofth1` posts that showed
+  monograms now all use the working current portrait.
+- **Selection rule** is now a 2px pale accent bar (32% accent), 18px tall, in
+  the 12px rail gap and aligned with the byline centre; the old full-height ink
+  bar ran the length of media posts and clipped the date rail (the marker sat
+  at -14px while the rail ended at -12px).
+- **Clicking a post selects the post under the pointer.** Body, quote card and
+  media tiles now set the selection first; previously the body handler called
+  `open_detail` on the stale selection, so a click opened the keyboard-selected
+  post. Verified with a scripted tap on the second post: `route-Detail` shows
+  that post's author.
+- **Image MIME compatibility:** image fetches accept `application/octet-stream`
+  / `binary/octet-stream` in addition to the image allowlist (some avatar
+  mirrors serve JPEGs that way); the decoder remains the validator.
+
+Data note for the reporter: the AYOMI quote and the Paulie Swan video exist in
+none of the exported files on disk (the text-only Dewey CSVs, the legacy CSV
+and the 3,564-row JSON were checked directly), so those two posts can only gain
+media from a future export that includes it — importing one now merges it into
+the existing rows.
+
+### 2.7 Documentation corrected in this pass
 
 - `docs/design/SPEC.md`: header nav now includes `search`; footer hint and
   scrimless key sheet; 64 px rhythm wording; rail width documented as 86 px
@@ -141,7 +186,7 @@ smaller issues; the P0 and all P1/P2 items are fixed in this pass:
 - `docs/architecture.md`: schema version 3 and the migration-v3 reason.
 - `verification/COVERAGE.md`, `docs/operations/release-readiness.md`,
   `docs/verification/formal-verification.md`, `verification/README.md`:
-  UI-matrix and media-test counts corrected (88 captures, 97+16 media tests).
+  UI-matrix and media-test counts corrected (89 captures, 97+16 media tests).
 
 ---
 
@@ -329,7 +374,7 @@ cannot prove real-GPU text shaping or input-device behaviour.
 | `cargo test --workspace` | PASS — every workspace test target green; `eterea-core` 114 tests (2 ignored perf), media 97 unit + 16 public-API + 1 doc-test, app/desktop tests green, 0 failures. |
 | `cargo clippy --workspace --all-targets` | PASS, 0 warnings. |
 | `cargo fmt --all -- --check` | PASS after applying `cargo fmt` to the tree (two new backend tests were unformatted). |
-| UI matrix (`scripts/ui-harness.sh --no-build --strict`) | **PASS — 88/88 cases**, goldens image 88/88 and tree 88/88, copy lint 0 errors, 0 clipping warnings; 8 new scripted cases cover the keys sheet, search, mouse back and directory filter. |
+| UI matrix (`scripts/ui-harness.sh --strict`) | **PASS — 89/89 cases**, goldens image 89/89 and tree 89/89, copy lint 0 errors, 0 clipping warnings; 9 scripted cases cover the keys sheet, search, mouse back, directory filter and click-to-open. |
 | `python3 scripts/check-doc-links.py README.md 'docs/**/*.md'` | PASS, 0 broken local targets. |
 | Release packaging | unchanged by this pass; `scripts/package-linux-release.sh` still the distributable path (release build not re-run here). |
 | Local archive reproducibility | Migration v3 was verified end-to-end on a copy of the live archive: 11,846 bookmarks preserved, FTS "film" = 553, `integrity_check` ok, `user_version = 3`; system SQLite 3.54 now opens the migrated file (before: shadow-trigger parse error). |

@@ -52,7 +52,7 @@ eterea is a local reading app for an X/Twitter bookmark archive. It imports a CS
 - Footer: 24px tall, 52px side padding. A transient status message at the left; the `keys` shortcut hint at the right. The hint is the minimizable form of the key sheet: the sheet is a clean tooltip with no scrim, and pressing anywhere outside or `esc` folds it back to the hint.
 - Feed: reading column 720px centered. Marginalia rail 86px wide, right-aligned, ending 12px left of the column. The 150px rail ending 30px left from the Daylight prototype does not fit a 720px column inside the 960px minimum window, so the rail stays narrow; a wider rail is a follow-up once the column is responsive. Content starts 64px below the header.
 - Post rhythm: 64px between posts, carried as 32px above and below each post. A saved-day change puts one 1px `line` inside that rhythm; it does not add to it.
-- Selection: 2px `ink` rule at 14px left of the reading column, full post height. Selected post scrolls into view.
+- Selection: 2px pale accent rule (32% accent) in the 12px rail gap, 18px tall and aligned with the byline's centre. It is not full post height. Selected post scrolls into view.
 - Detail: same column, 740px when media needs the room, vertically centered when short. Back returns to the previous scroll position. Viewer tags are editable, the last line carries `edit tags` and `delete`; delete confirms before writing.
 - Media: column width. One image 720x420; two 358x252 with 3px gaps; three: one 720x360 plus two 358x252; four: 2x2 at 358x252. Radius 2px. Always reserve the aspect ratio.
 - Quote: 18px indent, 1px `quote rule` on the left, 14/21 Instrument text, optional 72px thumbnail on the right. No label, no card, no rounded box.
@@ -120,7 +120,7 @@ No visual/multi-select mode. One selected post at a time.
 
 - The feed always has a selection once it has posts. The first post is selected on load.
 - `j`/`k` moves and scrolls the selected post into view.
-- Clicking a post selects it; clicking the byline opens the author filter; clicking the post body opens detail.
+- Clicking a post selects the post under the pointer; clicking the byline opens the author filter for that post's author; clicking the post body or its quote card selects it and opens detail; clicking media selects it and opens the lightbox.
 - The favorite marker is a 6px accent square in the marginalia, shown only when favorited.
 - The rail actions appear on hover or focus; they are text, never icons.
 

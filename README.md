@@ -126,13 +126,17 @@ The archive lives at `<platform data dir>/eterea/bookmarks.db`. On Linux that is
 ## What it does
 
 - Imports CSV, JSON and X archive exports, one file or many, by picker or drop.
-  Preview before write; duplicate tweet URLs are skipped.
+  Preview before write; a duplicate tweet URL is not re-inserted, but a richer
+  source still backfills media, quotes, links, tags and the account's current
+  name and avatar for it.
 - Searches text, names, handles and tags over SQLite FTS5. The feed, and with it
   every search result, pages in as you scroll, so the whole archive is reachable
   rather than a demo cap. Author and topic lists filter and page the same way,
   with an inline filter field (`/` while the list is open).
 - Loads avatars and media automatically for the visible archive, at the best
-  rendition, through a bounded disk cache. Images and video files are cached
+  rendition, through a bounded disk cache. Portraits resolve per account: the
+  newest known avatar is shown everywhere, with older renditions as fallbacks
+  when X has deleted the current one. Images and video files are cached
   outside SQLite; the cache can be measured and cleared in settings. The media
   queue retries keys that arrive while it is full instead of dropping them.
 - Renders X media carousels up to 20 items, with a lightbox across the whole set.

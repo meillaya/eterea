@@ -204,6 +204,12 @@ pub(crate) struct State {
     topics: Vec<TopicSummary>,
     topics_total: i64,
     topics_pending: bool,
+    /// Avatar URLs per handle, newest first. The champion is shown on every
+    /// post of that handle, so a changed account stops showing an expired
+    /// profile-image URL on its older posts.
+    avatar_variants: HashMap<String, Vec<String>>,
+    /// Index into the handle's variant list for the avatar currently shown.
+    avatar_choice: HashMap<String, usize>,
     /// The shared authors/topics filter text.
     directory_filter: String,
     /// Whether the directory filter field owns the keyboard.
@@ -292,6 +298,8 @@ impl State {
             topics: Vec::new(),
             topics_total: 0,
             topics_pending: false,
+            avatar_variants: HashMap::new(),
+            avatar_choice: HashMap::new(),
             directory_filter: String::new(),
             directory_editing: false,
             authors_dirty: false,
@@ -983,8 +991,142 @@ fn request_avatars(state: &mut State) {
         }
     }
     for key in keys {
-        state.images.request(&key, ImageKind::Avatar);
+        if !state.images.is_failed(&key) {
+            state.images.request(&key, ImageKind::Avatar);
+        }
     }
+}
+
+/// Rebuild the per-handle avatar candidates from one feed page and point every
+/// post and quote of that handle at the current champion URL. Feed pages are
+/// newest first, so the first candidate is the newest avatar the archive knows.
+fn resolve_avatars(state: &mut State, page: &[eterea_core::Bookmark], replace: bool) {
+    if !state.avatars {
+        return;
+    }
+    if replace {
+        state.avatar_variants.clear();
+        state.avatar_choice.clear();
+    }
+    for bookmark in page {
+        if let Some(image) = bookmark
+            .author_profile_image
+            .as_deref()
+            .filter(|url| !url.is_empty())
+        {
+            push_avatar_candidate(state, &bookmark.author_handle, image);
+        }
+        if let Some(quoted) = &bookmark.quoted {
+            if let Some(image) = quoted
+                .author_profile_image
+                .as_deref()
+                .filter(|url| !url.is_empty())
+            {
+                push_avatar_candidate(state, &quoted.author_handle, image);
+            }
+        }
+    }
+    let mut champions: HashMap<String, String> = HashMap::new();
+    for handle in state.avatar_variants.keys() {
+        if let Some(champion) = resolved_avatar(state, handle) {
+            champions.insert(handle.clone(), champion);
+        }
+    }
+    // The newest row for a handle carries the account's current display name.
+    let mut names: HashMap<String, String> = HashMap::new();
+    for post in &state.posts {
+        let handle = post.handle.trim_start_matches('@').to_string();
+        if !post.name.trim().is_empty() {
+            names.entry(handle).or_insert_with(|| post.name.clone());
+        }
+    }
+    for post in &mut state.posts {
+        let handle = post.handle.trim_start_matches('@').to_string();
+        if let Some(champion) = champions.get(&handle) {
+            post.avatar_key = Some(champion.clone());
+        }
+        if let Some(name) = names.get(&handle) {
+            post.name = name.clone();
+        }
+        if let Some(quote) = post.quote.as_mut() {
+            let quote_handle = quote.handle.trim_start_matches('@').to_string();
+            if let Some(champion) = champions.get(&quote_handle) {
+                quote.avatar_key = Some(champion.clone());
+            }
+        }
+    }
+}
+
+fn push_avatar_candidate(state: &mut State, handle: &str, image: &str) {
+    if handle.is_empty() {
+        return;
+    }
+    let candidates = state.avatar_variants.entry(handle.to_string()).or_default();
+    if !candidates.iter().any(|url| url == image) {
+        candidates.push(image.to_string());
+    }
+}
+
+/// The first avatar URL for `handle` that has not failed this session.
+fn resolved_avatar(state: &State, handle: &str) -> Option<String> {
+    let candidates = state.avatar_variants.get(handle)?;
+    let start = *state.avatar_choice.get(handle).unwrap_or(&0);
+    candidates
+        .iter()
+        .skip(start)
+        .find(|url| !state.images.is_failed(url))
+        .cloned()
+}
+
+/// When the avatar currently shown for a handle has failed (X deletes old
+/// profile-image renditions, mirrors expire), fall back to the next newest
+/// candidate instead of leaving every old post on a monogram.
+fn advance_failed_avatars(state: &mut State) -> bool {
+    if !state.avatars {
+        return false;
+    }
+    let mut updates: HashMap<String, String> = HashMap::new();
+    let handles: Vec<String> = state.avatar_variants.keys().cloned().collect();
+    for handle in handles {
+        let candidates = match state.avatar_variants.get(&handle) {
+            Some(candidates) => candidates.clone(),
+            None => continue,
+        };
+        let current = *state.avatar_choice.get(&handle).unwrap_or(&0);
+        let Some(current_url) = candidates.get(current) else {
+            continue;
+        };
+        if !state.images.is_failed(current_url) {
+            continue;
+        }
+        let mut next = current + 1;
+        while next < candidates.len() && state.images.is_failed(&candidates[next]) {
+            next += 1;
+        }
+        state.avatar_choice.insert(handle.clone(), next);
+        if let Some(url) = candidates.get(next) {
+            updates.insert(handle, url.clone());
+        }
+    }
+    if updates.is_empty() {
+        return false;
+    }
+    for post in &mut state.posts {
+        let handle = post.handle.trim_start_matches('@').to_string();
+        if let Some(url) = updates.get(&handle) {
+            post.avatar_key = Some(url.clone());
+        }
+        if let Some(quote) = post.quote.as_mut() {
+            let quote_handle = quote.handle.trim_start_matches('@').to_string();
+            if let Some(url) = updates.get(&quote_handle) {
+                quote.avatar_key = Some(url.clone());
+            }
+        }
+    }
+    for url in updates.values() {
+        state.images.request(url, ImageKind::Avatar);
+    }
+    true
 }
 
 /// Load the portraits of the authors directory rows.
@@ -1060,6 +1202,9 @@ fn poll(state: &mut State, clock: f64, tx: &mut Tx) -> bool {
     }
 
     if state.images.poll() {
+        changed = true;
+    }
+    if advance_failed_avatars(state) {
         changed = true;
     }
 
@@ -1180,6 +1325,7 @@ fn handle_response(state: &mut State, response: Response, clock: f64) {
                             state.pending_views += 1;
                         }
                     }
+                    resolve_avatars(state, &page.items, !append);
                     request_avatars(state);
                     request_all_media(state);
                 }
@@ -4691,7 +4837,7 @@ fn post_url(state: &State, index: usize) -> Option<String> {
     state.posts.get(index).map(|post| post.tweet_url.clone())
 }
 
-fn post_text(_state: &State, post: &Post, p: Palette, width: f32, detail: bool) -> El {
+fn post_text(post: &Post, p: Palette, width: f32, detail: bool, index: usize) -> El {
     let (body, pieces) = body_text(post);
     let mut view = text(body)
         .w(width)
@@ -4719,7 +4865,12 @@ fn post_text(_state: &State, post: &Post, p: Palette, width: f32, detail: bool) 
         view = view.spans(spans);
     }
     if !detail {
-        view = view.on_press(|state: &mut State| open_detail(state));
+        view = view.on_press(move |state: &mut State| {
+            // Clicking a body opens the post under the pointer, not whichever
+            // row the keyboard happened to select before.
+            state.selected = index;
+            open_detail(state);
+        });
     }
     view.on_link(|state: &mut State, id: &str, tx: &mut Tx| {
         if let Some(tag) = id.strip_prefix("tag:") {
@@ -4961,7 +5112,7 @@ fn post_view(state: &State, post: &Post, index: usize, p: Palette, detail: bool)
         );
     }
     content = content.child(byline);
-    content = content.child(post_text(state, post, p, content_w, detail));
+    content = content.child(post_text(post, p, content_w, detail, index));
 
     if detail && !post.tags.is_empty() {
         let mut tags = row().w(content_w).gap(10.0).flex_wrap();
@@ -4978,7 +5129,7 @@ fn post_view(state: &State, post: &Post, index: usize, p: Palette, detail: bool)
     }
 
     if let Some(quote) = &post.quote {
-        content = content.child(quote_view(state, quote, post, p, content_w));
+        content = content.child(quote_view(state, quote, post, p, content_w, index));
     } else if post
         .links
         .iter()
@@ -5070,19 +5221,35 @@ fn post_view(state: &State, post: &Post, index: usize, p: Palette, detail: bool)
     let mut group = col().w(content_w).child(content);
     group = group.child(rail.absolute(-(RAIL + GAP), 0.0));
     if selected || marked {
-        group = group.child(el().w(2.0).fill(if marked { p.accent } else { p.ink }).pin(
-            Some(-14.0),
-            Some(0.0),
-            None,
-            Some(0.0),
-        ));
+        // A short, pale rule aligned with the byline. The old full-height ink
+        // bar ran the length of a media post and read as a divider.
+        let marker = if marked {
+            p.accent
+        } else {
+            p.accent.alpha(0.32)
+        };
+        group = group.child(
+            el().w(2.0)
+                .h(18.0)
+                .radius(1.0)
+                .fill(marker)
+                // Sit inside the 12px rail gap: -14 clipped the date rail.
+                .pin(Some(-8.0), Some(6.0), None, None),
+        );
     }
 
-    row()
+    let row_view = row()
         .w_full()
         .justify_center()
         .key(format!("post-{index}"))
-        .child(group)
+        .child(group);
+    if detail {
+        row_view
+    } else {
+        // Empty areas of the row select it without opening; the body, byline
+        // and media keep their own, more specific handlers.
+        row_view.on_press(move |state: &mut State| state.selected = index)
+    }
 }
 
 fn avatar(state: &State, key: Option<&str>, name: &str, size: f32, p: Palette) -> El {
@@ -5114,7 +5281,29 @@ fn avatar(state: &State, key: Option<&str>, name: &str, size: f32, p: Palette) -
         )
 }
 
-fn quote_view(state: &State, quote: &model::Quote, post: &Post, p: Palette, content_w: f32) -> El {
+fn quote_view(
+    state: &State,
+    quote: &model::Quote,
+    post: &Post,
+    p: Palette,
+    content_w: f32,
+    index: usize,
+) -> El {
+    quote_view_body(state, quote, post, p, content_w).on_press(move |state: &mut State| {
+        state.selected = index;
+        if state.route != Route::Detail {
+            open_detail(state);
+        }
+    })
+}
+
+fn quote_view_body(
+    state: &State,
+    quote: &model::Quote,
+    post: &Post,
+    p: Palette,
+    content_w: f32,
+) -> El {
     if quote.unavailable {
         return text("quoted post not in archive")
             .font(theme::ui(12.0, 400.0))
@@ -5354,6 +5543,7 @@ fn media_tile(
         .role("image")
         .label(item.alt.clone())
         .on_press_tx(move |state: &mut State, tx: &mut Tx| {
+            state.selected = post_index;
             if is_video && state.route == Route::Detail {
                 start_video_at(state, tx, post_index, media_index);
             } else {

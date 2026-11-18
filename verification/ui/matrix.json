@@ -269,6 +269,28 @@
         "mira okonkwo"
       ],
       "min_texts": 8
+    },
+    {
+      "id": "click-post",
+      "script": "scripts/click-post.json",
+      "dataset": "main",
+      "route": "feed",
+      "size": "1440x900",
+      "themes": [
+        "light"
+      ],
+      "at": 2.6,
+      "expect": [
+        "mira okonkwo",
+        "barbican"
+      ],
+      "visible_expect": [
+        "mira okonkwo"
+      ],
+      "absent": [
+        "noor haddad"
+      ],
+      "min_texts": 10
     }
   ],
   "limits": {
