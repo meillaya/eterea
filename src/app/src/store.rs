@@ -16,8 +16,8 @@ use crate::types::{
     AuthorSummary, BookmarkPage, BookmarkQuery, BookmarkSelection, BookmarkStats, BulkResult,
     CalendarData, CalendarRequest, CalendarYearData, CalendarYearRequest, DirectoryPageRequest,
     ExportRequest, ExportSummary, GraphData, GraphRequest, HistoryDetail, HistoryListRequest,
-    HistoryPage, ImportBatchPreview, ImportBatchSummary, ImportPreview, PaginatedResponse,
-    TagColor, TagMutation, TopicSummary, UndoResult,
+    HistoryPage, ImportBatchPreview, ImportBatchSummary, ImportPreview, ImportProgress,
+    PaginatedResponse, TagColor, TagMutation, TopicSummary, UndoResult,
 };
 use crate::AppServices;
 use crossbeam_channel::{unbounded, Receiver, Sender};
@@ -71,7 +71,7 @@ impl From<anyhow::Error> for StoreError {
 ///
 /// `Shutdown` asks the actor thread to stop after the requests queued before
 /// it; it has no response.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum Command {
     Feed(BookmarkQuery),
     Detail(String),
@@ -120,7 +120,13 @@ pub enum Command {
         read: bool,
     },
     PreviewFiles(Vec<PathBuf>),
-    ImportFiles(Vec<PathBuf>),
+    /// Import the listed files. `progress` receives ticks while the actor
+    /// works; `cancel` asks the parse/write pass to stop cooperatively.
+    ImportFiles {
+        paths: Vec<PathBuf>,
+        progress: Option<Sender<ImportProgress>>,
+        cancel: Arc<std::sync::atomic::AtomicBool>,
+    },
     AuthorPage(DirectoryPageRequest),
     TopicPage(DirectoryPageRequest),
     HistoryList(HistoryListRequest),
@@ -136,7 +142,7 @@ pub enum Command {
 }
 
 /// A command plus the id the matching response will repeat.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Request {
     pub id: RequestId,
     pub command: Command,
@@ -336,6 +342,7 @@ pub struct StoreHandle {
     requests: Sender<Request>,
     responses: Receiver<Response>,
     next_request_id: Arc<AtomicU64>,
+    import_cancel: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Clone for StoreHandle {
@@ -344,6 +351,7 @@ impl Clone for StoreHandle {
             requests: self.requests.clone(),
             responses: self.responses.clone(),
             next_request_id: Arc::clone(&self.next_request_id),
+            import_cancel: Arc::clone(&self.import_cancel),
         }
     }
 }
@@ -386,6 +394,7 @@ impl StoreHandle {
             requests: request_sender,
             responses: response_receiver,
             next_request_id: Arc::new(AtomicU64::new(1)),
+            import_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
     }
 
@@ -549,7 +558,29 @@ impl StoreHandle {
     }
 
     pub fn import_files(&self, paths: Vec<PathBuf>) -> RequestId {
-        self.issue(Command::ImportFiles(paths))
+        self.import_files_with_progress(paths).0
+    }
+
+    /// Import files while receiving progress ticks from the actor thread.
+    pub fn import_files_with_progress(
+        &self,
+        paths: Vec<PathBuf>,
+    ) -> (RequestId, Receiver<ImportProgress>) {
+        let (sender, receiver) = unbounded();
+        self.import_cancel
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        let id = self.issue(Command::ImportFiles {
+            paths,
+            progress: Some(sender),
+            cancel: Arc::clone(&self.import_cancel),
+        });
+        (id, receiver)
+    }
+
+    /// Ask a running import to stop before the write. Safe when none runs.
+    pub fn cancel_import(&self) {
+        self.import_cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn author_page(&self, request: DirectoryPageRequest) -> RequestId {
@@ -767,9 +798,19 @@ fn dispatch(services: &mut AppServices, request: Request) -> Response {
                 .preview_import_files(&paths)
                 .map_err(StoreError::from),
         },
-        Command::ImportFiles(paths) => Response::ImportFiles {
+        Command::ImportFiles {
+            paths,
+            progress,
+            cancel,
+        } => Response::ImportFiles {
             id,
-            result: services.import_files(&paths).map_err(StoreError::from),
+            result: services
+                .import_files_with_progress(&paths, &cancel, |tick| {
+                    if let Some(sender) = progress.as_ref() {
+                        let _ = sender.send(tick);
+                    }
+                })
+                .map_err(StoreError::from),
         },
         Command::AuthorPage(request) => Response::AuthorPage {
             id,

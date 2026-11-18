@@ -4,6 +4,7 @@
 //! 150px marginalia rail. The keyboard is Signal's: j/k, Enter, Esc, f, c, o, m.
 //! Data comes from the background store; media bytes from the media workers.
 
+use crossbeam_channel::Receiver as ProgressReceiver;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -16,8 +17,8 @@ use eterea_app::{
     AuthorSummary, BookmarkQuery, BookmarkSelection, BookmarkStats, CalendarData, CalendarRequest,
     CalendarYearData, CalendarYearRequest, DirectoryPageRequest, ExportFormat, ExportRequest,
     ExportScope, GraphData, GraphRequest, HistoryDetail, HistoryEvent, HistoryKind,
-    HistoryListRequest, HistoryState, ImportBatchPreview, ImportBatchSummary, RepairEvent,
-    RepairOptions, RequestId, Response, StoreHandle, TagMutation, TopicSummary,
+    HistoryListRequest, HistoryState, ImportBatchPreview, ImportBatchSummary, ImportProgress,
+    RepairEvent, RepairOptions, RequestId, Response, StoreHandle, TagMutation, TopicSummary,
 };
 use eterea_media::{ImageKind, VideoCache, VideoCacheConfig, VideoPlayer, VideoPlayerOptions};
 use eterea_ui_model::{Mode, Route};
@@ -309,6 +310,9 @@ pub(crate) struct State {
     restore_picker: Option<Receiver<Option<PathBuf>>>,
     import_drop: bool,
     import_pending: bool,
+    /// Latest import progress tick and the channel it arrives on.
+    import_progress: Option<ImportProgress>,
+    import_progress_rx: Option<ProgressReceiver<ImportProgress>>,
     video: Option<VideoPlayer>,
     video_cache: Option<Arc<VideoCache>>,
     video_target: Option<(usize, usize)>,
@@ -423,6 +427,8 @@ impl State {
             restore_picker: None,
             import_drop: false,
             import_pending: false,
+            import_progress: None,
+            import_progress_rx: None,
             video: None,
             video_cache: None,
             video_target: None,
@@ -974,8 +980,10 @@ impl State {
             paths: paths.clone(),
         };
         self.import_pending = true;
+        self.import_progress = None;
         if let Some(store) = self.store.as_ref() {
-            store.import_files(paths);
+            let (_, progress) = store.import_files_with_progress(paths);
+            self.import_progress_rx = Some(progress);
         }
     }
 
@@ -1486,6 +1494,21 @@ fn poll(state: &mut State, clock: f64, tx: &mut Tx) -> bool {
         }
     }
 
+    if let Some(receiver) = state.import_progress_rx.as_ref() {
+        loop {
+            match receiver.try_recv() {
+                Ok(progress) => {
+                    state.import_progress = Some(progress);
+                    changed = true;
+                }
+                Err(crossbeam_channel::TryRecvError::Empty) => break,
+                Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                    state.import_progress_rx = None;
+                    break;
+                }
+            }
+        }
+    }
     let failed_media = state.images.take_new_failures();
     if failed_media > 0 {
         state.set_status(
@@ -1947,6 +1970,8 @@ fn handle_response(state: &mut State, response: Response, clock: f64) {
         }
         Response::ImportFiles { result, .. } => {
             state.import_pending = false;
+            state.import_progress = None;
+            state.import_progress_rx = None;
             match result {
                 Ok(summary) => {
                     state.import = ImportState::Done { summary };
@@ -2142,7 +2167,15 @@ fn on_key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
     if state.route == Route::Import {
         match &event.key {
             Key::Escape => {
-                state.open_route(Route::Feed);
+                if matches!(state.import, ImportState::Importing { .. }) {
+                    if let Some(store) = state.store.as_ref() {
+                        store.cancel_import();
+                    }
+                    let now = tx.clock();
+                    state.set_status("cancelling import", now);
+                } else {
+                    state.open_route(Route::Feed);
+                }
                 return true;
             }
             Key::Enter => {
@@ -5178,9 +5211,12 @@ fn import_view(state: &State, p: Palette) -> El {
                         )
                         .child(el().grow(1.0))
                         .child(
-                            text(format!("{} · {}", file.format, file.bookmark_count))
-                                .font(theme::mono(10.5))
-                                .color(p.muted),
+                            text(match &file.error {
+                                Some(_) => format!("{} · could not parse", file.format),
+                                None => format!("{} · {}", file.format, file.bookmark_count),
+                            })
+                            .font(theme::mono(10.5))
+                            .color(p.muted),
                         ),
                 );
             }
@@ -5198,30 +5234,67 @@ fn import_view(state: &State, p: Palette) -> El {
             );
         }
         ImportState::Importing { paths } => {
+            let (title, detail) = match state.import_progress {
+                Some(progress) => (
+                    match progress.phase {
+                        eterea_app::ImportPhase::Reading => "reading files",
+                        eterea_app::ImportPhase::Saving => "saving posts",
+                    },
+                    format!(
+                        "{} of {} file{} · {} row{}",
+                        progress.files_done,
+                        progress.files_total,
+                        plural(progress.files_total),
+                        progress.rows,
+                        plural(progress.rows)
+                    ),
+                ),
+                None => (
+                    "importing",
+                    format!("{} file{}", paths.len(), plural(paths.len())),
+                ),
+            };
             content = content
-                .child(text("importing").font(theme::serif(24.0)).color(p.ink))
+                .child(text(title).font(theme::serif(24.0)).color(p.ink))
+                .child(text(detail).font(theme::mono(10.5)).color(p.muted))
                 .child(
-                    text(format!("{} file{}", paths.len(), plural(paths.len())))
-                        .font(theme::mono(10.5))
+                    text("esc cancels before anything is written")
+                        .font(theme::ui(12.0, 400.0))
                         .color(p.muted),
                 );
         }
         ImportState::Done { summary } => {
+            let title = if summary.cancelled {
+                "import cancelled".to_string()
+            } else {
+                format!("{} posts imported", summary.inserted)
+            };
             content = content
+                .child(text(title).font(theme::serif(24.0)).color(p.ink))
                 .child(
-                    text(format!("{} posts imported", summary.inserted))
-                        .font(theme::serif(24.0))
-                        .color(p.ink),
-                )
-                .child(
-                    text(format!(
-                        "{} duplicate{}",
-                        summary.duplicates,
-                        plural(summary.duplicates)
-                    ))
+                    text(if summary.cancelled {
+                        "nothing was written".to_string()
+                    } else {
+                        format!(
+                            "{} duplicate{}",
+                            summary.duplicates,
+                            plural(summary.duplicates)
+                        )
+                    })
                     .font(theme::mono(10.5))
                     .color(p.muted),
                 );
+            for file in summary.files.iter().filter(|file| file.error.is_some()) {
+                content = content.child(
+                    text(format!(
+                        "{}: {}",
+                        file.source_label,
+                        file.error.clone().unwrap_or_default()
+                    ))
+                    .font(theme::ui(12.0, 400.0))
+                    .color(p.muted),
+                );
+            }
             content = content.child(
                 text("import another file")
                     .font(theme::ui(13.0, 500.0))

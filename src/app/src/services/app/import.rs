@@ -1,11 +1,14 @@
-use super::import_preview::build_import_preview_with_duplicates;
+use super::import_preview::{build_import_preview_with_duplicates, import_error_preview};
 use super::AppServices;
 use crate::types::{
-    ImportBatchPreview, ImportBatchSummary, ImportFileResult, ImportPreview, ImportSummary,
+    ImportBatchPreview, ImportBatchSummary, ImportFileResult, ImportPhase, ImportPreview,
+    ImportProgress, ImportSummary,
 };
-use anyhow::{Context, Result};
-use eterea_core::Ingester;
+use anyhow::{bail, Context, Result};
+use eterea_core::{Bookmark, Ingester};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 impl AppServices {
     pub fn import_file(&self, path: &Path) -> Result<usize> {
@@ -20,15 +23,7 @@ impl AppServices {
 
     pub fn preview_import_file(&self, path: &Path) -> Result<ImportPreview> {
         let bookmarks = self.parse_import_file(path)?;
-        let duplicates = self
-            .db
-            .count_existing_tweet_urls(
-                &bookmarks
-                    .iter()
-                    .map(|b| b.tweet_url.clone())
-                    .collect::<Vec<_>>(),
-            )
-            .context("failed to count import duplicates")?;
+        let duplicates = self.duplicate_count(&bookmarks)?;
         Ok(build_import_preview_with_duplicates(
             path, &bookmarks, duplicates,
         ))
@@ -67,15 +62,7 @@ impl AppServices {
         let bookmarks = ingester
             .parse_content(extension, content)
             .with_context(|| format!("failed to preview imported content for {filename}"))?;
-        let duplicates = self
-            .db
-            .count_existing_tweet_urls(
-                &bookmarks
-                    .iter()
-                    .map(|b| b.tweet_url.clone())
-                    .collect::<Vec<_>>(),
-            )
-            .context("failed to count import duplicates")?;
+        let duplicates = self.duplicate_count(&bookmarks)?;
         Ok(build_import_preview_with_duplicates(
             path, &bookmarks, duplicates,
         ))
@@ -102,11 +89,32 @@ impl AppServices {
         let mut files = Vec::with_capacity(paths.len());
         let mut total_parsed = 0;
         let mut total_duplicates = 0;
+        let mut parsed_any = false;
         for path in paths {
-            let preview = self.preview_import_file(path)?;
-            total_parsed += preview.bookmark_count;
-            total_duplicates += preview.duplicate_count;
-            files.push(preview);
+            match self.preview_import_file(path) {
+                Ok(preview) => {
+                    parsed_any = true;
+                    total_parsed += preview.bookmark_count;
+                    total_duplicates += preview.duplicate_count;
+                    files.push(preview);
+                }
+                Err(error) => {
+                    let mut failed = import_error_preview(&source_label(path), file_format(path));
+                    failed.error = Some(format!("{error:#}"));
+                    files.push(failed);
+                }
+            }
+        }
+        if !parsed_any {
+            if let Some(first) = files.first() {
+                anyhow::bail!(
+                    "{}",
+                    first
+                        .error
+                        .clone()
+                        .unwrap_or_else(|| "no importable files".to_string())
+                );
+            }
         }
         Ok(ImportBatchPreview {
             files,
@@ -117,54 +125,158 @@ impl AppServices {
 
     /// Import several files in ONE transaction (one history event).
     pub fn import_files(&self, paths: &[PathBuf]) -> Result<ImportBatchSummary> {
+        self.import_files_with_progress(paths, &AtomicBool::new(false), |_| {})
+    }
+
+    /// Import several files with cooperative cancellation and progress ticks.
+    ///
+    /// Parsing happens file by file (so cancelling stops before the write),
+    /// files that fail to parse are reported individually while the rest of the
+    /// batch continues, and the dry-run duplicate estimate is computed with the
+    /// same rules the insert uses — including duplicates inside the batch.
+    pub fn import_files_with_progress(
+        &self,
+        paths: &[PathBuf],
+        cancel: &AtomicBool,
+        progress: impl Fn(ImportProgress),
+    ) -> Result<ImportBatchSummary> {
         if paths.is_empty() {
-            anyhow::bail!("choose at least one file to import");
+            bail!("choose at least one file to import");
+        }
+        let total_files = paths.len();
+        let mut parsed_files: Vec<(String, String, Vec<Bookmark>)> = Vec::new();
+        let mut failures: Vec<ImportFileResult> = Vec::new();
+        let mut total_parsed = 0usize;
+
+        for (index, path) in paths.iter().enumerate() {
+            progress(ImportProgress {
+                phase: ImportPhase::Reading,
+                files_done: index,
+                files_total: total_files,
+                rows: total_parsed,
+            });
+            if cancel.load(Ordering::Relaxed) {
+                return Ok(cancelled_summary(parsed_files, failures, total_parsed));
+            }
+            match self.parse_import_file(path) {
+                Ok(bookmarks) => {
+                    total_parsed += bookmarks.len();
+                    parsed_files.push((source_label(path), file_format(path), bookmarks));
+                }
+                Err(error) => {
+                    failures.push(ImportFileResult {
+                        source_label: source_label(path),
+                        format: file_format(path),
+                        parsed: 0,
+                        inserted: 0,
+                        duplicates: 0,
+                        error: Some(format!("{error:#}")),
+                    });
+                }
+            }
+            progress(ImportProgress {
+                phase: ImportPhase::Reading,
+                files_done: index + 1,
+                files_total: total_files,
+                rows: total_parsed,
+            });
         }
 
-        let mut files = Vec::with_capacity(paths.len());
-        let mut batch = Vec::with_capacity(paths.len());
-        let mut previews = Vec::with_capacity(paths.len());
-        let mut total_parsed = 0;
-        let mut total_duplicates = 0;
-
-        for path in paths {
-            let bookmarks = self.parse_import_file(path)?;
-            let duplicate_count = self
-                .db
-                .count_existing_tweet_urls(
-                    &bookmarks
+        if parsed_files.is_empty() {
+            return Ok(ImportBatchSummary {
+                preview: ImportBatchPreview {
+                    files: failures
                         .iter()
-                        .map(|bookmark| bookmark.tweet_url.clone())
-                        .collect::<Vec<_>>(),
-                )
-                .context("failed to count import duplicates")?;
-            total_parsed += bookmarks.len();
-            total_duplicates += duplicate_count;
+                        .map(|file| import_error_preview(&file.source_label, file.format.clone()))
+                        .collect(),
+                    total_parsed: 0,
+                    total_duplicates: 0,
+                },
+                inserted: 0,
+                duplicates: 0,
+                files: failures,
+                history_id: None,
+                cancelled: false,
+            });
+        }
+        if cancel.load(Ordering::Relaxed) {
+            return Ok(cancelled_summary(parsed_files, failures, total_parsed));
+        }
+
+        // Duplicate estimate with the exact rules `INSERT OR IGNORE` applies:
+        // conflicts on the existing archive or on an earlier row of this batch.
+        let all_urls: Vec<String> = parsed_files
+            .iter()
+            .flat_map(|(_, _, bookmarks)| bookmarks.iter().map(|b| b.tweet_url.clone()))
+            .collect();
+        let all_ids: Vec<String> = parsed_files
+            .iter()
+            .flat_map(|(_, _, bookmarks)| bookmarks.iter().map(|b| b.id.clone()))
+            .collect();
+        let (existing_urls, existing_ids) = self
+            .db
+            .existing_bookmark_keys(&all_urls, &all_ids)
+            .context("failed to count import duplicates")?;
+        let mut seen_urls = HashSet::new();
+        let mut seen_ids = HashSet::new();
+        let mut previews = Vec::with_capacity(parsed_files.len());
+        let mut files = Vec::with_capacity(parsed_files.len() + failures.len());
+        let mut batch = Vec::with_capacity(parsed_files.len());
+        let mut total_duplicates = 0usize;
+        for (label, format, bookmarks) in &parsed_files {
+            let mut file_duplicates = 0usize;
+            for bookmark in bookmarks {
+                let duplicate = existing_urls.contains(&bookmark.tweet_url)
+                    || existing_ids.contains(&bookmark.id)
+                    || seen_urls.contains(&bookmark.tweet_url)
+                    || seen_ids.contains(&bookmark.id);
+                if duplicate {
+                    file_duplicates += 1;
+                }
+                seen_urls.insert(bookmark.tweet_url.clone());
+                seen_ids.insert(bookmark.id.clone());
+            }
+            total_duplicates += file_duplicates;
             previews.push(build_import_preview_with_duplicates(
-                path,
-                &bookmarks,
-                duplicate_count,
+                Path::new(label),
+                bookmarks,
+                file_duplicates,
             ));
-            let label = source_label(path);
-            let format = file_format(path);
             files.push(ImportFileResult {
                 source_label: label.clone(),
-                format,
+                format: format.clone(),
                 parsed: bookmarks.len(),
                 inserted: 0,
-                duplicates: duplicate_count,
+                duplicates: file_duplicates,
+                error: None,
             });
-            batch.push((label, bookmarks));
+            batch.push((label.clone(), bookmarks.clone()));
         }
+        files.extend(failures);
 
+        if cancel.load(Ordering::Relaxed) {
+            return Ok(cancelled_summary(parsed_files, files, total_parsed));
+        }
+        progress(ImportProgress {
+            phase: ImportPhase::Saving,
+            files_done: total_files,
+            files_total: total_files,
+            rows: total_parsed,
+        });
         let outcome = self
             .db
             .insert_bookmarks_batch(&batch)
             .context("failed to store batch import")?;
-
-        for (file, parsed_file) in files.iter_mut().zip(outcome.files.iter()) {
-            file.inserted = parsed_file.inserted;
-            file.duplicates = parsed_file.duplicates;
+        let mut parsed_index = 0usize;
+        for file in files.iter_mut() {
+            if file.error.is_some() {
+                continue;
+            }
+            if let Some(parsed) = outcome.files.get(parsed_index) {
+                file.inserted = parsed.inserted;
+                file.duplicates = parsed.duplicates;
+            }
+            parsed_index += 1;
         }
 
         Ok(ImportBatchSummary {
@@ -177,17 +289,80 @@ impl AppServices {
             duplicates: outcome.duplicates,
             files,
             history_id: outcome.history_id,
+            cancelled: false,
         })
     }
 
-    fn parse_import_file(&self, path: &Path) -> Result<Vec<eterea_core::Bookmark>> {
-        Ingester::new()
+    fn parse_import_file(&self, path: &Path) -> Result<Vec<Bookmark>> {
+        let ingester = Ingester::new();
+        ingester
             .parse_file(path)
             .with_context(|| format!("failed to parse import file at {}", path.display()))
     }
+
+    /// Dry-run duplicate count using the insert's conflict rules.
+    fn duplicate_count(&self, bookmarks: &[Bookmark]) -> Result<usize> {
+        let urls: Vec<String> = bookmarks.iter().map(|b| b.tweet_url.clone()).collect();
+        let ids: Vec<String> = bookmarks.iter().map(|b| b.id.clone()).collect();
+        let (existing_urls, existing_ids) = self
+            .db
+            .existing_bookmark_keys(&urls, &ids)
+            .context("failed to count import duplicates")?;
+        let mut seen_urls = HashSet::new();
+        let mut seen_ids = HashSet::new();
+        let mut duplicates = 0usize;
+        for bookmark in bookmarks {
+            if existing_urls.contains(&bookmark.tweet_url)
+                || existing_ids.contains(&bookmark.id)
+                || seen_urls.contains(&bookmark.tweet_url)
+                || seen_ids.contains(&bookmark.id)
+            {
+                duplicates += 1;
+            }
+            seen_urls.insert(bookmark.tweet_url.clone());
+            seen_ids.insert(bookmark.id.clone());
+        }
+        Ok(duplicates)
+    }
 }
 
-fn source_label(path: &Path) -> String {
+fn cancelled_summary(
+    parsed_files: Vec<(String, String, Vec<Bookmark>)>,
+    failures: Vec<ImportFileResult>,
+    total_parsed: usize,
+) -> ImportBatchSummary {
+    let mut previews = Vec::new();
+    let mut files = failures;
+    for (label, format, bookmarks) in &parsed_files {
+        previews.push(build_import_preview_with_duplicates(
+            Path::new(label),
+            bookmarks,
+            0,
+        ));
+        files.push(ImportFileResult {
+            source_label: label.clone(),
+            format: format.clone(),
+            parsed: bookmarks.len(),
+            inserted: 0,
+            duplicates: 0,
+            error: None,
+        });
+    }
+    ImportBatchSummary {
+        preview: ImportBatchPreview {
+            files: previews,
+            total_parsed,
+            total_duplicates: 0,
+        },
+        inserted: 0,
+        duplicates: 0,
+        files,
+        history_id: None,
+        cancelled: true,
+    }
+}
+
+pub(super) fn source_label(path: &Path) -> String {
     path.file_name()
         .and_then(|value| value.to_str())
         .filter(|value| !value.is_empty())
@@ -195,10 +370,16 @@ fn source_label(path: &Path) -> String {
         .to_string()
 }
 
-fn file_format(path: &Path) -> String {
-    path.extension()
+pub(super) fn file_format(path: &Path) -> String {
+    let extension = path
+        .extension()
         .and_then(|value| value.to_str())
         .filter(|value| !value.is_empty())
         .unwrap_or("unknown")
-        .to_ascii_uppercase()
+        .to_ascii_uppercase();
+    if extension == "ZIP" {
+        "X ARCHIVE".to_string()
+    } else {
+        extension
+    }
 }

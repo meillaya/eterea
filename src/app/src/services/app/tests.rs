@@ -165,3 +165,93 @@ fn filters_by_author_date_and_media_and_supports_delete() {
     );
     assert_eq!(after_delete.total, seed_page.total - 1);
 }
+
+#[test]
+fn cancelling_import_before_the_write_reports_cancelled_and_writes_nothing() {
+    use std::io::Write;
+    use std::sync::atomic::AtomicBool;
+
+    let services = AppServices::open_memory().expect("in-memory services should open");
+    let mut file = tempfile::Builder::new()
+        .suffix(".json")
+        .tempfile()
+        .expect("temp file");
+    file.write_all(sample_json().as_bytes()).unwrap();
+
+    let cancel = AtomicBool::new(true);
+    let ticks = std::cell::RefCell::new(Vec::new());
+    let summary = services
+        .import_files_with_progress(&[file.path().to_path_buf()], &cancel, |tick| {
+            ticks.borrow_mut().push(tick)
+        })
+        .expect("cancelled import returns a summary, not an error");
+
+    assert!(summary.cancelled);
+    assert_eq!(summary.inserted, 0);
+    assert_eq!(summary.duplicates, 0);
+    assert!(summary.history_id.is_none());
+    assert!(
+        !ticks.borrow().is_empty(),
+        "progress should be reported before the cancel"
+    );
+}
+
+#[test]
+fn import_progress_reports_reading_then_saving() {
+    use std::io::Write;
+    use std::sync::atomic::AtomicBool;
+
+    let services = AppServices::open_memory().expect("in-memory services should open");
+    let mut file = tempfile::Builder::new()
+        .suffix(".json")
+        .tempfile()
+        .expect("temp file");
+    file.write_all(sample_json().as_bytes()).unwrap();
+
+    let cancel = AtomicBool::new(false);
+    let ticks = std::cell::RefCell::new(Vec::new());
+    let summary = services
+        .import_files_with_progress(&[file.path().to_path_buf()], &cancel, |tick| {
+            ticks.borrow_mut().push(tick)
+        })
+        .expect("import should succeed");
+
+    assert!(!summary.cancelled);
+    assert!(summary.inserted > 0);
+    let ticks = ticks.borrow();
+    assert!(ticks
+        .iter()
+        .any(|tick| tick.phase == crate::types::ImportPhase::Reading));
+    assert!(ticks
+        .iter()
+        .any(|tick| tick.phase == crate::types::ImportPhase::Saving));
+    let last = ticks.last().expect("ticks");
+    assert!(last.rows >= summary.inserted);
+}
+
+#[test]
+fn preview_duplicate_count_matches_the_committed_duplicates() {
+    let services = AppServices::open_memory().expect("in-memory services should open");
+    let json = r#"[
+        {"tweet_url":"https://x.com/a/status/1","full_text":"first copy","tweeted_at":"2024-05-01T10:00:00Z","screen_name":"a","name":"A"},
+        {"tweet_url":"https://x.com/a/status/1","full_text":"duplicate inside the file","tweeted_at":"2024-05-01T10:00:00Z","screen_name":"a","name":"A"},
+        {"tweet_url":"https://x.com/a/status/2","full_text":"new post","tweeted_at":"2024-05-01T11:00:00Z","screen_name":"a","name":"A"}
+    ]"#;
+    let preview = services
+        .preview_import_content("batch.json", json)
+        .expect("preview should parse");
+    assert_eq!(preview.bookmark_count, 3);
+    assert_eq!(
+        preview.duplicate_count, 1,
+        "the repeated tweet URL inside the file must be counted as a duplicate"
+    );
+
+    let summary = services
+        .import_content_with_preview("batch.json", json)
+        .expect("import should succeed");
+    assert_eq!(summary.imported_count, 2);
+    assert_eq!(
+        summary.imported_count + summary.preview.duplicate_count,
+        preview.bookmark_count
+    );
+}

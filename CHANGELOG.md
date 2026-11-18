@@ -6,6 +6,13 @@ has actually been captured.
 
 ## Unreleased
 
+- Import honesty: X archive `.zip` files are imported directly (entries are
+  parsed individually, malformed ones skipped), imports report real progress
+  (`reading files n/m · rows`, then `saving posts`), `esc` cancels cooperatively
+  before anything is written and reports the cancellation, per-file parse
+  failures no longer abort the batch and are listed in preview and summary, and
+  the preview duplicate count now matches the commit exactly (existing URLs and
+  ids intersected with intra-file and intra-batch repeats).
 - Polish: `g g`/`G` top/end of feed, a visible `filtered: …` line with a
   `clear` action, persisted window size/position, a single-instance guard,
   atomic `settings.json` writes with status on failure, a Settings safety

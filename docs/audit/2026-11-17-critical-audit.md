@@ -256,7 +256,18 @@ page total is counted independently of the returned rows, closing the
 "filtered feed past the last page reports the archive as empty" defect. Covered
 by relevance-order and past-the-end paging tests.
 
-### 2.12 Documentation corrected in this pass
+### 2.12 Import honesty (approved follow-up)
+
+Imports now accept the downloaded X archive `.zip` directly (entry-by-entry
+parse, malformed entries skipped), report real progress events from the store
+thread (`reading files n/m / rows`, then `saving posts`), cancel cooperatively
+before the write and say so in the summary, report per-file parse failures
+without aborting the batch, and compute the preview duplicate count with the
+insert's exact conflict rules (existing URLs and ids plus repeats within the
+file and across the batch). Covered by ingester zip tests and service tests for
+cancel, progress and preview/commit parity.
+
+### 2.13 Documentation corrected in this pass
 
 - `docs/design/SPEC.md`: header nav now includes `search`; footer hint and
   scrimless key sheet; 64 px rhythm wording; rail width documented as 86 px

@@ -49,10 +49,75 @@ impl Ingester {
             .unwrap_or_default();
 
         match extension.as_str() {
+            "zip" => self.parse_zip(path),
             "csv" => self.parse_csv(path),
             "json" | "js" => self.parse_json(path),
             _ => Err(Error::UnsupportedFileType(extension)),
         }
+    }
+
+    /// Walk an X archive `.zip` and parse every supported entry.
+    ///
+    /// The downloaded X archive can be imported directly: bookmark entries
+    /// (`.js`, `.json`, `.csv`) are parsed and concatenated; other archive
+    /// entries are ignored, and malformed entries are skipped as long as at
+    /// least one entry parses.
+    fn parse_zip(&self, path: &Path) -> Result<Vec<Bookmark>> {
+        let file = std::fs::File::open(path)?;
+        let mut archive = zip::ZipArchive::new(file)
+            .map_err(|error| Error::InvalidFormat(format!("not a zip archive: {error}")))?;
+        let mut bookmarks = Vec::new();
+        let mut parsed_entries = 0usize;
+        let mut skipped = Vec::new();
+        for index in 0..archive.len() {
+            let mut entry = archive
+                .by_index(index)
+                .map_err(|error| Error::Other(format!("cannot read zip entry: {error}")))?;
+            if entry.is_dir() {
+                continue;
+            }
+            let name = entry.name().to_string();
+            let extension = std::path::Path::new(&name)
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .map(|extension| extension.to_lowercase())
+                .unwrap_or_default();
+            if !matches!(extension.as_str(), "js" | "json" | "csv") {
+                continue;
+            }
+            let mut content = String::new();
+            std::io::Read::read_to_string(&mut entry, &mut content)?;
+            match self.parse_content(&extension, &content) {
+                Ok(mut parsed) => {
+                    parsed_entries += 1;
+                    bookmarks.append(&mut parsed);
+                }
+                Err(error) => skipped.push(format!("{name}: {error}")),
+            }
+        }
+        if parsed_entries == 0 {
+            return Err(Error::InvalidFormat(
+                "zip has no .js, .json or .csv entries".to_string(),
+            ));
+        }
+        if bookmarks.is_empty() {
+            return Err(Error::InvalidFormat(format!(
+                "zip contains no bookmarks ({parsed_entries} entry(s) parsed)"
+            )));
+        }
+        if !skipped.is_empty() {
+            info!(
+                "Skipped {} zip entries: {}",
+                skipped.len(),
+                skipped.join("; ")
+            );
+        }
+        info!(
+            "Parsed {} bookmarks from {} zip entries",
+            bookmarks.len(),
+            parsed_entries
+        );
+        Ok(bookmarks)
     }
 
     /// Parse bookmarks from raw content using the file extension.
@@ -112,5 +177,58 @@ impl Ingester {
         let inserted = db.insert_bookmarks(&bookmarks)?;
         info!("Successfully inserted {} bookmarks", inserted);
         Ok(inserted)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    const BOOKMARKS_JS: &str = r#"window.YTD.bookmark.part0 = [{"bookmark": {"tweetId":"999","createdAt":"2024-08-25T10:52:35.000Z","screen_name":"sveltejs","name":"Svelte","full_text":"Runes are here","expandedUrl":"https://x.com/sveltejs/status/999"}}];"#;
+
+    fn archive_zip(entries: &[(&str, &str)]) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("twitter-archive.zip");
+        let file = std::fs::File::create(&path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        for (name, content) in entries {
+            zip.start_file(*name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(content.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+        (dir, path)
+    }
+
+    #[test]
+    fn zip_archives_are_parsed_entry_by_entry() {
+        let (_dir, path) = archive_zip(&[
+            ("data/bookmark.js", BOOKMARKS_JS),
+            ("data/like.js", "window.YTD.like.part0 = [];"),
+            ("README.txt", "not bookmarks"),
+        ]);
+
+        let bookmarks = Ingester::new().parse_file(&path).unwrap();
+        assert_eq!(bookmarks.len(), 1);
+        assert_eq!(bookmarks[0].author_handle, "sveltejs");
+        assert_eq!(bookmarks[0].tweet_url, "https://x.com/sveltejs/status/999");
+    }
+
+    #[test]
+    fn zip_without_bookmark_entries_is_an_error() {
+        let (_dir, path) = archive_zip(&[("data/like.js", "window.YTD.like.part0 = [];")]);
+        let error = Ingester::new().parse_file(&path).unwrap_err();
+        assert!(matches!(error, Error::InvalidFormat(_)), "{error:?}");
+    }
+
+    #[test]
+    fn zip_with_malformed_entries_skips_them_and_keeps_the_good_ones() {
+        let (_dir, path) = archive_zip(&[
+            ("data/broken.js", "window.YTD.tweets.part0 = K];[\n"),
+            ("data/bookmark.js", BOOKMARKS_JS),
+        ]);
+        let bookmarks = Ingester::new().parse_file(&path).unwrap();
+        assert_eq!(bookmarks.len(), 1);
     }
 }

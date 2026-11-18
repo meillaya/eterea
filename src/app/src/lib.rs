@@ -11,7 +11,7 @@ pub use types::{
     CalendarYearRequest, DirectoryPageRequest, ExportFormat, ExportRequest, ExportScope,
     ExportSummary, GraphData, GraphEdge, GraphNode, GraphRequest, HistoryDetail, HistoryEvent,
     HistoryItem, HistoryKind, HistoryListRequest, HistoryPage, HistoryState, HistorySummary,
-    ImportBatchPreview, ImportBatchSummary, ImportFileResult, ImportPreview, ImportPreviewItem,
-    ImportSummary, LinkEntity, LinkKind, PaginatedResponse, TagColor, TagMutation, TopicSummary,
-    UndoResult,
+    ImportBatchPreview, ImportBatchSummary, ImportFileResult, ImportPhase, ImportPreview,
+    ImportPreviewItem, ImportProgress, ImportSummary, LinkEntity, LinkKind, PaginatedResponse,
+    TagColor, TagMutation, TopicSummary, UndoResult,
 };

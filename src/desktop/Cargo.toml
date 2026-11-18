@@ -10,6 +10,7 @@ name = "eterea"
 path = "src/main.rs"
 
 [dependencies]
+crossbeam-channel = "0.5"
 rune = { git = "https://github.com/anomalyco/rune", rev = "842c28c2ca5dd1506c1e4a67052db61800aed721", features = ["native-file-dialog", "tooling"] }
 eterea-logic = { path = "../logic" }
 eterea-core = { path = "../backend" }

@@ -392,6 +392,54 @@ impl Database {
     ///
     /// Used by dry-run import previews (duplicate estimate) and chunked so a
     /// huge file's URL list never exceeds SQLite's bind-variable limit.
+    /// Tweet URLs and ids already present, for import duplicate parity with
+    /// `INSERT OR IGNORE` (which conflicts on both unique keys).
+    pub fn existing_bookmark_keys(
+        &self,
+        urls: &[String],
+        ids: &[String],
+    ) -> Result<(
+        std::collections::HashSet<String>,
+        std::collections::HashSet<String>,
+    )> {
+        const CHUNK: usize = 500;
+        let mut existing_urls = std::collections::HashSet::new();
+        let mut existing_ids = std::collections::HashSet::new();
+        for chunk in urls.chunks(CHUNK) {
+            if chunk.is_empty() {
+                continue;
+            }
+            let placeholders = vec!["?"; chunk.len()].join(", ");
+            let mut stmt = self.conn.prepare(&format!(
+                "SELECT tweet_url FROM bookmarks WHERE tweet_url IN ({placeholders})"
+            ))?;
+            let rows = stmt.query_map(
+                params_from_iter(chunk.iter().map(|url| url.as_str())),
+                |row| row.get::<_, String>(0),
+            )?;
+            for row in rows {
+                existing_urls.insert(row?);
+            }
+        }
+        for chunk in ids.chunks(CHUNK) {
+            if chunk.is_empty() {
+                continue;
+            }
+            let placeholders = vec!["?"; chunk.len()].join(", ");
+            let mut stmt = self.conn.prepare(&format!(
+                "SELECT id FROM bookmarks WHERE id IN ({placeholders})"
+            ))?;
+            let rows = stmt.query_map(
+                params_from_iter(chunk.iter().map(|id| id.as_str())),
+                |row| row.get::<_, String>(0),
+            )?;
+            for row in rows {
+                existing_ids.insert(row?);
+            }
+        }
+        Ok((existing_urls, existing_ids))
+    }
+
     pub fn count_existing_tweet_urls(&self, urls: &[String]) -> Result<usize> {
         const CHUNK: usize = 500;
         let unique = urls

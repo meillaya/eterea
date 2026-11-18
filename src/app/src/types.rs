@@ -56,6 +56,22 @@ pub struct ImportPreviewItem {
     pub has_media: bool,
 }
 
+/// Which part of an import is running, for progress reporting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ImportPhase {
+    Reading,
+    Saving,
+}
+
+/// Progress tick from the store thread while an import runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportProgress {
+    pub phase: ImportPhase,
+    pub files_done: usize,
+    pub files_total: usize,
+    pub rows: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ImportPreview {
     pub source_label: String,
@@ -66,6 +82,9 @@ pub struct ImportPreview {
     pub duplicate_count: usize,
     pub sample: Vec<ImportPreviewItem>,
     pub duplicate_policy: String,
+    /// Set when the file could not be parsed at all (batch previews keep going).
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -82,6 +101,9 @@ pub struct ImportFileResult {
     pub parsed: usize,
     pub inserted: usize,
     pub duplicates: usize,
+    /// Set when this file was rejected while the rest of the batch continued.
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 /// Dry-run preview of several import files.
@@ -100,6 +122,9 @@ pub struct ImportBatchSummary {
     pub duplicates: usize,
     pub files: Vec<ImportFileResult>,
     pub history_id: Option<i64>,
+    /// True when the reader cancelled before anything was written.
+    #[serde(default)]
+    pub cancelled: bool,
 }
 
 /// Paged directory request for the authors/topics routes.

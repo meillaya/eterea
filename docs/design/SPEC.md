@@ -188,6 +188,8 @@ Browses the archive by month and year without leaving the reading column.
 
 ### Import
 
+The importer accepts CSV, JSON, archive `.js` and the X archive `.zip` directly. While a batch runs the route says which phase it is in (`reading files`, then `saving posts`) with file and row counts; `esc` cancels cooperatively before the write and the summary says nothing was written. Each file is reported separately: a file that cannot be parsed is listed with its error while the rest of the batch continues. The dry-run duplicate count uses the same conflict rules as the insert (archive URLs and ids, plus repeats inside the file and across the batch), so preview and commit agree.
+
 Route, not a modal. 720px column. Source band with `drop files or choose them`, accepted formats `CSV, JSON or X archive` in 10.5px mono. Multi-file picker and drag/drop are real. Preview: every file with format, post count and duplicate count; `import N posts`. Importing: thin 2px accent progress, `cancel`. Done: `N posts imported` plus duplicates if true, `import another file`, and `back to feed`; the route never redirects on its own. Errors in place, one sentence. Escape cancels and returns. No marketing copy.
 
 ### Settings

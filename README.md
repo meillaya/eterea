@@ -25,7 +25,7 @@
 
 </div>
 
-eterea imports X bookmarks from CSV, JSON or an X archive, keeps them
+eterea imports X bookmarks from CSV, JSON or an X archive `.zip` directly, keeps them
 in SQLite, and draws the archive with Rune on the GPU. There is no account and no
 server. The desktop app is keyboard first, with a selection rule, a command
 palette, search and a key sheet.
@@ -160,6 +160,10 @@ The archive lives at `<platform data dir>/eterea/bookmarks.db`. On Linux that is
   round-trippable nested data.
 - Keeps quotes, favorites, media metadata, an interactive tag graph with persisted
   colors, and a calendar month.
+- Imports honestly: the X archive `.zip` is read entry by entry, real progress
+  shows while files are read and posts saved, `esc` cancels before the write,
+  each file in a batch is reported separately (parse failures do not abort the
+  rest), and the dry-run duplicate estimate uses exactly the insert's rules.
 - Makes deletes recoverable: every delete keeps a full snapshot in a bounded
   trash (`restore last deleted` in the palette), and undo (`u`) walks back
   through recent actions instead of stopping at one.
