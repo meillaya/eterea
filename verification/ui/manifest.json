@@ -305,100 +305,148 @@
       "visible_texts": 81
     },
     "scene/lightbox/1280x820/dark": {
-      "image_bytes": 1212146,
-      "image_sha256": "8590759be15dea28bc05ce90e7b320fe67630a97b410fcc09e4a269aa1886929",
-      "texts": 76,
-      "tree_nodes": 93,
-      "tree_sha256": "aa9e7100edc01ddd38793ca9556877c4a51a89719153f2a17d9116b6b95c6d18",
-      "visible_texts": 58
+      "image_bytes": 1212761,
+      "image_sha256": "c00b088c57a066b9f8a5325ccf7cb9e43743c15b2e19ec6841a286d0f9a842ea",
+      "texts": 82,
+      "tree_nodes": 99,
+      "tree_sha256": "8505894e58cbfbe5dbd23cae77a05704979c8ad489e7dc691f65182b50d052c7",
+      "visible_texts": 61
     },
     "scene/lightbox/1280x820/light": {
-      "image_bytes": 1212258,
-      "image_sha256": "172dfe680a042edc44b3b8d0eb7bac23781e08427b93af43dfb6f13492e451ed",
-      "texts": 76,
-      "tree_nodes": 93,
-      "tree_sha256": "339970052a5a5399a3e6cf5685e9a01b9ac6f37cedf498092fd7795b4eacd419",
-      "visible_texts": 58
+      "image_bytes": 1212919,
+      "image_sha256": "c26a0da9ebb3708e7e3ea8b553b53ddd50ec1e16206a7ef0f7e3ce32022371dc",
+      "texts": 82,
+      "tree_nodes": 99,
+      "tree_sha256": "3b8b545bbaaa1a60a6be0967222ffc84ded9ac01e8c645f137b22189fb40eedb",
+      "visible_texts": 61
     },
     "scene/lightbox/1440x900/dark": {
-      "image_bytes": 1249486,
-      "image_sha256": "137ca8c8bc7810aac65808d43cea352032a21d352330e37ff981855901fc4933",
-      "texts": 76,
-      "tree_nodes": 93,
-      "tree_sha256": "a3ff1bde2136aba171903ccf7055160650f74048e18e4070434a3bc8352e021f",
-      "visible_texts": 58
+      "image_bytes": 1250110,
+      "image_sha256": "ee71b859f8e627fdddf611b78f4e0ece384308b6571c3ed3bdecc96d56feb69d",
+      "texts": 82,
+      "tree_nodes": 99,
+      "tree_sha256": "0b240a391f741b18c9c170256d2a350d52ee599e405b478389f821bc24e460d0",
+      "visible_texts": 61
     },
     "scene/lightbox/1440x900/light": {
-      "image_bytes": 1253614,
-      "image_sha256": "e7b6ccd75d522072d612a115f5372e4a5b2fb04965a4a9f33476b4c1cfbdff7b",
-      "texts": 76,
-      "tree_nodes": 93,
-      "tree_sha256": "6d5cb98ffabe7a784cc7d1ccd08b6ad4a064995f1c2cd191d0c2da4afbf38467",
-      "visible_texts": 58
+      "image_bytes": 1254316,
+      "image_sha256": "419cea5f5e690c3eed4e1e5b25067cb6aaf6fe340d1f1ffa15616a144ebb1038",
+      "texts": 82,
+      "tree_nodes": 99,
+      "tree_sha256": "0adf938aed57d9b5e8bf9d3938b38169e94458f4bcd7f4a4303283ded4a8c996",
+      "visible_texts": 61
     },
     "scene/lightbox/960x640/dark": {
-      "image_bytes": 978144,
-      "image_sha256": "69f75ab1940cfd47612f3a4d3f2f9f6b74dae119c04c41fd94bdaeb6d5bd8eea",
-      "texts": 76,
-      "tree_nodes": 93,
-      "tree_sha256": "fc9d8cd9000b653026347230a45876240af0e379dd0e7d884f22cddb6dccac39",
-      "visible_texts": 58
+      "image_bytes": 978670,
+      "image_sha256": "18b6977fcdbededad7a7ae28e99e75ebb666ef30b075e8491f7da3e11a791c88",
+      "texts": 82,
+      "tree_nodes": 99,
+      "tree_sha256": "90624128fcb6272f9282057d3226be6405a9c3ad46b349116a79145114bc1b4b",
+      "visible_texts": 61
     },
     "scene/lightbox/960x640/light": {
-      "image_bytes": 978144,
-      "image_sha256": "69f75ab1940cfd47612f3a4d3f2f9f6b74dae119c04c41fd94bdaeb6d5bd8eea",
-      "texts": 76,
-      "tree_nodes": 93,
-      "tree_sha256": "a91faf89b82f16f1499ad0a70e3aaf886caa98f497e1e3af781513305e3c0048",
-      "visible_texts": 58
+      "image_bytes": 978670,
+      "image_sha256": "18b6977fcdbededad7a7ae28e99e75ebb666ef30b075e8491f7da3e11a791c88",
+      "texts": 82,
+      "tree_nodes": 99,
+      "tree_sha256": "9177c92fcc73391b403ac2675ab4c153bd439e3d48b3bb39bbfcb342a97afd31",
+      "visible_texts": 61
+    },
+    "scene/note/1280x820/dark": {
+      "image_bytes": 157066,
+      "image_sha256": "3b906eee4c88dbb213e9057c5a92161cf25e83d1ef7e2e3cf3a9f32d2dae088a",
+      "texts": 81,
+      "tree_nodes": 97,
+      "tree_sha256": "3a38496c270cdfe0c4bb557fbe112636ea6d8eb7468ec6ca80878a4a684b157e",
+      "visible_texts": 62
+    },
+    "scene/note/1280x820/light": {
+      "image_bytes": 177112,
+      "image_sha256": "1fcbfe7c431c7217020a362dcc25fba9997946ea1a94ec57e82b09aef47e8182",
+      "texts": 81,
+      "tree_nodes": 97,
+      "tree_sha256": "a3d1d45a749481c1fcf56d65da53bc17505c2cb236922c5748e804916229be7d",
+      "visible_texts": 62
+    },
+    "scene/note/1440x900/dark": {
+      "image_bytes": 167519,
+      "image_sha256": "3c221c9dc43bbc442d96dcef75a9e3c2ed21f0e293d456642f36b5a6a74a89e4",
+      "texts": 81,
+      "tree_nodes": 97,
+      "tree_sha256": "234da629437329393aee1e2e2471773d9c44ba9490a22f55c45578cd3df6cbd6",
+      "visible_texts": 62
+    },
+    "scene/note/1440x900/light": {
+      "image_bytes": 188482,
+      "image_sha256": "c03a63506208a11bef893977966692942197a767e745252a22ed52eaf3d9dc22",
+      "texts": 81,
+      "tree_nodes": 97,
+      "tree_sha256": "59ab4fe630c6c55333dbe1eb26508fd177462aa59a742dd979ba522ca753e37e",
+      "visible_texts": 62
+    },
+    "scene/note/960x640/dark": {
+      "image_bytes": 166809,
+      "image_sha256": "0ae30edacbbc9c3c7adbd0b59b7fcbf257f63d281198520b2d5b2cf2444c1390",
+      "texts": 81,
+      "tree_nodes": 97,
+      "tree_sha256": "360df961c1825ca43be06e6df9e3e7913671faabecd4dd428fec0f5566ade7bc",
+      "visible_texts": 62
+    },
+    "scene/note/960x640/light": {
+      "image_bytes": 187710,
+      "image_sha256": "f50106903be104f08d2c406e182d20241f893dc50b2e5ef2d86cc94d8177477b",
+      "texts": 81,
+      "tree_nodes": 97,
+      "tree_sha256": "32de9260fa923dc1b8d3035f8b204bfc05acb2f7f18f872b8ebc4ef113de9298",
+      "visible_texts": 62
     },
     "scene/palette/1280x820/dark": {
       "image_bytes": 112187,
       "image_sha256": "cccb768a4b3ef45635f746cb9a21e8e1a7c100321ced69524f1d04f51ea88455",
-      "texts": 124,
-      "tree_nodes": 142,
-      "tree_sha256": "cea455aadb5bcb22752b0fb620aaed2f960f83e6dcf6fba6aab88967b3d02d7d",
-      "visible_texts": 82
+      "texts": 132,
+      "tree_nodes": 150,
+      "tree_sha256": "084747f129f4f7162242b14f1c43c8d437d7beb2a2843919808e0731245e8fcf",
+      "visible_texts": 86
     },
     "scene/palette/1280x820/light": {
       "image_bytes": 124360,
       "image_sha256": "56f136e5024451d78b659ab8234e8d86ed40cae05aad39a31a5f23e9154103af",
-      "texts": 124,
-      "tree_nodes": 142,
-      "tree_sha256": "aa16a9256600184c3a99fb0e38482c165a281fbb02b133088e6d4b48c8a2f784",
-      "visible_texts": 82
+      "texts": 132,
+      "tree_nodes": 150,
+      "tree_sha256": "0f86bfb913cc431bc1432cb23dd83d54aec15940d7fe02dd20f8d3a45fd9538f",
+      "visible_texts": 86
     },
     "scene/palette/1440x900/dark": {
       "image_bytes": 145608,
       "image_sha256": "f9d2f87272b450985a38f6c343ba4c8421c142ff46fb9356da1548485b06b5fe",
-      "texts": 124,
-      "tree_nodes": 142,
-      "tree_sha256": "64160a463ab8c8af25b2f6a257e05a397633cbae69ce8e4dbbd379ff676f189d",
-      "visible_texts": 82
+      "texts": 132,
+      "tree_nodes": 150,
+      "tree_sha256": "9bfe60ff20feb255344909da31033a741746843e1f77cebfd1f91e283dae314e",
+      "visible_texts": 86
     },
     "scene/palette/1440x900/light": {
       "image_bytes": 162765,
       "image_sha256": "eb9d0220f09057ed6aae7e9b225b4a615644f97cfbc46c4a21b5890ee46da2a9",
-      "texts": 124,
-      "tree_nodes": 142,
-      "tree_sha256": "075a0f3b8c1b54374939065defb6b414d48fec087d086e21721e0fd4c854c041",
-      "visible_texts": 82
+      "texts": 132,
+      "tree_nodes": 150,
+      "tree_sha256": "9b67fdc27418b10049e3c3886994a6e878ad2d8e63f18c82015c90a4798a3cb2",
+      "visible_texts": 86
     },
     "scene/palette/960x640/dark": {
       "image_bytes": 83845,
       "image_sha256": "0e931ec537c7fb1f9fab030c37ea8e3feec1804693b70d6f750009253668cac2",
-      "texts": 124,
-      "tree_nodes": 142,
-      "tree_sha256": "7346bdd4e11822b34dec9eac681d46f8f3af6f9ce431b74d7cf1f2f91a8e59f9",
-      "visible_texts": 82
+      "texts": 132,
+      "tree_nodes": 150,
+      "tree_sha256": "5a798e148a1476d2e07dff66ea1029d578883c8a42133e473a9b668d5836fcfc",
+      "visible_texts": 86
     },
     "scene/palette/960x640/light": {
       "image_bytes": 91635,
       "image_sha256": "aedf723dd21942654467388dd2e869944bf4749949d0c16fce4c4439b96ebd05",
-      "texts": 124,
-      "tree_nodes": 142,
-      "tree_sha256": "1143bd14bee7744e514a47235f33506334cb0d6012d9147a4017db5b02507e74",
-      "visible_texts": 82
+      "texts": 132,
+      "tree_nodes": 150,
+      "tree_sha256": "1c1ed695a983ad98e48e22acdb5269531f1a235078dfb2f0b6ea376164c60588",
+      "visible_texts": 86
     },
     "scene/quote/1280x820/dark": {
       "image_bytes": 63792,
@@ -725,7 +773,7 @@
       "image_sha256": "ca60178841be092015077b945315ac5720d28156b3971f1e1205c4d1bcfa6b1d",
       "texts": 105,
       "tree_nodes": 111,
-      "tree_sha256": "79ec4ee3abd8f4abc915fbb06f87fe62eb46edb71488e630ba80cc36900674d9",
+      "tree_sha256": "e72fb61ad15416679f7e36fa890936fd3bba065cbef0afad3f39b67f1b7424c8",
       "visible_texts": 82
     },
     "script/keys-sheet/1440x900/dark": {
@@ -753,20 +801,20 @@
       "visible_texts": 82
     },
     "script/search-field/1440x900/dark": {
-      "image_bytes": 36543,
-      "image_sha256": "29207034fb7b4c21af6dcaf6813ae1fbe00342793fa75e57cc75bc7cada6d09c",
-      "texts": 19,
-      "tree_nodes": 25,
-      "tree_sha256": "762aa30a695853b446d385a272eaed02eb43efee99802732e828470761426c3e",
-      "visible_texts": 15
+      "image_bytes": 64013,
+      "image_sha256": "b8dca8b88a3b64802b8a70b0ae715c2273d665ce8f1cbeef9edb02553cac3115",
+      "texts": 31,
+      "tree_nodes": 37,
+      "tree_sha256": "ad40d7188f0fe0ff5b0ad261a0b762368c1a6285c06ed711cb108568df715a96",
+      "visible_texts": 24
     },
     "script/search-field/1440x900/light": {
-      "image_bytes": 35843,
-      "image_sha256": "c6a25881ac41a9807ad18a0cbf7131134766ce2f1d8474916f4f7393257c2702",
-      "texts": 19,
-      "tree_nodes": 25,
-      "tree_sha256": "666bb1336c02c82c55b69e6f072e2369f2ee60d3d3399517e57b6200e4909e4e",
-      "visible_texts": 15
+      "image_bytes": 62522,
+      "image_sha256": "d370125f781bca9a1fb5b937f5552ed280814c3ebc9e4b7bcda134b29aa0e482",
+      "texts": 31,
+      "tree_nodes": 37,
+      "tree_sha256": "dc5c6794e174031a66fdb8b786da2fa7eabdd5cf5abc31d3ba06d2fc174422a7",
+      "visible_texts": 24
     },
     "script/selection-bar/1440x900/dark": {
       "image_bytes": 89731,
@@ -791,7 +839,7 @@
       "fixtures/eterea-export-carousel.json": "62c2a32a0cc757ecd3c5afe2eb0b68633d396b3b3fa1597de7114976d11a9767",
       "fixtures/x-api-v2-demo.json": "1e1382c40b87d909caff7cf230b08e03e750c94c98c62350684c9dddce8c2612"
     },
-    "matrix_sha256": "3f0b0eb56852625b6aa755ec7ebdbadc20ed6492e45b1c85cf9d119df8ae702b",
+    "matrix_sha256": "a2039b011bd6e8359df136a1a618013d4614e597dbd903ebc640339310e7e15f",
     "scripts": {
       "scripts/authors-filter.json": "02435b0b928eac584118cdbbbbdd151b1f1377e43dbe4ecf9862e13971187d44",
       "scripts/calendar-week.json": "79fa5adf46d915e3b750b424adbea6bf12cdc47217bb5a0b3ea4cdc74a094cae",

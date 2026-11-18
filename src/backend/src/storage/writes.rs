@@ -92,6 +92,24 @@ impl<'conn> BookmarkInsertStatements<'conn> {
 }
 
 impl Database {
+    /// Set or clear the reader's note on one post and keep the search document
+    /// in sync. Returns true when the row changed.
+    pub fn set_note(&self, bookmark_id: &str, note: Option<&str>) -> Result<bool> {
+        let trimmed = note.map(str::trim).filter(|note| !note.is_empty());
+        let changed = self.conn.execute(
+            "UPDATE bookmarks SET note_text = ?2 WHERE id = ?1",
+            params![bookmark_id, trimmed],
+        )?;
+        if changed == 0 {
+            return Ok(false);
+        }
+        self.conn.execute(
+            "UPDATE bookmarks_search_docs SET note_text = ?2 WHERE bookmark_id = ?1",
+            params![bookmark_id, trimmed],
+        )?;
+        Ok(true)
+    }
+
     /// Recompute the supplemental FTS text (quote, alt text, link targets) for
     /// one bookmark from its own tables. Called after a duplicate merge adds a
     /// quote, media or links to an existing row.
@@ -1024,5 +1042,40 @@ mod fts_coverage_tests {
 
         assert_eq!(db.search("zeppelin", 10).unwrap().len(), 1);
         assert_eq!(db.search("airship", 10).unwrap().len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod note_tests {
+    use crate::models::BookmarkBuilder;
+    use crate::storage::Database;
+    use chrono::{TimeZone, Utc};
+
+    #[test]
+    fn notes_save_clear_and_stay_searchable() {
+        let db = Database::open_memory().unwrap();
+        let bookmark = BookmarkBuilder::new()
+            .tweet_url("https://x.com/notes/status/1")
+            .content("post body")
+            .tweeted_at(Utc.with_ymd_and_hms(2024, 5, 1, 12, 0, 0).unwrap())
+            .author_handle("notes")
+            .author_name("Notes")
+            .build()
+            .unwrap();
+        db.insert_bookmarks(std::slice::from_ref(&bookmark))
+            .unwrap();
+        assert!(db.search("kestrel", 10).unwrap().is_empty());
+
+        assert!(db
+            .set_note(&bookmark.id, Some("  remember the kestrel  "))
+            .unwrap());
+        let saved = db.get_bookmark(&bookmark.id).unwrap().unwrap();
+        assert_eq!(saved.note_text.as_deref(), Some("remember the kestrel"));
+        assert_eq!(db.search("kestrel", 10).unwrap().len(), 1);
+
+        assert!(db.set_note(&bookmark.id, None).unwrap());
+        let cleared = db.get_bookmark(&bookmark.id).unwrap().unwrap();
+        assert!(cleared.note_text.is_none());
+        assert!(db.search("kestrel", 10).unwrap().is_empty());
     }
 }

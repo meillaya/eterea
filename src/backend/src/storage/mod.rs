@@ -20,6 +20,7 @@ mod read_queries;
 mod schema;
 mod stats;
 mod tag_colors;
+mod tag_management;
 mod trash;
 mod writes;
 
@@ -38,5 +39,6 @@ pub use queries::{AuthorStats, BookmarkStats};
 pub use query::{
     BookmarkQuery, BookmarkSelection, ExportFormat, ExportRequest, ExportScope, ExportSummary,
 };
+pub use tag_management::{TagRenameReport, TagSuggestion};
 pub use trash::{TrashEntry, TRASH_LIMIT};
 pub use writes::{BatchImportOutcome, FileImportOutcome};

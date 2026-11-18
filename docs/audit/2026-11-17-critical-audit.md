@@ -276,7 +276,34 @@ databases and a refresh whenever a duplicate import enriches a row). Covered by
 quote/alt/link search tests, including the merge path, and the existing search
 coverage assertions.
 
-### 2.14 Documentation corrected in this pass
+### 2.14 Notes, reading queue and tag management (approved follow-up)
+
+Private per-post notes ship with an editor (`n`/`edit note`), detail rendering,
+FTS indexing and CSV/JSON round-trip (the schema already carried them).
+`cmd-n`/`next unread` walks the unread queue and falls back to the unread filter.
+Tag management adds rename with merge semantics, autocomplete suggestions,
+unused-tag pruning and persisted-colour reset; renaming moves colour and rebuilds
+the FTS tag document. Covered by backend tests for rename/merge, prune,
+suggestions and colour reset plus the note-save/search test.
+
+### 2.15 Graph scale and search (approved follow-up)
+
+The graph's edge query is now restricted to the selected node set
+(`get_tag_cooccurrences_for_tags`) instead of scanning archive-wide pairs, so
+the 1,200-node cap costs scale with the graph; a synthetic 1,200-tag fixture
+builds in 2.1s (debug, force layout included) and is covered by a test. Labels
+skip anchors that would collide with an already-labelled one, and `/` opens a
+live tag filter that dims non-matching nodes (enter commits, esc clears).
+
+### 2.16 Notes, queue, tags, graph scale/search and lightbox (approved follow-up)
+
+Notes, the unread queue, tag management (rename/merge/prune/autocomplete/colour
+reset), graph scale/search/collision label handling and lightbox paging/zoom are
+in. Still open from the same list: video seek/scrub, thread reconstruction and
+canvas-batched graph hit-testing (the current per-node hit targets are size-
+bounded by the 1,200-node cap).
+
+### 2.17 Documentation corrected in this pass
 
 - `docs/design/SPEC.md`: header nav now includes `search`; footer hint and
   scrimless key sheet; 64 px rhythm wording; rail width documented as 86 px

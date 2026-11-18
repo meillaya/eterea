@@ -140,7 +140,7 @@ Media: avatars, images and video posters load automatically by default, fading i
 
 Video: poster fills the media slot, centered 44px hairline play circle, 10.5px mono duration at bottom right. Playback resolves the best progressive MP4 variant, caches the file persistently, and uses `ffmpeg` for frames. Inline playback is muted and looping in the feed. Detail and lightbox carry sound; `m` toggles it, and `ffplay` supplies audio from the cached local file. Missing ffmpeg/ffplay is a status error, not silence.
 
-Images: click or Enter opens the lightbox. The lightbox is `scrim` with the image centered, close at top right, previous/next at the sides; arrows on hover; Esc closes. No captions except the mono count.
+Images: click or Enter opens the lightbox. The lightbox is `scrim` with the image centered, close at top right, previous/next controls at the sides and in the bottom bar with a mono `n / m` count. `+`/`-`/wheel zoom (0.5–3×) and `0` resets to fit; mouse back/forward and the side zones page too; Esc closes. No captions.
 
 Empty feed: one line `nothing here yet` in Newsreader 24, one action `import a bookmarks export`. No ASCII, no illustration.
 
@@ -174,6 +174,8 @@ One of the two full-bleed screens (with the lightbox): the graph uses the whole 
 
 Nodes are tags: colored dots sized by saved-post count, 12.5px labels; edges are hairline `line` strokes, thicker and accent-tinted around the focused node. The layout is deterministic force-directed on the unit disc (co-occurring tags attract, popular tags drift toward the centre, tag-name hash seeds the start), scaled to the field's aspect ratio, so a wide window fills its width. Wheel/pinch zoom around the pointer, Shift-wheel and drag pan, `+`/`-`/`0` (fit) and arrow keys; zoom and pan are clamped so the constellation can never be lost off-screen, and `0` returns to the fitted view. Double-press fits too.
 
+`/` opens a tag filter: the field dims every node whose tag does not contain the text live, enter commits it (esc clears), and hover/click still work on dimmed dots. Adjacent labels skip anchors that would overlap an already-labelled one.
+
 Label level of detail keeps a thousand tags legible: up to 140 tags show every label; larger graphs label the 36 most-saved tags plus whatever is focused, and the rest stay as dots. Click a tag to filter the feed; Esc returns. Hover/Tab focuses a node; `c` opens eight token color swatches and a persisted per-tag override. Enter filters. No counts on nodes; the count can appear in the status line while a node is focused.
 
 ### Calendar
@@ -185,6 +187,18 @@ Browses the archive by month and year without leaving the reading column.
 - **Year overview:** twelve month plates, four per row, 168x120 each. Each plate has a lowercase mono month name and a 7-column day grid of 4px dots: no saved post is `line`, one to two is 28% accent, three to eight is 55% accent, nine or more is full accent. The focused month carries the 2px accent rule; clicking a plate opens that month; clicking a day dot filters that day.
 - **Keyboard (Calendar route):** `←`/`→` previous/next week (crossing a month edge loads the neighbour and continues), `↑`/`↓` previous/next month, `[`/`]` previous/next month, `y` toggles the year overview, `t` jumps to the current month, `Enter` filters the feed by the selected week, `Esc` leaves the year overview first, then returns to the feed. In the year overview arrows move the focused month (`←`/`→` by one, `↑`/`↓` by four), `[`/`]` move years, `Enter` opens the focused month.
 - No dashboard chrome and no totals banner; the only count is the selected week's data count.
+
+### Tag management
+
+`rename tag` (palette) opens a two-step panel for the selected post: choose one of its tags, then type or pick the new name from autocomplete suggestions (existing tags with usage counts). Renaming into an existing tag merges the two, moving associations and the persisted colour; the document's `tags_text` is rebuilt so search follows. `prune tags` removes tags no bookmark uses (and their stale colours). The graph colour panel's `reset` deletes the stored override.
+
+### Reading queue
+
+`cmd-n` or the palette's `next unread` opens the next unread post after the current selection and marks the current post read; when the loaded view has no unread posts left it switches to the unread filter and starts from the newest unread. The `unread` route remains the full list; the queue is the one-key path through it.
+
+### Notes
+
+`n` or the palette's `edit note` opens a note editor for the selected post (420–620px panel, multi-line field, `save`/`clear`, cmd-enter saves, esc closes). A saved note renders under the post body in detail, is part of the FTS document (schema v2 column, v5 index) and round-trips through CSV/JSON exports. Notes are local-only and never sent anywhere.
 
 ### Import
 

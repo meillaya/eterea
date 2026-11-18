@@ -6,6 +6,25 @@ has actually been captured.
 
 ## Unreleased
 
+- Lightbox: a mono `n / m` count, clickable side zones plus mouse back/forward
+  paging, and wheel/`+`/`-`/`0` zoom between fit and 3× (zoom resets when paging
+  or closing). Video seek/scrub is still open.
+- Graph finish: the layout builds 1,200 tags through a co-occurrence query
+  restricted to the selected node set (no archive-wide pair scan), labels skip
+  anchors that would collide, and `/` opens a tag filter that dims non-matching
+  nodes (enter commits, esc clears); a synthetic 1,200-tag benchmark test covers
+  the data-layer cap (2.1s in debug, layout included).
+- Tag management: `rename tag` (+ autocomplete, merging into an existing tag),
+  `prune tags` for unused tags, and a per-tag colour reset that deletes the
+  stored override; renaming carries the persisted colour to the new name and
+  keeps the FTS tag document in sync.
+- Reading queue: `cmd-n` / `next unread` opens the next unread post and marks
+  the current one read, falling back to the unread filter when the current view
+  has no unread posts left.
+- Private notes: `n` / `edit note` opens a per-post note editor (save with the
+  button or cmd-enter, clear to remove); notes render under the post body in
+  detail, are searchable through FTS, and already round-trip through CSV/JSON
+  exports.
 - Search index coverage (schema v5): quoted-post text, media alt text and
   expanded link targets are indexed alongside the body, with the document table
   and FTS postings rebuilt during migration and refreshed when a duplicate

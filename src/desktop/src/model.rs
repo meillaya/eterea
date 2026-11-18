@@ -37,6 +37,8 @@ pub struct Post {
     pub date: String,
     pub time: String,
     pub text: String,
+    /// Reader's personal note (detail view and note editor only).
+    pub note: Option<String>,
     pub tags: Vec<String>,
     pub links: Vec<LinkEntity>,
     pub is_read: bool,
@@ -59,6 +61,12 @@ impl Post {
             date: display_date(bookmark.tweeted_at),
             time: bookmark.tweeted_at.format("%H:%M").to_string(),
             text: bookmark.content.clone(),
+            note: bookmark
+                .note_text
+                .as_deref()
+                .map(str::trim)
+                .filter(|note| !note.is_empty())
+                .map(str::to_string),
             tags: bookmark.tags.clone(),
             links: bookmark.links.clone(),
             is_read: bookmark.is_read,
@@ -220,6 +228,7 @@ pub fn demo_posts() -> Vec<Post> {
             date: spec.date.into(),
             time: spec.time.into(),
             text: spec.text.into(),
+            note: None,
             tags: Vec::new(),
             links: Vec::new(),
             is_read: false,

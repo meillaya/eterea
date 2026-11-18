@@ -33,17 +33,14 @@ impl AppServices {
 
         let mut pairs = Vec::new();
         if request.max_edges > 0 && !tags.is_empty() {
-            // Ask for more pairs than needed because pairs touching tags that
-            // did not make the node cut are filtered out below.
-            let scan_limit = request.max_edges.saturating_mul(4);
+            // Restrict the pair scan to the selected node set: with a thousand
+            // tags the archive-wide pair table is much larger than the graph.
+            let node_tags: Vec<String> = tags.iter().map(|(tag, _)| tag.clone()).collect();
             for pair in self
                 .db
-                .get_tag_cooccurrences(scan_limit)
+                .get_tag_cooccurrences_for_tags(&node_tags, request.max_edges)
                 .context("failed to load graph edges")?
             {
-                if pairs.len() >= request.max_edges {
-                    break;
-                }
                 let (Some(&source), Some(&target)) = (
                     index.get(pair.first_tag.as_str()),
                     index.get(pair.second_tag.as_str()),
@@ -315,6 +312,46 @@ mod tests {
             )
             .expect("fixture import should succeed");
         services
+    }
+
+    #[test]
+    fn graph_handles_twelve_hundred_tags_with_cooccurrence_edges() {
+        // Synthetic archive at the data-layer cap: 1,200 tags, each post
+        // carrying two tags from a rolling window so the restricted pair query
+        // finds a dense edge set.
+        let services = AppServices::open_memory().expect("in-memory services should open");
+        let mut json = String::from("[");
+        for index in 0..1_200usize {
+            if index > 0 {
+                json.push(',');
+            }
+            let first = format!("tag{index:04}");
+            let second = format!("tag{:04}", (index + 7) % 1_200);
+            json.push_str(&format!(
+                r#"{{"tweet_url":"https://x.com/scale/status/{index}","full_text":"scale fixture {index} #{first} #{second}","tweeted_at":"2024-05-01T12:00:00Z","screen_name":"scale","name":"Scale"}}"#
+            ));
+        }
+        json.push(']');
+        services
+            .import_content("scale.json", &json)
+            .expect("synthetic import should succeed");
+
+        let started = std::time::Instant::now();
+        let graph = services
+            .graph_data(&GraphRequest::new(1_200, 6_000))
+            .expect("large graph should build");
+        let elapsed = started.elapsed();
+        assert_eq!(graph.nodes.len(), 1_200);
+        assert!(!graph.edges.is_empty(), "expected co-occurrence edges");
+        assert!(graph.edges.len() <= 6_000);
+        assert!(
+            graph
+                .nodes
+                .iter()
+                .all(|node| node.x.abs() <= 1.0 && node.y.abs() <= 1.0),
+            "laid-out nodes must stay in the unit disc"
+        );
+        eprintln!("1200-tag graph built in {elapsed:?} (debug)");
     }
 
     #[test]

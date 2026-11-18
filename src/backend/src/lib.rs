@@ -18,5 +18,5 @@ pub use models::{
 };
 pub use storage::{
     BackupInfo, BookmarkQuery, BookmarkSelection, Database, ExportFormat, ExportRequest,
-    ExportScope, ExportSummary, IntegrityReport, RestoreSummary,
+    ExportScope, ExportSummary, IntegrityReport, RestoreSummary, TagRenameReport, TagSuggestion,
 };

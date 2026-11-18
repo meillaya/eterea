@@ -97,6 +97,65 @@ impl Database {
         Ok(rows)
     }
 
+    /// Tag pairs restricted to the named tags, most shared posts first.
+    ///
+    /// The graph asks this instead of scanning every pair in the archive: with
+    /// a thousand selected tags the search space stays inside the node set, so
+    /// cost scales with the graph rather than the whole tag vocabulary.
+    pub fn get_tag_cooccurrences_for_tags(
+        &self,
+        tags: &[String],
+        limit: usize,
+    ) -> Result<Vec<TagCooccurrence>> {
+        if tags.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+        let placeholders = vec!["?"; tags.len()].join(", ");
+        let sql = format!(
+            r#"SELECT
+                   CASE WHEN first_tag.name < second_tag.name THEN first_tag.name ELSE second_tag.name END AS pair_first,
+                   CASE WHEN first_tag.name < second_tag.name THEN second_tag.name ELSE first_tag.name END AS pair_second,
+                   COUNT(*) AS shared_bookmarks
+               FROM bookmark_tags a
+               JOIN bookmark_tags b
+                 ON a.bookmark_id = b.bookmark_id
+                AND a.tag_id < b.tag_id
+               JOIN tags first_tag ON first_tag.id = a.tag_id
+               JOIN tags second_tag ON second_tag.id = b.tag_id
+               WHERE a.tag_id IN (SELECT id FROM tags WHERE name IN ({placeholders}))
+                 AND b.tag_id IN (SELECT id FROM tags WHERE name IN ({placeholders}))
+               GROUP BY a.tag_id, b.tag_id
+               ORDER BY shared_bookmarks DESC, pair_first ASC, pair_second ASC
+               LIMIT ?"#
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let params = tags
+            .iter()
+            .map(|tag| tag.as_str())
+            .chain(tags.iter().map(|tag| tag.as_str()))
+            .chain(std::iter::once(""))
+            .collect::<Vec<&str>>();
+        // The LIMIT placeholder must be an integer, so bind it separately.
+        let mut values: Vec<rusqlite::types::Value> = tags
+            .iter()
+            .map(|tag| rusqlite::types::Value::Text(tag.clone()))
+            .collect();
+        values.extend(
+            tags.iter()
+                .map(|tag| rusqlite::types::Value::Text(tag.clone())),
+        );
+        values.push(rusqlite::types::Value::Integer(limit as i64));
+        let _ = params;
+        let rows = stmt.query_map(rusqlite::params_from_iter(values.iter()), |row| {
+            Ok(TagCooccurrence {
+                first_tag: row.get(0)?,
+                second_tag: row.get(1)?,
+                bookmark_count: row.get(2)?,
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
     /// `(UTC day, bookmark id)` rows for bookmarks posted in a timestamp range.
     ///
     /// The day is rendered by SQLite as `YYYY-MM-DD` in UTC, matching the

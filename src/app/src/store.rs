@@ -104,6 +104,20 @@ pub enum Command {
         bookmark_id: String,
         tags: Vec<String>,
     },
+    SetNote {
+        bookmark_id: String,
+        note: Option<String>,
+    },
+    RenameTag {
+        from: String,
+        to: String,
+    },
+    PruneTags,
+    TagSuggestions {
+        prefix: String,
+        limit: usize,
+    },
+    ResetTagColor(String),
     BulkTag {
         selection: BookmarkSelection,
         mutation: TagMutation,
@@ -233,6 +247,26 @@ pub enum Response {
         id: RequestId,
         result: Result<BulkResult, StoreError>,
     },
+    SetNote {
+        id: RequestId,
+        result: Result<BulkResult, StoreError>,
+    },
+    RenameTag {
+        id: RequestId,
+        result: Result<eterea_core::TagRenameReport, StoreError>,
+    },
+    PruneTags {
+        id: RequestId,
+        result: Result<usize, StoreError>,
+    },
+    TagSuggestions {
+        id: RequestId,
+        result: Result<Vec<eterea_core::TagSuggestion>, StoreError>,
+    },
+    ResetTagColor {
+        id: RequestId,
+        result: Result<bool, StoreError>,
+    },
     BulkTag {
         id: RequestId,
         result: Result<BulkResult, StoreError>,
@@ -315,6 +349,11 @@ impl Response {
             | Self::ImportPreview { id, .. }
             | Self::Import { id, .. }
             | Self::SetTags { id, .. }
+            | Self::SetNote { id, .. }
+            | Self::RenameTag { id, .. }
+            | Self::PruneTags { id, .. }
+            | Self::TagSuggestions { id, .. }
+            | Self::ResetTagColor { id, .. }
             | Self::BulkTag { id, .. }
             | Self::BulkDelete { id, .. }
             | Self::BulkSetRead { id, .. }
@@ -523,6 +562,35 @@ impl StoreHandle {
     }
 
     // --- schema-v2 convenience methods ------------------------------------
+
+    pub fn rename_tag(&self, from: impl Into<String>, to: impl Into<String>) -> RequestId {
+        self.issue(Command::RenameTag {
+            from: from.into(),
+            to: to.into(),
+        })
+    }
+
+    pub fn prune_tags(&self) -> RequestId {
+        self.issue(Command::PruneTags)
+    }
+
+    pub fn tag_suggestions(&self, prefix: impl Into<String>, limit: usize) -> RequestId {
+        self.issue(Command::TagSuggestions {
+            prefix: prefix.into(),
+            limit,
+        })
+    }
+
+    pub fn reset_tag_color(&self, tag: impl Into<String>) -> RequestId {
+        self.issue(Command::ResetTagColor(tag.into()))
+    }
+
+    pub fn set_note(&self, bookmark_id: impl Into<String>, note: Option<String>) -> RequestId {
+        self.issue(Command::SetNote {
+            bookmark_id: bookmark_id.into(),
+            note,
+        })
+    }
 
     pub fn set_tags(&self, bookmark_id: impl Into<String>, tags: Vec<String>) -> RequestId {
         self.issue(Command::SetTags {
@@ -767,6 +835,36 @@ fn dispatch(services: &mut AppServices, request: Request) -> Response {
                 .set_bookmark_tags(&bookmark_id, &tags)
                 .map_err(StoreError::from),
         },
+        Command::RenameTag { from, to } => Response::RenameTag {
+            id,
+            result: services.rename_tag(&from, &to).map_err(StoreError::from),
+        },
+        Command::PruneTags => Response::PruneTags {
+            id,
+            result: services.prune_tags().map_err(StoreError::from),
+        },
+        Command::TagSuggestions { prefix, limit } => Response::TagSuggestions {
+            id,
+            result: services
+                .tag_suggestions(&prefix, limit)
+                .map_err(StoreError::from),
+        },
+        Command::ResetTagColor(tag) => Response::ResetTagColor {
+            id,
+            result: services.reset_tag_color(&tag).map_err(StoreError::from),
+        },
+        Command::SetNote { bookmark_id, note } => {
+            let set = services
+                .set_bookmark_note(&bookmark_id, note.as_deref())
+                .map_err(StoreError::from);
+            Response::SetNote {
+                id,
+                result: set.map(|changed| BulkResult {
+                    affected: usize::from(changed),
+                    ..BulkResult::default()
+                }),
+            }
+        }
         Command::BulkTag {
             selection,
             mutation,

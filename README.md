@@ -164,6 +164,17 @@ The archive lives at `<platform data dir>/eterea/bookmarks.db`. On Linux that is
   shows while files are read and posts saved, `esc` cancels before the write,
   each file in a batch is reported separately (parse failures do not abort the
   rest), and the dry-run duplicate estimate uses exactly the insert's rules.
+- Opens media in a lightbox with a `n / m` count, pointer and mouse-back paging,
+  and wheel/`+`/`-`/`0` zoom from fit to 3×.
+- Curates tags: `rename tag` renames a tag on the selected post (merging into an
+  existing tag folds both together, with autocomplete suggestions), `prune tags`
+  removes unused tags, and per-tag colours can be reset to their seeded colour.
+- Lets you read in order: `cmd-n` / `next unread` opens the next unread post and
+  marks the current one read; when the view runs out it switches to the unread
+  filter and starts again.
+- Keeps private notes: `n` (or `edit note`) opens a note editor for the selected
+  post; notes appear in the detail view, search across them, and round-trip
+  through CSV/JSON exports.
 - Makes deletes recoverable: every delete keeps a full snapshot in a bounded
   trash (`restore last deleted` in the palette), and undo (`u`) walks back
   through recent actions instead of stopping at one.

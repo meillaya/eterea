@@ -21,7 +21,8 @@
     "keys",
     "searching",
     "lightbox",
-    "repair"
+    "repair",
+    "note"
   ],
   "scene_env": {
     "hidden": {
@@ -412,6 +413,12 @@
         "3869/6144",
         "cancel",
         "Noor Haddad"
+      ],
+      "note": [
+        "note",
+        "the reading-room chapter, revisit in winter",
+        "cmd-enter saves",
+        "save"
       ]
     },
     "scene_no_nav": [
@@ -427,7 +434,8 @@
       "keys": 60,
       "searching": 45,
       "lightbox": 50,
-      "repair": 20
+      "repair": 20,
+      "note": 20
     },
     "routes": {
       "feed": [

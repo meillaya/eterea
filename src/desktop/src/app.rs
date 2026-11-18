@@ -18,7 +18,8 @@ use eterea_app::{
     CalendarYearData, CalendarYearRequest, DirectoryPageRequest, ExportFormat, ExportRequest,
     ExportScope, GraphData, GraphRequest, HistoryDetail, HistoryEvent, HistoryKind,
     HistoryListRequest, HistoryState, ImportBatchPreview, ImportBatchSummary, ImportProgress,
-    RepairEvent, RepairOptions, RequestId, Response, StoreHandle, TagMutation, TopicSummary,
+    RepairEvent, RepairOptions, RequestId, Response, StoreHandle, TagMutation, TagSuggestion,
+    TopicSummary,
 };
 use eterea_media::{ImageKind, VideoCache, VideoCacheConfig, VideoPlayer, VideoPlayerOptions};
 use eterea_ui_model::{Mode, Route};
@@ -63,6 +64,9 @@ enum Overlay {
     Export,
     BulkTag,
     GraphColor,
+    Note,
+    TagRename,
+    GraphSearch,
 }
 
 struct TagEdit {
@@ -97,6 +101,10 @@ enum CommandItem {
     BackupList,
     RestoreDeleted,
     RetryMedia,
+    EditNote,
+    NextUnread,
+    RenameTag,
+    PruneTags,
 }
 
 const COMMANDS: &[(&str, CommandItem)] = &[
@@ -124,6 +132,10 @@ const COMMANDS: &[(&str, CommandItem)] = &[
     ("check integrity", CommandItem::IntegrityCheck),
     ("restore backup", CommandItem::RestoreBackup),
     ("restore last deleted", CommandItem::RestoreDeleted),
+    ("edit note", CommandItem::EditNote),
+    ("next unread", CommandItem::NextUnread),
+    ("rename tag", CommandItem::RenameTag),
+    ("prune tags", CommandItem::PruneTags),
     ("retry media", CommandItem::RetryMedia),
 ];
 
@@ -310,6 +322,18 @@ pub(crate) struct State {
     restore_picker: Option<Receiver<Option<PathBuf>>>,
     import_drop: bool,
     import_pending: bool,
+    /// Note editor buffer and the bookmark being edited.
+    note_buffer: TextEdit,
+    note_target: Option<String>,
+    /// Tag rename overlay: the source tag (None until chosen) and its new name.
+    tag_rename_from: Option<String>,
+    tag_rename_buffer: TextEdit,
+    tag_suggestions: Vec<TagSuggestion>,
+    /// Lightbox zoom (1.0 fits the window; keys/wheel adjust it).
+    lightbox_zoom: f32,
+    /// Committed graph tag filter and the live search buffer while editing it.
+    graph_filter: Option<String>,
+    graph_search_buffer: TextEdit,
     /// Latest import progress tick and the channel it arrives on.
     import_progress: Option<ImportProgress>,
     import_progress_rx: Option<ProgressReceiver<ImportProgress>>,
@@ -427,6 +451,14 @@ impl State {
             restore_picker: None,
             import_drop: false,
             import_pending: false,
+            note_buffer: TextEdit::new(""),
+            note_target: None,
+            tag_rename_from: None,
+            tag_rename_buffer: TextEdit::new(""),
+            tag_suggestions: Vec::new(),
+            lightbox_zoom: 1.0,
+            graph_filter: None,
+            graph_search_buffer: TextEdit::new(""),
             import_progress: None,
             import_progress_rx: None,
             video: None,
@@ -1078,6 +1110,15 @@ impl State {
                 request_all_media(self);
                 let now = tx.clock();
                 self.set_status("retrying media", now);
+            }
+            CommandItem::EditNote => open_note_editor(self),
+            CommandItem::NextUnread => next_unread(self),
+            CommandItem::RenameTag => open_tag_rename(self),
+            CommandItem::PruneTags => {
+                if let Some(store) = self.store.as_ref() {
+                    store.prune_tags();
+                    self.pending_views += 1;
+                }
             }
             CommandItem::RestoreDeleted => {
                 if let Some(store) = self.store.as_ref() {
@@ -2143,6 +2184,58 @@ fn handle_response(state: &mut State, response: Response, clock: f64) {
                 state.set_status(error.message, now);
             }
         }
+        Response::TagSuggestions { result, .. } => {
+            state.pending_views = state.pending_views.saturating_sub(1);
+            if let Ok(suggestions) = result {
+                state.tag_suggestions = suggestions;
+            }
+        }
+        Response::RenameTag { result, .. } => {
+            state.pending_views = state.pending_views.saturating_sub(1);
+            let now = clock;
+            match result {
+                Ok(report) => {
+                    let verb = if report.merged { "merged" } else { "renamed" };
+                    state.set_status(
+                        format!(
+                            "{verb} tag · {} post{}",
+                            report.affected,
+                            plural(report.affected)
+                        ),
+                        now,
+                    );
+                    state.refresh_feed();
+                }
+                Err(error) => state.set_status(error.message, now),
+            }
+        }
+        Response::PruneTags { result, .. } => {
+            state.pending_views = state.pending_views.saturating_sub(1);
+            let now = clock;
+            match result {
+                Ok(0) => state.set_status("no unused tags", now),
+                Ok(count) => state.set_status(
+                    format!("removed {} unused tag{}", count, plural(count)),
+                    now,
+                ),
+                Err(error) => state.set_status(error.message, now),
+            }
+        }
+        Response::ResetTagColor { result, .. } => {
+            state.pending_views = state.pending_views.saturating_sub(1);
+            let now = clock;
+            match result {
+                Ok(true) => state.set_status("colour reset", now),
+                Ok(false) => {}
+                Err(error) => state.set_status(error.message, now),
+            }
+        }
+        Response::SetNote { result, .. } => {
+            if let Err(error) = result {
+                let now = clock;
+                state.set_status(error.message, now);
+            }
+        }
         Response::SetTags { result, .. } => {
             if let Err(error) = result {
                 let now = clock;
@@ -2237,6 +2330,10 @@ fn on_key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
         return handled;
     }
     match &event.key {
+        Key::Command('n') => {
+            next_unread(state);
+            true
+        }
         Key::Command('f') => {
             enter_search(state);
             true
@@ -2324,6 +2421,10 @@ fn on_key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
                 state.load_more_feed();
             }
             tx.scroll_to_bottom("feed");
+            true
+        }
+        Key::Text(t) if t.as_str() == "n" => {
+            open_note_editor(state);
             true
         }
         Key::Text(t) if t.as_str() == "h" => {
@@ -2518,6 +2619,15 @@ fn overlay_key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
         },
         Overlay::Lightbox => match &event.key {
             Key::Escape => dismiss_overlay(state),
+            Key::Text(t) if t.as_str() == "+" || t.as_str() == "=" => {
+                state.lightbox_zoom = (state.lightbox_zoom * 1.15).clamp(0.5, 3.0);
+            }
+            Key::Text(t) if t.as_str() == "-" => {
+                state.lightbox_zoom = (state.lightbox_zoom / 1.15).clamp(0.5, 3.0);
+            }
+            Key::Text(t) if t.as_str() == "0" => {
+                state.lightbox_zoom = 1.0;
+            }
             Key::Text(t) if t.as_str() == " " || t.as_str() == "Enter" => {
                 if let Some((post, index)) = state.lightbox {
                     start_video_at(state, tx, post, index);
@@ -2527,6 +2637,7 @@ fn overlay_key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
                 if let Some((post, index)) = state.lightbox {
                     if index > 0 {
                         state.lightbox = Some((post, index - 1));
+                        state.lightbox_zoom = 1.0;
                     }
                 }
             }
@@ -2535,6 +2646,7 @@ fn overlay_key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
                     if let Some(count) = state.posts.get(post).map(|post| post.media.len()) {
                         if index + 1 < count {
                             state.lightbox = Some((post, index + 1));
+                            state.lightbox_zoom = 1.0;
                         }
                     }
                 }
@@ -2551,6 +2663,29 @@ fn overlay_key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
                 dismiss_overlay(state);
             }
         }
+        Overlay::Note => match &event.key {
+            Key::Escape => dismiss_overlay(state),
+            Key::Enter if event.mods.primary() => save_note(state),
+            _ => {}
+        },
+        Overlay::TagRename => match &event.key {
+            Key::Escape => dismiss_overlay(state),
+            Key::Enter => save_tag_rename(state),
+            _ => {}
+        },
+        Overlay::GraphSearch => match &event.key {
+            Key::Escape => {
+                state.overlay = Overlay::None;
+                state.graph_filter = None;
+                state.graph_search_buffer = TextEdit::new("");
+            }
+            Key::Enter => {
+                let text = state.graph_search_buffer.text.trim().to_string();
+                state.graph_filter = if text.is_empty() { None } else { Some(text) };
+                state.overlay = Overlay::None;
+            }
+            _ => {}
+        },
         Overlay::BulkTag => match &event.key {
             Key::Escape => dismiss_overlay(state),
             Key::Enter => apply_bulk_tag(state),
@@ -3171,6 +3306,98 @@ fn restore_feed_position(state: &mut State, tx: &mut Tx) {
     } else {
         tx.scroll_to_y("feed", returning.scroll);
     }
+}
+
+fn open_tag_rename(state: &mut State) {
+    state.overlay = Overlay::TagRename;
+    state.tag_rename_from = None;
+    state.tag_rename_buffer = TextEdit::new("");
+    state.tag_suggestions.clear();
+    if let Some(store) = state.store.as_ref() {
+        store.tag_suggestions("", 50);
+        state.pending_views += 1;
+    }
+}
+
+fn save_tag_rename(state: &mut State) {
+    let Some(from) = state.tag_rename_from.clone() else {
+        return;
+    };
+    let to = state
+        .tag_rename_buffer
+        .text
+        .trim()
+        .trim_start_matches('#')
+        .to_string();
+    if to.is_empty() || to.eq_ignore_ascii_case(&from) {
+        state.overlay = Overlay::None;
+        return;
+    }
+    if let Some(store) = state.store.as_ref() {
+        store.rename_tag(from, to);
+        state.pending_views += 1;
+    }
+    state.overlay = Overlay::None;
+    state.tag_rename_from = None;
+    state.tag_rename_buffer = TextEdit::new("");
+}
+
+/// Move the reading queue forward: open the next unread post, filtering to
+/// unread when the current view has none left.
+fn next_unread(state: &mut State) {
+    let start = if state.route == Route::Detail {
+        state.selected + 1
+    } else {
+        state.selected
+    };
+    if let Some(index) = state
+        .posts
+        .iter()
+        .enumerate()
+        .skip(start)
+        .find(|(_, post)| !post.is_read)
+        .map(|(index, _)| index)
+    {
+        state.selected = index;
+        begin_detail(state, index);
+        return;
+    }
+    if state.route == Route::Detail {
+        stop_video(state);
+        state.route = Route::Feed;
+        if state.back_stack.last() == Some(&Route::Feed) {
+            state.back_stack.pop();
+        }
+    }
+    state.selected = 0;
+    state.request_feed(Some(Filter::Unread));
+}
+
+fn open_note_editor(state: &mut State) {
+    let Some(post) = state.posts.get(state.selected) else {
+        return;
+    };
+    state.note_target = Some(post.id.clone());
+    state.note_buffer = TextEdit::new(post.note.clone().unwrap_or_default());
+    state.overlay = Overlay::Note;
+}
+
+fn save_note(state: &mut State) {
+    let Some(id) = state.note_target.clone() else {
+        state.overlay = Overlay::None;
+        return;
+    };
+    let note = state.note_buffer.text.trim().to_string();
+    let value = if note.is_empty() { None } else { Some(note) };
+    if let Some(post) = state.posts.iter_mut().find(|post| post.id == id) {
+        post.note = value.clone();
+    }
+    if let Some(store) = state.store.as_ref() {
+        store.set_note(id, value);
+    }
+    state.overlay = Overlay::None;
+    state.note_target = None;
+    state.note_buffer = TextEdit::new("");
 }
 
 fn open_detail(state: &mut State) {
@@ -4141,6 +4368,18 @@ fn graph_view(state: &State, p: Palette, cx: &mut Cx<State>) -> El {
     // the focused node and the most-saved tags, and let the rest be dots.
     let label_all = graph.nodes.len() <= 140;
     let label_budget = if label_all { graph.nodes.len() } else { 36 };
+    let filter = if state.overlay == Overlay::GraphSearch {
+        state.graph_search_buffer.text.trim().to_lowercase()
+    } else {
+        state
+            .graph_filter
+            .as_deref()
+            .unwrap_or_default()
+            .to_lowercase()
+    };
+    // Approximate label collision avoidance: labels go to the right of their
+    // dot, so skip one whose anchor overlaps an already-labelled anchor.
+    let mut label_anchors: Vec<(f32, f32)> = Vec::new();
     for (index, node) in graph.nodes.iter().enumerate() {
         let (x, y) = points[index];
         let tag = node.tag.clone();
@@ -4148,13 +4387,21 @@ fn graph_view(state: &State, p: Palette, cx: &mut Cx<State>) -> El {
         let node_color = tag_color(state, &node.tag, p);
         let weight = (node.bookmark_count.max(1) as f32).ln();
         let side = (3.4 + weight * 0.7).clamp(4.0, 8.5);
+        let matches_filter = filter.is_empty() || node.tag.to_lowercase().contains(&filter);
+        let dimmed = !filter.is_empty() && !matches_filter;
         let dot = el()
             .size(
                 if focused { 9.0 } else { side },
                 if focused { 9.0 } else { side },
             )
             .radius(4.5)
-            .fill(if focused { p.accent } else { node_color });
+            .fill(if dimmed {
+                p.line.alpha(0.6)
+            } else if focused {
+                p.accent
+            } else {
+                node_color
+            });
         let mut row_view = row()
             .absolute(x, y - 8.0)
             .center_y()
@@ -4165,12 +4412,19 @@ fn graph_view(state: &State, p: Palette, cx: &mut Cx<State>) -> El {
                 state.filter_topic(&tag);
             })
             .child(dot);
-        if focused || label_all || index < label_budget {
-            row_view = row_view.child(
-                text(node.tag.clone())
-                    .font(theme::ui(12.5, 400.0))
-                    .color(if focused { p.accent } else { p.ink }),
-            );
+        let wants_label = !dimmed && (focused || label_all || index < label_budget);
+        if wants_label {
+            let collides = label_anchors
+                .iter()
+                .any(|(ax, ay)| (x - ax).abs() < 88.0 && (y - ay).abs() < 15.0);
+            if focused || !collides {
+                label_anchors.push((x, y));
+                row_view = row_view.child(
+                    text(node.tag.clone())
+                        .font(theme::ui(12.5, 400.0))
+                        .color(if focused { p.accent } else { p.ink }),
+                );
+            }
         }
         field = field.child(row_view);
     }
@@ -4219,6 +4473,12 @@ fn graph_key(state: &mut State, event: &KeyEvent) -> Option<bool> {
             state.graph_pan = (0.0, 0.0);
             Some(true)
         }
+        Key::Text(t) if t.as_str() == "/" => {
+            state.overlay = Overlay::GraphSearch;
+            state.graph_search_buffer =
+                TextEdit::new(state.graph_filter.clone().unwrap_or_default());
+            Some(true)
+        }
         Key::Text(t) if t.as_str() == "c" => {
             if let (Some(index), Some(graph)) = (state.graph_focus, state.graph.as_ref()) {
                 if let Some(node) = graph.nodes.get(index) {
@@ -4248,8 +4508,14 @@ fn graph_key(state: &mut State, event: &KeyEvent) -> Option<bool> {
             Some(true)
         }
         Key::Escape => {
-            state.open_route(Route::Feed);
-            Some(true)
+            if state.graph_filter.is_some() {
+                state.graph_filter = None;
+                state.graph_search_buffer = TextEdit::new("");
+                Some(true)
+            } else {
+                state.open_route(Route::Feed);
+                Some(true)
+            }
         }
         _ => None,
     }
@@ -4717,11 +4983,26 @@ fn overlay_view(state: &State, p: Palette) -> El {
                 )
         }
         Overlay::Lightbox => {
+            let (count, current) = state
+                .lightbox
+                .and_then(|(post, index)| {
+                    state
+                        .posts
+                        .get(post)
+                        .map(|post| (post.media.len(), index + 1))
+                })
+                .unwrap_or((0, 0));
             let mut image_slot = el()
                 .size(1100.0, 700.0)
                 .radius(2.0)
                 .clip_rounded(2.0)
-                .motion(crate::motion::LIGHTBOX);
+                .scale(state.lightbox_zoom)
+                .motion(crate::motion::LIGHTBOX)
+                .on_wheel(|state: &mut State, event: WheelEvent, _tx: &mut Tx| {
+                    let factor = (1.0 - event.dy * 0.0015).clamp(0.85, 1.2);
+                    state.lightbox_zoom = (state.lightbox_zoom * factor).clamp(0.5, 3.0);
+                    true
+                });
             if let Some((post_index, media_index)) = state.lightbox {
                 if let Some(post) = state.posts.get(post_index) {
                     if let Some(item) = post.media.get(media_index) {
@@ -4740,6 +5021,31 @@ fn overlay_view(state: &State, p: Palette) -> El {
             el().w_full()
                 .h_full()
                 .absolute(0.0, 0.0)
+                .pointer_buttons([PointerButton::Back, PointerButton::Forward])
+                .on_press_tx(|state: &mut State, tx: &mut Tx| match tx.button() {
+                    PointerButton::Back => {
+                        if let Some((post, index)) = state.lightbox {
+                            if index > 0 {
+                                state.lightbox = Some((post, index - 1));
+                                state.lightbox_zoom = 1.0;
+                            }
+                        }
+                    }
+                    PointerButton::Forward => {
+                        if let Some((post, index)) = state.lightbox {
+                            let count = state
+                                .posts
+                                .get(post)
+                                .map(|post| post.media.len())
+                                .unwrap_or(0);
+                            if index + 1 < count {
+                                state.lightbox = Some((post, index + 1));
+                                state.lightbox_zoom = 1.0;
+                            }
+                        }
+                    }
+                    _ => {}
+                })
                 .child(el().fill(p.scrim).absolute(0.0, 0.0).w_full().h_full())
                 .child(
                     row()
@@ -4748,6 +5054,93 @@ fn overlay_view(state: &State, p: Palette) -> El {
                         .justify_center()
                         .center_y()
                         .child(image_slot),
+                )
+                .child(
+                    el().absolute(0.0, 0.0)
+                        .w(120.0)
+                        .h_full()
+                        .fill(Color::WHITE.alpha(0.001))
+                        .role("button")
+                        .label("previous image")
+                        .on_press(|state: &mut State| {
+                            if let Some((post, index)) = state.lightbox {
+                                if index > 0 {
+                                    state.lightbox = Some((post, index - 1));
+                                    state.lightbox_zoom = 1.0;
+                                }
+                            }
+                        }),
+                )
+                .child(
+                    el().absolute(0.0, 0.0)
+                        .w(120.0)
+                        .h_full()
+                        .fill(Color::WHITE.alpha(0.001))
+                        .role("button")
+                        .label("next image")
+                        .on_press(|state: &mut State| {
+                            if let Some((post, index)) = state.lightbox {
+                                let count = state
+                                    .posts
+                                    .get(post)
+                                    .map(|post| post.media.len())
+                                    .unwrap_or(0);
+                                if index + 1 < count {
+                                    state.lightbox = Some((post, index + 1));
+                                    state.lightbox_zoom = 1.0;
+                                }
+                            }
+                        }),
+                )
+                .child(
+                    row()
+                        .center_y()
+                        .gap(18.0)
+                        .pin(None, None, None, Some(26.0))
+                        .child(
+                            text("‹")
+                                .font(theme::ui(16.0, 400.0))
+                                .color(Color::WHITE.alpha(0.75))
+                                .role("button")
+                                .label("previous image")
+                                .on_press(|state: &mut State| {
+                                    if let Some((post, index)) = state.lightbox {
+                                        if index > 0 {
+                                            state.lightbox = Some((post, index - 1));
+                                            state.lightbox_zoom = 1.0;
+                                        }
+                                    }
+                                }),
+                        )
+                        .child(
+                            text(if count > 0 {
+                                format!("{current} / {count}")
+                            } else {
+                                String::new()
+                            })
+                            .font(theme::mono(11.0))
+                            .color(Color::WHITE.alpha(0.75)),
+                        )
+                        .child(
+                            text("›")
+                                .font(theme::ui(16.0, 400.0))
+                                .color(Color::WHITE.alpha(0.75))
+                                .role("button")
+                                .label("next image")
+                                .on_press(|state: &mut State| {
+                                    if let Some((post, index)) = state.lightbox {
+                                        let count = state
+                                            .posts
+                                            .get(post)
+                                            .map(|post| post.media.len())
+                                            .unwrap_or(0);
+                                        if index + 1 < count {
+                                            state.lightbox = Some((post, index + 1));
+                                            state.lightbox_zoom = 1.0;
+                                        }
+                                    }
+                                }),
+                        ),
                 )
                 .child(
                     text("close")
@@ -4799,9 +5192,13 @@ fn overlay_view(state: &State, p: Palette) -> El {
                         .font(theme::ui(12.0, 400.0))
                         .color(p.muted)
                         .on_press(|state: &mut State| {
-                            state
-                                .tag_colors
-                                .remove(state.graph_color_tag.as_deref().unwrap_or_default());
+                            if let Some(tag) = state.graph_color_tag.clone() {
+                                state.tag_colors.remove(&tag);
+                                if let Some(store) = state.store.as_ref() {
+                                    store.reset_tag_color(tag);
+                                    state.pending_views += 1;
+                                }
+                            }
                             state.overlay = Overlay::None;
                             state.graph_color_tag = None;
                         }),
@@ -4815,6 +5212,172 @@ fn overlay_view(state: &State, p: Palette) -> El {
                 .radius(2.0)
                 .child(text("color").font(theme::serif(20.0)).color(p.ink))
                 .child(grid);
+            el().w_full()
+                .h_full()
+                .absolute(0.0, 0.0)
+                .child(scrim)
+                .child(
+                    row()
+                        .w_full()
+                        .h_full()
+                        .justify_center()
+                        .center_y()
+                        .child(panel),
+                )
+        }
+        Overlay::GraphSearch => {
+            let panel = col()
+                .w(420.0)
+                .gap(12.0)
+                .padding(16.0)
+                .fill(p.bg)
+                .border(1.0, p.line)
+                .radius(2.0)
+                .child(text("find a tag").font(theme::serif(18.0)).color(p.ink))
+                .child(
+                    text_input(&state.graph_search_buffer, theme::ui(15.0, 400.0))
+                        .key("graph-search-input")
+                        .w_full()
+                        .h(34.0)
+                        .px(8.0)
+                        .radius(2.0)
+                        .fill(p.band)
+                        .border(1.0, p.line)
+                        .color(p.ink)
+                        .placeholder("tag name", p.muted)
+                        .single_line()
+                        .on_edit(|state: &mut State| &mut state.graph_search_buffer),
+                )
+                .child(
+                    text("enter filters the graph, esc clears")
+                        .font(theme::mono(10.5))
+                        .color(p.muted),
+                );
+            el().w_full()
+                .h_full()
+                .absolute(0.0, 0.0)
+                .child(scrim)
+                .child(
+                    row()
+                        .w_full()
+                        .h_full()
+                        .justify_center()
+                        .center_y()
+                        .child(panel),
+                )
+        }
+        Overlay::TagRename => {
+            let tags = state
+                .posts
+                .get(state.selected)
+                .map(|post| post.tags.clone())
+                .unwrap_or_default();
+            let mut panel = col()
+                .w(560.0)
+                .gap(12.0)
+                .padding(18.0)
+                .fill(p.bg)
+                .border(1.0, p.line)
+                .radius(2.0)
+                .child(text("rename tag").font(theme::serif(20.0)).color(p.ink));
+            match &state.tag_rename_from {
+                None => {
+                    panel = panel.child(
+                        text("choose a tag from this post")
+                            .font(theme::ui(12.0, 400.0))
+                            .color(p.muted),
+                    );
+                    let mut rows = col().w_full().gap(6.0);
+                    for tag in &tags {
+                        let tag_value = tag.clone();
+                        rows = rows.child(
+                            text(format!("#{tag}"))
+                                .font(theme::mono(12.0))
+                                .color(p.accent)
+                                .on_press(move |state: &mut State| {
+                                    state.tag_rename_from = Some(tag_value.clone());
+                                    state.tag_rename_buffer = TextEdit::new(tag_value.clone());
+                                }),
+                        );
+                    }
+                    if tags.is_empty() {
+                        rows = rows.child(
+                            text("this post has no tags")
+                                .font(theme::ui(12.0, 400.0))
+                                .color(p.muted),
+                        );
+                    }
+                    panel = panel.child(rows);
+                }
+                Some(from) => {
+                    let from = from.clone();
+                    panel = panel
+                        .child(
+                            text(format!("renaming #{from} to"))
+                                .font(theme::mono(11.0))
+                                .color(p.muted),
+                        )
+                        .child(
+                            text_input(&state.tag_rename_buffer, theme::ui(15.0, 400.0))
+                                .key("tag-rename-input")
+                                .w_full()
+                                .h(34.0)
+                                .px(8.0)
+                                .radius(2.0)
+                                .fill(p.band)
+                                .border(1.0, p.line)
+                                .color(p.ink)
+                                .placeholder("new tag name", p.muted)
+                                .single_line()
+                                .on_edit(|state: &mut State| &mut state.tag_rename_buffer)
+                                .on_submit(|state: &mut State, _tx| save_tag_rename(state)),
+                        );
+                    let prefix = state.tag_rename_buffer.text.trim().to_lowercase();
+                    let mut suggestions = row().w_full().gap(10.0).flex_wrap();
+                    let mut shown = 0;
+                    for suggestion in &state.tag_suggestions {
+                        if shown >= 8 {
+                            break;
+                        }
+                        if suggestion.tag.eq_ignore_ascii_case(&from) {
+                            continue;
+                        }
+                        if !prefix.is_empty() && !suggestion.tag.to_lowercase().starts_with(&prefix)
+                        {
+                            continue;
+                        }
+                        let value = suggestion.tag.clone();
+                        suggestions = suggestions.child(
+                            text(format!("#{}", suggestion.tag))
+                                .font(theme::mono(11.0))
+                                .color(p.muted)
+                                .on_press(move |state: &mut State| {
+                                    state.tag_rename_buffer = TextEdit::new(value.clone());
+                                    save_tag_rename(state);
+                                }),
+                        );
+                        shown += 1;
+                    }
+                    panel = panel.child(suggestions);
+                    panel = panel.child(
+                        row()
+                            .w_full()
+                            .justify_between()
+                            .center_y()
+                            .child(
+                                text("merging into an existing tag folds the two together")
+                                    .font(theme::ui(11.5, 400.0))
+                                    .color(p.muted),
+                            )
+                            .child(
+                                text("rename")
+                                    .font(theme::ui(12.5, 500.0))
+                                    .color(p.accent)
+                                    .on_press(|state: &mut State| save_tag_rename(state)),
+                            ),
+                    );
+                }
+            }
             el().w_full()
                 .h_full()
                 .absolute(0.0, 0.0)
@@ -5070,6 +5633,73 @@ fn overlay_view(state: &State, p: Palette) -> El {
                             state.tag_edit = None;
                         }),
                 ),
+            );
+            el().w_full()
+                .h_full()
+                .absolute(0.0, 0.0)
+                .child(scrim)
+                .child(
+                    row()
+                        .w_full()
+                        .h_full()
+                        .justify_center()
+                        .center_y()
+                        .child(panel),
+                )
+        }
+        Overlay::Note => {
+            let mut panel = col()
+                .w(620.0)
+                .gap(14.0)
+                .padding(18.0)
+                .fill(p.bg)
+                .border(1.0, p.line)
+                .radius(2.0)
+                .child(text("note").font(theme::serif(20.0)).color(p.ink))
+                .child(
+                    text_input(&state.note_buffer, theme::ui(15.0, 400.0))
+                        .key("note-input")
+                        .w_full()
+                        .min_h(140.0)
+                        .max_h(320.0)
+                        .px(8.0)
+                        .py(8.0)
+                        .radius(2.0)
+                        .fill(p.band)
+                        .border(1.0, p.line)
+                        .color(p.ink)
+                        .placeholder("a private note about this post", p.muted)
+                        .on_edit(|state: &mut State| &mut state.note_buffer)
+                        .on_submit(|state: &mut State, _tx| save_note(state)),
+                );
+            panel = panel.child(
+                row()
+                    .w_full()
+                    .justify_between()
+                    .center_y()
+                    .child(
+                        text("cmd-enter saves, esc closes")
+                            .font(theme::mono(10.5))
+                            .color(p.muted),
+                    )
+                    .child(
+                        row()
+                            .gap(16.0)
+                            .child(
+                                text("clear")
+                                    .font(theme::ui(12.0, 400.0))
+                                    .color(p.muted)
+                                    .on_press(|state: &mut State| {
+                                        state.note_buffer = TextEdit::new("");
+                                    }),
+                            )
+                            .child(
+                                text("save")
+                                    .font(theme::ui(12.5, 500.0))
+                                    .color(p.accent)
+                                    .on_press(|state: &mut State| save_note(state)),
+                            ),
+                    ),
             );
             el().w_full()
                 .h_full()
@@ -6610,6 +7240,18 @@ fn post_view(state: &State, post: &Post, index: usize, p: Palette, detail: bool)
         );
     }
 
+    if detail {
+        if let Some(note) = post.note.as_deref() {
+            content = content.child(
+                col()
+                    .w((content_w - 24.0).max(240.0))
+                    .gap(4.0)
+                    .pt(16.0)
+                    .child(text("note").font(theme::mono(10.5)).color(p.muted))
+                    .child(text(note).font(theme::serif(15.0)).color(p.ink)),
+            );
+        }
+    }
     let mut group = col().w(content_w).child(content);
     group = group.child(rail.absolute(-(RAIL + GAP), 0.0));
     if selected || marked {
@@ -7028,6 +7670,11 @@ pub fn spec() -> AppSpec<State> {
                 s.route = Route::Feed;
                 s.lightbox = Some((1, 0));
                 s.overlay = Overlay::Lightbox;
+            }),
+            ("note", |s: &mut State| {
+                s.selected = 1;
+                s.overlay = Overlay::Note;
+                s.note_buffer = TextEdit::new("the reading-room chapter, revisit in winter");
             }),
             ("repair", |s: &mut State| {
                 s.repair_active = true;

@@ -16,6 +16,32 @@ impl AppServices {
     }
 
     /// Replace one bookmark's tags exactly.
+    pub fn rename_tag(&self, from: &str, to: &str) -> Result<eterea_core::TagRenameReport> {
+        Ok(self.db.rename_tag(from, to)?)
+    }
+
+    pub fn prune_tags(&self) -> Result<usize> {
+        Ok(self.db.prune_unused_tags()?)
+    }
+
+    pub fn tag_suggestions(
+        &self,
+        prefix: &str,
+        limit: usize,
+    ) -> Result<Vec<eterea_core::TagSuggestion>> {
+        Ok(self.db.tag_suggestions(prefix, limit)?)
+    }
+
+    pub fn reset_tag_color(&self, tag: &str) -> Result<bool> {
+        Ok(self.db.reset_tag_color(tag)?)
+    }
+
+    pub fn set_bookmark_note(&self, id: &str, note: Option<&str>) -> Result<bool> {
+        self.db
+            .set_note(id, note)
+            .with_context(|| format!("failed to set the note for bookmark {id}"))
+    }
+
     pub fn set_bookmark_tags(&self, id: &str, tags: &[String]) -> Result<BulkResult> {
         self.db
             .set_bookmark_tags(id, tags)

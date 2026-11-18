@@ -2,6 +2,7 @@ pub mod services;
 pub mod store;
 pub mod types;
 
+pub use eterea_core::{TagRenameReport, TagSuggestion};
 pub use services::app::AppServices;
 pub use services::repair::{repair_missing_media, RepairEvent, RepairOptions, RepairSummary};
 pub use store::{Command, Request, RequestId, Response, StoreError, StoreHandle};
