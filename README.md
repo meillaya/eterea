@@ -32,6 +32,10 @@ palette, search and a key sheet.
 
 Screenshots are captures of the maintainer's live archive (11,841 posts).
 
+The application is Rust. The verification harness and release scripts are Python
+and Shell, and the development shell is Nix; the GitHub language bar reflects all
+four.
+
 ---
 
 ## Screenshots
