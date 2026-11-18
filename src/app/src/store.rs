@@ -14,10 +14,10 @@
 
 use crate::types::{
     AuthorSummary, BookmarkPage, BookmarkQuery, BookmarkSelection, BookmarkStats, BulkResult,
-    CalendarData, CalendarRequest, DirectoryPageRequest, ExportRequest, ExportSummary, GraphData,
-    GraphRequest, HistoryDetail, HistoryListRequest, HistoryPage, ImportBatchPreview,
-    ImportBatchSummary, ImportPreview, PaginatedResponse, TagColor, TagMutation, TopicSummary,
-    UndoResult,
+    CalendarData, CalendarRequest, CalendarYearData, CalendarYearRequest, DirectoryPageRequest,
+    ExportRequest, ExportSummary, GraphData, GraphRequest, HistoryDetail, HistoryListRequest,
+    HistoryPage, ImportBatchPreview, ImportBatchSummary, ImportPreview, PaginatedResponse,
+    TagColor, TagMutation, TopicSummary, UndoResult,
 };
 use crate::AppServices;
 use crossbeam_channel::{unbounded, Receiver, Sender};
@@ -82,6 +82,7 @@ pub enum Command {
     TopicIndex,
     Graph(GraphRequest),
     Calendar(CalendarRequest),
+    CalendarYear(CalendarYearRequest),
     ImportPreviewFile(PathBuf),
     ImportFile(PathBuf),
     ImportPreviewContent {
@@ -180,6 +181,10 @@ pub enum Response {
         id: RequestId,
         result: Result<CalendarData, StoreError>,
     },
+    CalendarYear {
+        id: RequestId,
+        result: Result<CalendarYearData, StoreError>,
+    },
     ImportPreview {
         id: RequestId,
         result: Result<ImportPreview, StoreError>,
@@ -264,6 +269,7 @@ impl Response {
             | Self::TopicIndex { id, .. }
             | Self::Graph { id, .. }
             | Self::Calendar { id, .. }
+            | Self::CalendarYear { id, .. }
             | Self::ImportPreview { id, .. }
             | Self::Import { id, .. }
             | Self::SetTags { id, .. }
@@ -405,6 +411,10 @@ impl StoreHandle {
 
     pub fn calendar(&self, request: CalendarRequest) -> RequestId {
         self.issue(Command::Calendar(request))
+    }
+
+    pub fn calendar_year(&self, request: CalendarYearRequest) -> RequestId {
+        self.issue(Command::CalendarYear(request))
     }
 
     pub fn import_preview_file(&self, path: impl Into<PathBuf>) -> RequestId {
@@ -597,6 +607,12 @@ fn dispatch(services: &AppServices, request: Request) -> Response {
             id,
             result: services
                 .calendar_data(&calendar_request)
+                .map_err(StoreError::from),
+        },
+        Command::CalendarYear(year_request) => Response::CalendarYear {
+            id,
+            result: services
+                .calendar_year_data(&year_request)
                 .map_err(StoreError::from),
         },
         Command::ImportPreviewFile(path) => Response::ImportPreview {

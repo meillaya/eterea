@@ -73,6 +73,30 @@ impl Database {
         Ok(edges)
     }
 
+    /// Saved-post counts per UTC day for one calendar year.
+    ///
+    /// At most 366 rows; the range scans the `tweeted_at` index, so the year
+    /// overview costs one cheap aggregate per request.
+    pub fn get_calendar_year_counts(
+        &self,
+        year_start: i64,
+        year_end: i64,
+    ) -> Result<Vec<(String, i64)>> {
+        let mut stmt = self.conn.prepare(
+            r#"SELECT date(tweeted_at, 'unixepoch') AS day, COUNT(*)
+               FROM bookmarks
+               WHERE tweeted_at >= ?1 AND tweeted_at < ?2
+               GROUP BY day
+               ORDER BY day ASC"#,
+        )?;
+        let rows = stmt
+            .query_map(params![year_start, year_end], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     /// `(UTC day, bookmark id)` rows for bookmarks posted in a timestamp range.
     ///
     /// The day is rendered by SQLite as `YYYY-MM-DD` in UTC, matching the
@@ -162,6 +186,44 @@ mod tests {
                 second_tag: "rust".to_string(),
                 bookmark_count: 1,
             }
+        );
+    }
+
+    #[test]
+    fn calendar_year_counts_fill_days_and_stop_at_the_year_edges() {
+        let db = Database::open_memory().unwrap();
+        let in_year_a = bookmark("1", &[], Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 1).unwrap());
+        let in_year_b = bookmark(
+            "2",
+            &[],
+            Utc.with_ymd_and_hms(2025, 1, 1, 23, 59, 59).unwrap(),
+        );
+        let in_year_c = bookmark(
+            "3",
+            &[],
+            Utc.with_ymd_and_hms(2025, 12, 31, 23, 59, 59).unwrap(),
+        );
+        let previous = bookmark(
+            "4",
+            &[],
+            Utc.with_ymd_and_hms(2024, 12, 31, 23, 59, 59).unwrap(),
+        );
+        let next = bookmark("5", &[], Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap());
+        db.insert_bookmarks(&[in_year_a, in_year_b, in_year_c, previous, next])
+            .unwrap();
+
+        let start = Utc
+            .with_ymd_and_hms(2025, 1, 1, 0, 0, 0)
+            .unwrap()
+            .timestamp();
+        let end = Utc
+            .with_ymd_and_hms(2026, 1, 1, 0, 0, 0)
+            .unwrap()
+            .timestamp();
+        let counts = db.get_calendar_year_counts(start, end).unwrap();
+        assert_eq!(
+            counts,
+            vec![("2025-01-01".to_string(), 2), ("2025-12-31".to_string(), 1),]
         );
     }
 

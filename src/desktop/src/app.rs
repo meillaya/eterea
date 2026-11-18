@@ -11,19 +11,19 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::{NaiveDate, Utc};
+use chrono::{Datelike, NaiveDate, Utc};
 use eterea_app::{
     AuthorSummary, BookmarkQuery, BookmarkSelection, BookmarkStats, CalendarData, CalendarRequest,
-    DirectoryPageRequest, ExportFormat, ExportRequest, ExportScope, GraphData, GraphRequest,
-    HistoryDetail, HistoryEvent, HistoryKind, HistoryListRequest, HistoryState, ImportBatchPreview,
-    ImportBatchSummary, RepairEvent, RepairOptions, RequestId, Response, StoreHandle, TagMutation,
-    TopicSummary,
+    CalendarYearData, CalendarYearRequest, DirectoryPageRequest, ExportFormat, ExportRequest,
+    ExportScope, GraphData, GraphRequest, HistoryDetail, HistoryEvent, HistoryKind,
+    HistoryListRequest, HistoryState, ImportBatchPreview, ImportBatchSummary, RepairEvent,
+    RepairOptions, RequestId, Response, StoreHandle, TagMutation, TopicSummary,
 };
 use eterea_media::{ImageKind, VideoCache, VideoCacheConfig, VideoPlayer, VideoPlayerOptions};
 use eterea_ui_model::{Mode, Route};
 use rune::{
     canvas, col, el, row, text, text_input, Align, AppSpec, Color, Cx, Drag, El, FileDialogOptions,
-    Image, ImageCache, Key, KeyEvent, LineCap, Link, MagnifyEvent, Phase, PointerButton,
+    Image, ImageCache, Key, KeyEvent, LineCap, Link, Live, MagnifyEvent, Phase, PointerButton,
     ScrollSpec, Shape, Span, SurfaceFit, TextEdit, Tx, Waker, WheelEvent,
 };
 
@@ -168,6 +168,22 @@ struct ExportSheet {
     format: ExportKind,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CalendarMode {
+    Month,
+    Year,
+}
+
+/// Where the reader left the feed when a post opened. `top` is the opened
+/// post's window y when it is on screen (the layout-accurate anchor); `scroll`
+/// is the raw viewport offset used when the selection was off screen.
+#[derive(Clone, Copy, Debug)]
+struct FeedReturn {
+    index: usize,
+    top: Option<f32>,
+    scroll: f32,
+}
+
 #[derive(Clone)]
 enum Filter {
     Author(String),
@@ -199,6 +215,16 @@ pub(crate) struct State {
     /// Identity of the newest feed request; older replies are dropped so a
     /// superseded filter or search cannot overwrite fresher results.
     feed_request: Option<RequestId>,
+    /// Live viewport offset / selected-row top / viewport height for the
+    /// feed-return anchor. Live values update without re-running the view.
+    feed_scroll_offset: Live<f32>,
+    feed_anchor_top: Live<f32>,
+    feed_viewport_top: Live<f32>,
+    feed_viewport_height: Live<f32>,
+    /// Where to put the feed back when returning from a detail page.
+    feed_return: Option<FeedReturn>,
+    /// A pending restore to apply when the feed view is next drawn.
+    feed_restore: Option<FeedReturn>,
     favorite_request: Option<(u64, String)>,
     delete_request: Option<(u64, String)>,
     demo: bool,
@@ -236,6 +262,19 @@ pub(crate) struct State {
     topics_request: Option<RequestId>,
     graph: Option<GraphData>,
     calendar: Option<CalendarData>,
+    /// Calendar browsing state: current month, month/year mode, selected week,
+    /// focused month in the year view, cached months and year heatmap.
+    calendar_month: String,
+    calendar_mode: CalendarMode,
+    calendar_week: usize,
+    calendar_year: i32,
+    calendar_year_focus: usize,
+    calendar_year_data: Option<CalendarYearData>,
+    calendar_cache: HashMap<String, CalendarData>,
+    calendar_request: Option<RequestId>,
+    calendar_year_request: Option<RequestId>,
+    /// A post to open after the day-filtered feed lands.
+    pending_calendar_open: Option<String>,
     filter: Option<Filter>,
     pending_views: usize,
     latest_month: Option<String>,
@@ -266,6 +305,8 @@ pub(crate) struct State {
     graph_zoom: f32,
     graph_pan: (f32, f32),
     graph_focus: Option<usize>,
+    /// Laid-out size of the full-bleed graph field, updated on layout.
+    graph_viewport: (f32, f32),
     graph_drag_pan: Option<(f32, f32)>,
     tag_edit: Option<TagEdit>,
     tag_buffer: TextEdit,
@@ -302,6 +343,12 @@ impl State {
             feed_pending: false,
             feed_has_more: false,
             feed_request: None,
+            feed_scroll_offset: Live::new(0.0),
+            feed_anchor_top: Live::new(0.0),
+            feed_viewport_top: Live::new(0.0),
+            feed_viewport_height: Live::new(0.0),
+            feed_return: None,
+            feed_restore: None,
             favorite_request: None,
             delete_request: None,
             demo: false,
@@ -327,6 +374,16 @@ impl State {
             topics_request: None,
             graph: None,
             calendar: None,
+            calendar_month: String::new(),
+            calendar_mode: CalendarMode::Month,
+            calendar_week: 0,
+            calendar_year: 0,
+            calendar_year_focus: 0,
+            calendar_year_data: None,
+            calendar_cache: HashMap::new(),
+            calendar_request: None,
+            calendar_year_request: None,
+            pending_calendar_open: None,
             filter: None,
             pending_views: 0,
             latest_month: None,
@@ -357,6 +414,7 @@ impl State {
             graph_zoom: 1.0,
             graph_pan: (0.0, 0.0),
             graph_focus: None,
+            graph_viewport: (720.0, 720.0),
             graph_drag_pan: None,
             tag_edit: None,
             tag_buffer: TextEdit::new(""),
@@ -562,6 +620,8 @@ impl State {
     }
 
     fn request_feed(&mut self, filter: Option<Filter>) {
+        self.feed_return = None;
+        self.feed_restore = None;
         self.filter = filter;
         self.feed_has_more = false;
         let Some(store) = self.store.as_ref() else {
@@ -636,7 +696,7 @@ impl State {
             Route::Graph => {
                 if self.graph.is_none() {
                     if let Some(store) = self.store.as_ref() {
-                        store.graph(GraphRequest::default());
+                        store.graph(GraphRequest::new(800, 4_000));
                         self.pending_views += 1;
                     }
                 }
@@ -654,18 +714,157 @@ impl State {
                     self.pending_views += 1;
                 }
             }
-            Route::Calendar if self.calendar.is_none() => {
-                if let Some(store) = self.store.as_ref() {
-                    let month = self
+            Route::Calendar => {
+                if self.calendar_month.is_empty() {
+                    self.calendar_month = self
                         .latest_month
                         .clone()
                         .unwrap_or_else(|| Utc::now().format("%Y-%m").to_string());
-                    store.calendar(CalendarRequest::new(month));
-                    self.pending_views += 1;
                 }
+                let month = self.calendar_month.clone();
+                self.request_calendar_month(month.clone());
+                self.ensure_calendar_year(month_year(&month));
             }
             _ => {}
         }
+    }
+
+    fn request_calendar_month(&mut self, month: String) {
+        self.calendar_mode = CalendarMode::Month;
+        self.calendar_month = month.clone();
+        if let Some(cached) = self.calendar_cache.get(&month).cloned() {
+            self.calendar = Some(cached);
+            self.calendar_request = None;
+            self.clamp_calendar_week();
+            return;
+        }
+        let Some(store) = self.store.as_ref() else {
+            return;
+        };
+        self.calendar_request = Some(store.calendar(CalendarRequest::new(month)));
+        self.pending_views += 1;
+    }
+
+    fn ensure_calendar_year(&mut self, year: i32) {
+        self.calendar_year = year;
+        if self
+            .calendar_year_data
+            .as_ref()
+            .is_some_and(|data| data.year == year)
+        {
+            return;
+        }
+        let Some(store) = self.store.as_ref() else {
+            return;
+        };
+        self.calendar_year_request = Some(store.calendar_year(CalendarYearRequest::new(year)));
+        self.pending_views += 1;
+    }
+
+    fn clamp_calendar_week(&mut self) {
+        let weeks = self.calendar.as_ref().map_or(1, |calendar| calendar.weeks);
+        self.calendar_week = self.calendar_week.min(weeks.saturating_sub(1));
+    }
+
+    fn shift_calendar_month(&mut self, delta: i32) {
+        let Some(next) = shift_month(&self.calendar_month, delta) else {
+            return;
+        };
+        self.calendar_week = 0;
+        self.request_calendar_month(next.clone());
+        self.ensure_calendar_year(month_year(&next));
+    }
+
+    fn shift_calendar_week(&mut self, delta: i32) {
+        let weeks = self.calendar.as_ref().map_or(1, |calendar| calendar.weeks) as i32;
+        let next = self.calendar_week as i32 + delta;
+        if next < 0 {
+            self.calendar_week = usize::MAX;
+            if let Some(previous) = shift_month(&self.calendar_month, -1) {
+                self.request_calendar_month(previous.clone());
+                self.ensure_calendar_year(month_year(&previous));
+            }
+        } else if next >= weeks {
+            self.calendar_week = 0;
+            if let Some(following) = shift_month(&self.calendar_month, 1) {
+                self.request_calendar_month(following.clone());
+                self.ensure_calendar_year(month_year(&following));
+            }
+        } else {
+            self.calendar_week = next as usize;
+        }
+    }
+
+    fn toggle_calendar_mode(&mut self) {
+        match self.calendar_mode {
+            CalendarMode::Month => {
+                self.calendar_mode = CalendarMode::Year;
+                if let Some(index) = month_index(&self.calendar_month) {
+                    self.calendar_year_focus = index;
+                }
+                self.ensure_calendar_year(self.calendar_year);
+            }
+            CalendarMode::Year => {
+                let year = self.calendar_year;
+                let month = self.calendar_year_focus.min(11) + 1;
+                self.request_calendar_month(format!("{year:04}-{month:02}"));
+            }
+        }
+    }
+
+    fn shift_calendar_year(&mut self, delta: i32) {
+        let year = self.calendar_year + delta;
+        self.ensure_calendar_year(year);
+    }
+
+    fn calendar_today(&mut self) {
+        let month = Utc::now().format("%Y-%m").to_string();
+        self.calendar_week = 0;
+        self.request_calendar_month(month.clone());
+        self.ensure_calendar_year(month_year(&month));
+    }
+
+    fn filter_calendar_week(&mut self) {
+        let Some(calendar) = self.calendar.as_ref() else {
+            return;
+        };
+        let week = self.calendar_week.min(calendar.weeks.saturating_sub(1));
+        let Some(from) = calendar.days.get(week * 7) else {
+            return;
+        };
+        let Some(to) = calendar.days.get(week * 7 + 6) else {
+            return;
+        };
+        self.filter_day_range(&from.date.clone(), &to.date.clone());
+    }
+
+    fn open_calendar_post(&mut self, day: &str, bookmark_id: String) {
+        self.pending_calendar_open = Some(bookmark_id);
+        self.filter_day(day);
+    }
+
+    fn filter_day_range(&mut self, from: &str, to: &str) {
+        let (Ok(from_date), Ok(to_date)) = (
+            NaiveDate::parse_from_str(from, "%Y-%m-%d"),
+            NaiveDate::parse_from_str(to, "%Y-%m-%d"),
+        ) else {
+            return;
+        };
+        let Some(start) = from_date.and_hms_opt(0, 0, 0) else {
+            return;
+        };
+        let Some(next_day) = to_date.succ_opt() else {
+            return;
+        };
+        let Some(end) = next_day.and_hms_opt(0, 0, 0) else {
+            return;
+        };
+        self.note_navigation(Route::Feed);
+        self.route = Route::Feed;
+        self.request_feed(Some(Filter::Day(
+            format!("{}Z", start.format("%Y-%m-%dT%H:%M:%S")),
+            format!("{}Z", end.format("%Y-%m-%dT%H:%M:%S")),
+        )));
     }
 
     fn filter_author(&mut self, handle: &str) {
@@ -681,24 +880,7 @@ impl State {
     }
 
     fn filter_day(&mut self, day: &str) {
-        let Ok(date) = NaiveDate::parse_from_str(day, "%Y-%m-%d") else {
-            return;
-        };
-        let Some(start) = date.and_hms_opt(0, 0, 0) else {
-            return;
-        };
-        let Some(next) = date.succ_opt() else {
-            return;
-        };
-        let Some(end) = next.and_hms_opt(0, 0, 0) else {
-            return;
-        };
-        self.note_navigation(Route::Feed);
-        self.route = Route::Feed;
-        self.request_feed(Some(Filter::Day(
-            format!("{}Z", start.format("%Y-%m-%dT%H:%M:%S")),
-            format!("{}Z", end.format("%Y-%m-%dT%H:%M:%S")),
-        )));
+        self.filter_day_range(day, day);
     }
 
     fn choose_import_files(&mut self) {
@@ -1320,7 +1502,14 @@ fn handle_response(state: &mut State, response: Response, clock: f64) {
                     let append = page.offset > 0 && !state.posts.is_empty();
                     if state.latest_month.is_none() {
                         if let Some(first) = page.items.first() {
-                            state.latest_month = Some(first.tweeted_at.format("%Y-%m").to_string());
+                            let month = first.tweeted_at.format("%Y-%m").to_string();
+                            state.latest_month = Some(month.clone());
+                            // A calendar opened straight from a saved route asked
+                            // for the current month before any feed data existed;
+                            // once the archive's latest month is known, show that.
+                            if state.route == Route::Calendar && state.calendar_month != month {
+                                state.request_calendar_month(month);
+                            }
                         }
                     }
                     if append {
@@ -1364,6 +1553,11 @@ fn handle_response(state: &mut State, response: Response, clock: f64) {
                         }
                     }
                     resolve_avatars(state, &page.items, !append);
+                    if let Some(id) = state.pending_calendar_open.take() {
+                        if let Some(index) = state.posts.iter().position(|post| post.id == id) {
+                            begin_detail(state, index);
+                        }
+                    }
                     request_avatars(state);
                     request_all_media(state);
                 }
@@ -1480,10 +1674,47 @@ fn handle_response(state: &mut State, response: Response, clock: f64) {
                 state.graph = Some(graph);
             }
         }
-        Response::Calendar { result, .. } => {
+        Response::Calendar { id, result } => {
+            if state.calendar_request != Some(id) {
+                return;
+            }
+            state.calendar_request = None;
             state.pending_views = state.pending_views.saturating_sub(1);
-            if let Ok(calendar) = result {
-                state.calendar = Some(calendar);
+            match result {
+                Ok(calendar) => {
+                    state
+                        .calendar_cache
+                        .insert(calendar.month.clone(), calendar.clone());
+                    if state.calendar_cache.len() > 6 {
+                        state.calendar_cache.clear();
+                        state
+                            .calendar_cache
+                            .insert(calendar.month.clone(), calendar.clone());
+                    }
+                    state.calendar = Some(calendar);
+                    state.clamp_calendar_week();
+                }
+                Err(error) => {
+                    let now = clock;
+                    state.set_status(error.message, now);
+                }
+            }
+        }
+        Response::CalendarYear { id, result } => {
+            if state.calendar_year_request != Some(id) {
+                return;
+            }
+            state.calendar_year_request = None;
+            state.pending_views = state.pending_views.saturating_sub(1);
+            match result {
+                Ok(data) => {
+                    state.calendar_year = data.year;
+                    state.calendar_year_data = Some(data);
+                }
+                Err(error) => {
+                    let now = clock;
+                    state.set_status(error.message, now);
+                }
             }
         }
         Response::PreviewFiles { result, .. } => {
@@ -1748,6 +1979,9 @@ fn on_key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
     if let Some(handled) = graph_key(state, event) {
         return handled;
     }
+    if let Some(handled) = calendar_key(state, event) {
+        return handled;
+    }
     match &event.key {
         Key::Command('f') => {
             enter_search(state);
@@ -1864,7 +2098,7 @@ fn on_key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
             if matches!(state.route, Route::Authors | Route::Topics) {
                 open_directory_selection(state);
             } else if !state.posts.is_empty() {
-                open_detail(state);
+                begin_detail(state, state.selected);
             }
             true
         }
@@ -1889,6 +2123,8 @@ fn on_key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
                 if state.back_stack.last() == Some(&Route::Feed) {
                     state.back_stack.pop();
                 }
+                state.feed_restore = state.feed_return.take();
+                restore_feed_position(state, tx);
             } else if state.route != Route::Feed {
                 state.open_route(Route::Feed);
             } else if state.filter.is_some() {
@@ -2101,7 +2337,7 @@ fn search_key(state: &mut State, event: &KeyEvent, _tx: &mut Tx) -> bool {
             state.mode = Mode::Normal;
             if !state.posts.is_empty() {
                 stop_video(state);
-                open_detail(state);
+                begin_detail(state, state.selected);
             }
         }
         Key::Text(t) => {
@@ -2124,7 +2360,7 @@ fn enter_search(state: &mut State) {
 
 /// The mouse back button (and the key sheet hint describe the same model):
 /// close the top overlay, leave a text mode, then walk back one route.
-fn navigate_back(state: &mut State, _tx: &mut Tx) {
+fn navigate_back(state: &mut State, tx: &mut Tx) {
     if state.overlay != Overlay::None {
         dismiss_overlay(state);
         return;
@@ -2154,6 +2390,14 @@ fn navigate_back(state: &mut State, _tx: &mut Tx) {
         return;
     };
     state.forward_stack.push(state.route);
+    if previous == Route::Feed && state.route == Route::Detail {
+        // Returning to the feed that is still in memory: keep the page and
+        // restore the reader's spot instead of re-querying from the top.
+        state.feed_restore = state.feed_return.take();
+        state.route = Route::Feed;
+        restore_feed_position(state, tx);
+        return;
+    }
     let filter = state.filter.clone();
     state.apply_route(previous);
     restore_feed_filter(state, filter);
@@ -2612,6 +2856,43 @@ fn bulk_read(state: &mut State, read: bool) {
     }
 }
 
+/// Open a post and remember where the feed was so back can put it there.
+fn begin_detail(state: &mut State, index: usize) {
+    if state.posts.get(index).is_none() {
+        return;
+    }
+    let same_row = state.selected == index;
+    let viewport_top = state.feed_viewport_top.get();
+    let viewport_height = state.feed_viewport_height.get();
+    let anchor = state.feed_anchor_top.get();
+    let relative = anchor - viewport_top;
+    let top =
+        (same_row && relative >= 0.0 && relative <= viewport_height - 8.0).then_some(relative);
+    state.feed_return = Some(FeedReturn {
+        index,
+        top,
+        scroll: state.feed_scroll_offset.get(),
+    });
+    state.selected = index;
+    open_detail(state);
+}
+
+/// Put the reader back where they left the feed. Uses the opened post as a
+/// layout anchor when it was on screen, otherwise the raw viewport offset.
+fn restore_feed_position(state: &mut State, tx: &mut Tx) {
+    let Some(returning) = state.feed_restore.take() else {
+        return;
+    };
+    if returning.index < state.posts.len() {
+        state.selected = returning.index;
+    }
+    if let Some(top) = returning.top {
+        tx.scroll_key_to(format!("post-{}", returning.index), top);
+    } else {
+        tx.scroll_to_y("feed", returning.scroll);
+    }
+}
+
 fn open_detail(state: &mut State) {
     if state.posts.get(state.selected).is_none() {
         return;
@@ -2828,7 +3109,7 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
             Route::Detail => detail_view(state, p),
             Route::Authors => authors_view(state, p),
             Route::Topics => topics_view(state, p),
-            Route::Graph => graph_view(state, p),
+            Route::Graph => graph_view(state, p, cx),
             Route::Calendar => calendar_view(state, p),
             Route::Import => import_view(state, p),
             Route::History => history_view(state, p),
@@ -3124,11 +3405,23 @@ fn feed_view(state: &State, p: Palette) -> El {
                 .child(text("loading").font(theme::mono(10.5)).color(p.muted)),
         );
     }
+    let scroll_offset = state.feed_scroll_offset.clone();
+    let viewport_top = state.feed_viewport_top.clone();
+    let viewport_height = state.feed_viewport_height.clone();
     list.scroll(ScrollSpec {
         stick_bottom: false,
     })
+    .key("feed")
     .grow(1.0)
     .min_h(0.0)
+    .on_scroll_offset(move |pos| {
+        scroll_offset.set(pos.offset[1]);
+    })
+    .on_layout_tx(move |_state: &mut State, rect: [f32; 4], tx: &mut Tx| {
+        viewport_top.set(rect[1]);
+        viewport_height.set(rect[3]);
+        tx.live_only();
+    })
     .on_at_bottom(|state: &mut State, at| {
         if at {
             state.load_more_feed();
@@ -3372,36 +3665,35 @@ fn directory_shell(content: El) -> El {
         .min_h(0.0)
 }
 
-fn graph_center(pan: (f32, f32)) -> (f32, f32) {
-    (360.0 + pan.0, 360.0 + pan.1)
-}
-
-fn graph_screen(state: &State, x: f32, y: f32) -> (f32, f32) {
-    let (cx, cy) = graph_center(state.graph_pan);
+fn graph_pan_limit(state: &State) -> (f32, f32) {
     (
-        cx + x * 300.0 * state.graph_zoom,
-        cy + y * 300.0 * state.graph_zoom,
+        (state.graph_viewport.0 * 0.75).max(120.0),
+        (state.graph_viewport.1 * 0.75).max(120.0),
     )
 }
 
 fn graph_zoom_at(state: &mut State, pointer: (f32, f32), factor: f32) {
     let before = state.graph_zoom;
-    let after = (before * factor).clamp(0.5, 4.0);
+    let after = (before * factor).clamp(0.5, 5.0);
     if (after - before).abs() < f32::EPSILON {
         return;
     }
-    let (cx, cy) = graph_center(state.graph_pan);
+    let center = (state.graph_viewport.0 / 2.0, state.graph_viewport.1 / 2.0);
+    let pan = state.graph_pan;
+    let ratio = after / before;
+    let (limit_x, limit_y) = graph_pan_limit(state);
     state.graph_pan = (
-        (pointer.0 - 360.0 - (pointer.0 - cx) * after / before).clamp(-900.0, 900.0),
-        (pointer.1 - 360.0 - (pointer.1 - cy) * after / before).clamp(-900.0, 900.0),
+        (pointer.0 - center.0 - (pointer.0 - center.0 - pan.0) * ratio).clamp(-limit_x, limit_x),
+        (pointer.1 - center.1 - (pointer.1 - center.1 - pan.1) * ratio).clamp(-limit_y, limit_y),
     );
     state.graph_zoom = after;
 }
 
 fn graph_pan_by(state: &mut State, dx: f32, dy: f32) {
+    let (limit_x, limit_y) = graph_pan_limit(state);
     state.graph_pan = (
-        (state.graph_pan.0 + dx).clamp(-900.0, 900.0),
-        (state.graph_pan.1 + dy).clamp(-900.0, 900.0),
+        (state.graph_pan.0 + dx).clamp(-limit_x, limit_x),
+        (state.graph_pan.1 + dy).clamp(-limit_y, limit_y),
     );
 }
 
@@ -3421,16 +3713,37 @@ fn tag_color(state: &State, tag: &str, p: Palette) -> Color {
     rune::color::hex(DEFAULT[index]).unwrap_or(p.accent)
 }
 
-fn graph_view(state: &State, p: Palette) -> El {
+fn graph_view(state: &State, p: Palette, cx: &mut Cx<State>) -> El {
+    let size = cx.layout_size("graph-field");
+    let viewport = size.unwrap_or([state.graph_viewport.0, state.graph_viewport.1]);
+    let mut field = col()
+        .w_full()
+        .h_full()
+        .key("graph-field")
+        .clip_rounded(0.0)
+        .on_layout_tx(|state: &mut State, rect: [f32; 4], _tx: &mut Tx| {
+            state.graph_viewport = (rect[2], rect[3]);
+        });
     let Some(graph) = &state.graph else {
-        return col().w_full().h_full();
+        return col().w_full().h_full().padding(24.0).child(field);
     };
-    let mut edges = Shape::new();
+    let center = (viewport[0] / 2.0, viewport[1] / 2.0);
+    // The layout is a unit disc; scale it to the field's aspect ratio so a wide
+    // window uses its width instead of leaving the constellation cooped up.
+    let radius_x = 0.46 * viewport[0];
+    let radius_y = 0.46 * viewport[1];
+    let point = |x: f32, y: f32| -> (f32, f32) {
+        (
+            center.0 + state.graph_pan.0 + x * radius_x * state.graph_zoom,
+            center.1 + state.graph_pan.1 + y * radius_y * state.graph_zoom,
+        )
+    };
     let points: Vec<(f32, f32)> = graph
         .nodes
         .iter()
-        .map(|node| graph_screen(state, node.x, node.y))
+        .map(|node| point(node.x, node.y))
         .collect();
+    let mut edges = Shape::new();
     for edge in &graph.edges {
         let Some(from) = points.get(edge.source) else {
             continue;
@@ -3443,20 +3756,17 @@ fn graph_view(state: &State, p: Palette) -> El {
         edges = edges.line(
             [from.0, from.1],
             [to.0, to.1],
-            if focused { 1.4 } else { 1.0 },
+            if focused { 1.4 } else { 0.9 },
             LineCap::Butt,
-            if focused {
-                p.accent.alpha(0.55)
-            } else {
-                p.line
-            },
+            if focused { p.accent.alpha(0.5) } else { p.line },
         );
     }
-    let mut field = col()
-        .size(720.0, 720.0)
-        .clip_rounded(0.0)
-        .motion(crate::motion::GRAPH)
-        .child(canvas(edges).key("graph-edges").size(720.0, 720.0))
+    field = field
+        .child(
+            canvas(edges)
+                .key("graph-edges")
+                .size(viewport[0], viewport[1]),
+        )
         .on_wheel(|state: &mut State, event: WheelEvent, _tx: &mut Tx| {
             if event.mods.shift {
                 graph_pan_by(state, event.dx, event.dy);
@@ -3475,9 +3785,10 @@ fn graph_view(state: &State, p: Palette) -> El {
                 Phase::Down => state.graph_drag_pan = Some(state.graph_pan),
                 Phase::Move => {
                     if let Some(start) = state.graph_drag_pan {
+                        let (limit_x, limit_y) = graph_pan_limit(state);
                         state.graph_pan = (
-                            (start.0 + drag.dx).clamp(-900.0, 900.0),
-                            (start.1 + drag.dy).clamp(-900.0, 900.0),
+                            (start.0 + drag.dx).clamp(-limit_x, limit_x),
+                            (start.1 + drag.dy).clamp(-limit_y, limit_y),
                         );
                     }
                 }
@@ -3488,42 +3799,44 @@ fn graph_view(state: &State, p: Palette) -> El {
             state.graph_zoom = 1.0;
             state.graph_pan = (0.0, 0.0);
         });
+    // Labels are the expensive part of a thousand-node graph: draw them for
+    // the focused node and the most-saved tags, and let the rest be dots.
+    let label_all = graph.nodes.len() <= 140;
+    let label_budget = if label_all { graph.nodes.len() } else { 36 };
     for (index, node) in graph.nodes.iter().enumerate() {
         let (x, y) = points[index];
         let tag = node.tag.clone();
         let focused = state.graph_focus == Some(index);
         let node_color = tag_color(state, &node.tag, p);
+        let weight = (node.bookmark_count.max(1) as f32).ln();
+        let side = (3.4 + weight * 0.7).clamp(4.0, 8.5);
         let dot = el()
             .size(
-                if focused { 8.0 } else { 6.0 },
-                if focused { 8.0 } else { 6.0 },
+                if focused { 9.0 } else { side },
+                if focused { 9.0 } else { side },
             )
-            .radius(4.0)
+            .radius(4.5)
             .fill(if focused { p.accent } else { node_color });
-        field = field.child(
-            row()
-                .absolute(x, y - 8.0)
-                .center_y()
-                .gap(5.0)
-                .on_hover(move |state: &mut State| state.graph_focus = Some(index))
-                .on_press(move |state: &mut State| {
-                    state.graph_focus = Some(index);
-                    state.filter_topic(&tag);
-                })
-                .child(dot)
-                .child(
-                    text(node.tag.clone())
-                        .font(theme::ui(12.5, 400.0))
-                        .color(if focused { p.accent } else { p.ink }),
-                ),
-        );
+        let mut row_view = row()
+            .absolute(x, y - 8.0)
+            .center_y()
+            .gap(5.0)
+            .on_hover(move |state: &mut State| state.graph_focus = Some(index))
+            .on_press(move |state: &mut State| {
+                state.graph_focus = Some(index);
+                state.filter_topic(&tag);
+            })
+            .child(dot);
+        if focused || label_all || index < label_budget {
+            row_view = row_view.child(
+                text(node.tag.clone())
+                    .font(theme::ui(12.5, 400.0))
+                    .color(if focused { p.accent } else { p.ink }),
+            );
+        }
+        field = field.child(row_view);
     }
-    col()
-        .w_full()
-        .h_full()
-        .justify_center()
-        .items_center()
-        .child(field)
+    col().w_full().h_full().padding(24.0).child(field)
 }
 
 fn graph_key(state: &mut State, event: &KeyEvent) -> Option<bool> {
@@ -3548,11 +3861,19 @@ fn graph_key(state: &mut State, event: &KeyEvent) -> Option<bool> {
             Some(true)
         }
         Key::Text(t) if t.as_str() == "+" || t.as_str() == "=" => {
-            graph_zoom_at(state, (360.0, 360.0), 1.15);
+            graph_zoom_at(
+                state,
+                (state.graph_viewport.0 / 2.0, state.graph_viewport.1 / 2.0),
+                1.15,
+            );
             Some(true)
         }
         Key::Text(t) if t.as_str() == "-" => {
-            graph_zoom_at(state, (360.0, 360.0), 1.0 / 1.15);
+            graph_zoom_at(
+                state,
+                (state.graph_viewport.0 / 2.0, state.graph_viewport.1 / 2.0),
+                1.0 / 1.15,
+            );
             Some(true)
         }
         Key::Text(t) if t.as_str() == "0" => {
@@ -3597,36 +3918,131 @@ fn graph_key(state: &mut State, event: &KeyEvent) -> Option<bool> {
 }
 
 fn calendar_view(state: &State, p: Palette) -> El {
-    let Some(calendar) = &state.calendar else {
-        return col().w_full().h_full();
+    let year_mode = state.calendar_mode == CalendarMode::Year;
+    let title = if year_mode {
+        state.calendar_year.to_string()
+    } else {
+        state
+            .calendar
+            .as_ref()
+            .map(|calendar| calendar_month(&calendar.month))
+            .unwrap_or_else(|| calendar_month(&state.calendar_month))
     };
-    let month = calendar_month(&calendar.month);
+    let header = row()
+        .w(710.0)
+        .center_y()
+        .justify_between()
+        .child(calendar_chevron(
+            "‹",
+            if year_mode {
+                "previous year"
+            } else {
+                "previous month"
+            },
+            p,
+            move |state: &mut State| {
+                if year_mode {
+                    state.shift_calendar_year(-1);
+                } else {
+                    state.shift_calendar_month(-1);
+                }
+            },
+        ))
+        .child(
+            text(title)
+                .font(theme::serif(24.0))
+                .color(p.ink)
+                .on_press(|state: &mut State| state.toggle_calendar_mode()),
+        )
+        .child(calendar_chevron(
+            "›",
+            if year_mode { "next year" } else { "next month" },
+            p,
+            move |state: &mut State| {
+                if year_mode {
+                    state.shift_calendar_year(1);
+                } else {
+                    state.shift_calendar_month(1);
+                }
+            },
+        ));
+    let body = if year_mode {
+        calendar_year_body(state, p)
+    } else {
+        calendar_month_body(state, p)
+    };
+    col()
+        .w_full()
+        .h_full()
+        .justify_center()
+        .items_center()
+        .gap(24.0)
+        .child(header)
+        .child(body)
+}
+
+fn calendar_chevron(
+    label: &str,
+    aria: &'static str,
+    p: Palette,
+    on_press: impl Fn(&mut State) + 'static,
+) -> El {
+    text(label.to_string())
+        .font(theme::serif(20.0))
+        .color(p.muted)
+        .role("button")
+        .label(aria)
+        .on_press(on_press)
+}
+
+fn calendar_month_body(state: &State, p: Palette) -> El {
+    let Some(calendar) = state.calendar.as_ref() else {
+        return col().w(710.0).h(420.0);
+    };
+    let today = Utc::now().format("%Y-%m-%d").to_string();
     let mut head = row().w(710.0).gap(4.0);
+    head = head.child(el().w(26.0));
+    head = head.child(el().w(2.0));
     for day in ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] {
         head = head.child(
             text(day)
-                .w(98.0)
+                .w(92.8)
                 .align(Align::End)
                 .font(theme::ui(11.5, 400.0))
                 .color(p.muted),
         );
     }
     let mut grid = col().w(710.0).gap(4.0).child(head);
-    for week in calendar.days.chunks(7) {
-        let mut row_view = row().w(710.0).gap(4.0);
+    for (week_index, week) in calendar.days.chunks(7).enumerate() {
+        let selected = week_index == state.calendar_week;
+        let week_count: i64 = week.iter().map(|day| day.bookmark_count).sum();
+        let mut gutter = col().w(26.0).h(64.0).justify_center().items_end();
+        if selected {
+            gutter = gutter.child(
+                text(week_count.to_string())
+                    .font(theme::mono(10.5))
+                    .color(p.muted),
+            );
+        }
+        let mut cells = row().gap(4.0);
         for day in week {
             let date = day.date.clone();
+            let open_date = day.date.clone();
             let mut cell = col()
-                .w(98.0)
+                .w(92.8)
                 .h(64.0)
                 .gap(5.0)
                 .padding(6.0)
+                .hover(p.band)
                 .on_press(move |state: &mut State| state.filter_day(&date));
             if let Some(number) = day.date.get(8..10) {
+                let is_today = day.date == today;
                 cell = cell.child(
                     text(number.trim_start_matches('0').to_string())
-                        .font(theme::mono(11.0))
-                        .color(if day.bookmark_count > 0 {
+                        .font(theme::mono(12.5))
+                        .color(if is_today {
+                            p.progress
+                        } else if day.bookmark_count > 0 {
                             p.ink
                         } else {
                             p.muted
@@ -3634,22 +4050,186 @@ fn calendar_view(state: &State, p: Palette) -> El {
                 );
             }
             let mut dots = row().gap(3.0);
-            for _ in 0..day.bookmark_count.min(4) {
-                dots = dots.child(el().size(4.0, 4.0).radius(2.0).fill(p.accent));
+            for (dot_index, bookmark_id) in day.bookmark_ids.iter().take(4).enumerate() {
+                let id = bookmark_id.clone();
+                let day = open_date.clone();
+                dots = dots.child(
+                    el().size(4.0, 4.0)
+                        .radius(2.0)
+                        .fill(p.progress)
+                        .role("button")
+                        .label(format!("open saved post {} from this day", dot_index + 1))
+                        .on_press(move |state: &mut State| {
+                            state.open_calendar_post(&day, id.clone());
+                        }),
+                );
             }
             cell = cell.child(dots);
-            row_view = row_view.child(cell);
+            cells = cells.child(cell);
         }
-        grid = grid.child(row_view);
+        grid = grid.child(
+            row()
+                .w(710.0)
+                .center_y()
+                .gap(4.0)
+                .child(gutter)
+                .child(
+                    el().w(2.0)
+                        .h(64.0)
+                        .fill(if selected { p.progress } else { p.bg }),
+                )
+                .child(cells),
+        );
     }
-    col()
-        .w_full()
-        .h_full()
-        .justify_center()
+    grid
+}
+
+const MONTH_NAMES: [&str; 12] = [
+    "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
+];
+
+fn calendar_year_body(state: &State, p: Palette) -> El {
+    let Some(data) = state.calendar_year_data.as_ref() else {
+        return col().w(710.0).h(420.0);
+    };
+    let year = data.year;
+    let counts: std::collections::HashMap<&str, i64> = data
+        .days
+        .iter()
+        .map(|day| (day.date.as_str(), day.bookmark_count))
+        .collect();
+    let mut plates = col().w(710.0).gap(14.0);
+    for row_index in 0..3 {
+        let mut plate_row = row().w(710.0).gap(13.0);
+        for column_index in 0..4 {
+            let month_index = row_index * 4 + column_index;
+            plate_row = plate_row.child(calendar_month_plate(
+                year,
+                month_index,
+                state.calendar_year_focus == month_index,
+                &counts,
+                p,
+            ));
+        }
+        plates = plates.child(plate_row);
+    }
+    plates
+}
+
+fn calendar_month_plate(
+    year: i32,
+    month_index: usize,
+    selected: bool,
+    counts: &std::collections::HashMap<&str, i64>,
+    p: Palette,
+) -> El {
+    let month = (month_index + 1) as u32;
+    let first = NaiveDate::from_ymd_opt(year, month, 1).unwrap_or_default();
+    let offset = first.weekday().num_days_from_monday() as usize;
+    let days_in_month = days_in_month(year, month);
+    let mut cells: Vec<Option<(String, i64)>> = vec![None; offset];
+    for day in 1..=days_in_month {
+        let date = format!("{year:04}-{month:02}-{day:02}");
+        let count = *counts.get(date.as_str()).unwrap_or(&0);
+        cells.push(Some((date, count)));
+    }
+    while !cells.len().is_multiple_of(7) {
+        cells.push(None);
+    }
+    let mut mini = col().gap(3.0);
+    for week in cells.chunks(7) {
+        let mut mini_row = row().gap(3.0);
+        for cell in week {
+            let dot = match cell {
+                Some((date, count)) if *count > 0 => {
+                    let date = date.clone();
+                    let alpha = if *count <= 2 {
+                        0.28
+                    } else if *count <= 8 {
+                        0.55
+                    } else {
+                        1.0
+                    };
+                    el().size(4.0, 4.0)
+                        .radius(2.0)
+                        .fill(p.progress.alpha(alpha))
+                        .on_press(move |state: &mut State| state.filter_day(&date))
+                }
+                Some(_) => el().size(4.0, 4.0).radius(2.0).fill(p.line),
+                None => el().size(4.0, 4.0),
+            };
+            mini_row = mini_row.child(dot);
+        }
+        mini = mini.child(mini_row);
+    }
+    let month_name = MONTH_NAMES[month_index].to_string();
+    let plate = col()
+        .w(168.0)
+        .h(120.0)
+        .padding(10.0)
+        .gap(10.0)
         .items_center()
-        .gap(18.0)
-        .child(text(month).font(theme::serif(24.0)).color(p.ink))
-        .child(grid)
+        .radius(2.0)
+        .hover(p.band)
+        .on_press(move |state: &mut State| {
+            state.request_calendar_month(format!("{year:04}-{month:02}"));
+        })
+        .child(text(month_name).font(theme::mono(10.5)).color(if selected {
+            p.ink
+        } else {
+            p.muted
+        }))
+        .child(mini);
+    if selected {
+        row()
+            .w(170.0)
+            .h(120.0)
+            .gap(2.0)
+            .child(el().w(2.0).h(120.0).fill(p.progress))
+            .child(plate)
+    } else {
+        plate
+    }
+}
+
+fn days_in_month(year: i32, month: u32) -> u32 {
+    let (next_year, next_month) = if month == 12 {
+        (year + 1, 1)
+    } else {
+        (year, month + 1)
+    };
+    let first_next = NaiveDate::from_ymd_opt(next_year, next_month, 1)
+        .unwrap_or_else(|| NaiveDate::from_ymd_opt(year, 1, 1).unwrap_or_default());
+    let first = NaiveDate::from_ymd_opt(year, month, 1).unwrap_or_default();
+    first_next.signed_duration_since(first).num_days().max(0) as u32
+}
+
+fn shift_month(month: &str, delta: i32) -> Option<String> {
+    let (year, month) = month.split_once('-')?;
+    let year: i32 = year.parse().ok()?;
+    let month: i32 = month.parse().ok()?;
+    if !(1..=12).contains(&month) {
+        return None;
+    }
+    let total = year * 12 + (month - 1) + delta;
+    if total < 0 {
+        return None;
+    }
+    Some(format!("{:04}-{:02}", total / 12, total % 12 + 1))
+}
+
+fn month_year(month: &str) -> i32 {
+    month
+        .get(..4)
+        .and_then(|year| year.parse().ok())
+        .unwrap_or_else(|| Utc::now().format("%Y").to_string().parse().unwrap_or(2026))
+}
+
+fn month_index(month: &str) -> Option<usize> {
+    month
+        .get(5..7)
+        .and_then(|month| month.parse::<usize>().ok())
+        .map(|month| month.saturating_sub(1).min(11))
 }
 
 fn calendar_month(value: &str) -> String {
@@ -5063,6 +5643,100 @@ fn post_url(state: &State, index: usize) -> Option<String> {
     state.posts.get(index).map(|post| post.tweet_url.clone())
 }
 
+fn calendar_key(state: &mut State, event: &KeyEvent) -> Option<bool> {
+    if state.route != Route::Calendar {
+        return None;
+    }
+    match state.calendar_mode {
+        CalendarMode::Month => match &event.key {
+            Key::Left => {
+                state.shift_calendar_week(-1);
+                Some(true)
+            }
+            Key::Right => {
+                state.shift_calendar_week(1);
+                Some(true)
+            }
+            Key::Up => {
+                state.shift_calendar_month(-1);
+                Some(true)
+            }
+            Key::Down => {
+                state.shift_calendar_month(1);
+                Some(true)
+            }
+            Key::Text(t) if t.as_str() == "[" => {
+                state.shift_calendar_month(-1);
+                Some(true)
+            }
+            Key::Text(t) if t.as_str() == "]" => {
+                state.shift_calendar_month(1);
+                Some(true)
+            }
+            Key::Text(t) if t.as_str() == "y" => {
+                state.toggle_calendar_mode();
+                Some(true)
+            }
+            Key::Text(t) if t.as_str() == "t" => {
+                state.calendar_today();
+                Some(true)
+            }
+            Key::Enter => {
+                state.filter_calendar_week();
+                Some(true)
+            }
+            Key::Escape => {
+                state.open_route(Route::Feed);
+                Some(true)
+            }
+            _ => None,
+        },
+        CalendarMode::Year => match &event.key {
+            Key::Left => {
+                state.calendar_year_focus = state.calendar_year_focus.saturating_sub(1);
+                Some(true)
+            }
+            Key::Right => {
+                state.calendar_year_focus = (state.calendar_year_focus + 1).min(11);
+                Some(true)
+            }
+            Key::Up => {
+                state.calendar_year_focus = state.calendar_year_focus.saturating_sub(4);
+                Some(true)
+            }
+            Key::Down => {
+                state.calendar_year_focus = (state.calendar_year_focus + 4).min(11);
+                Some(true)
+            }
+            Key::Text(t) if t.as_str() == "[" || t.as_str() == "-" => {
+                state.shift_calendar_year(-1);
+                Some(true)
+            }
+            Key::Text(t) if t.as_str() == "]" || t.as_str() == "=" => {
+                state.shift_calendar_year(1);
+                Some(true)
+            }
+            Key::Text(t) if t.as_str() == "y" => {
+                state.toggle_calendar_mode();
+                Some(true)
+            }
+            Key::Text(t) if t.as_str() == "t" => {
+                state.calendar_today();
+                Some(true)
+            }
+            Key::Enter => {
+                state.toggle_calendar_mode();
+                Some(true)
+            }
+            Key::Escape => {
+                state.calendar_mode = CalendarMode::Month;
+                Some(true)
+            }
+            _ => None,
+        },
+    }
+}
+
 fn post_text(post: &Post, p: Palette, width: f32, detail: bool, index: usize) -> El {
     let (body, pieces) = body_text(post);
     let mut view = text(body)
@@ -5093,9 +5767,8 @@ fn post_text(post: &Post, p: Palette, width: f32, detail: bool, index: usize) ->
     if !detail {
         view = view.on_press(move |state: &mut State| {
             // Clicking a body opens the post under the pointer, not whichever
-            // row the keyboard happened to select before.
-            state.selected = index;
-            open_detail(state);
+            // row the keyboard had selected.
+            begin_detail(state, index);
         });
     }
     view.on_link(|state: &mut State, id: &str, tx: &mut Tx| {
@@ -5464,11 +6137,18 @@ fn post_view(state: &State, post: &Post, index: usize, p: Palette, detail: bool)
         );
     }
 
-    let row_view = row()
+    let mut row_view = row()
         .w_full()
         .justify_center()
         .key(format!("post-{index}"))
         .child(group);
+    if selected && !detail {
+        let anchor = state.feed_anchor_top.clone();
+        row_view = row_view.on_layout_tx(move |_state: &mut State, rect: [f32; 4], tx: &mut Tx| {
+            anchor.set(rect[1]);
+            tx.live_only();
+        });
+    }
     if detail {
         row_view
     } else {
@@ -5516,9 +6196,8 @@ fn quote_view(
     index: usize,
 ) -> El {
     quote_view_body(state, quote, post, p, content_w).on_press(move |state: &mut State| {
-        state.selected = index;
         if state.route != Route::Detail {
-            open_detail(state);
+            begin_detail(state, index);
         }
     })
 }

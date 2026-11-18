@@ -292,6 +292,59 @@
         "noor haddad"
       ],
       "min_texts": 10
+    },
+    {
+      "id": "feed-return",
+      "script": "scripts/feed-return.json",
+      "dataset": "main",
+      "route": "feed",
+      "size": "1440x900",
+      "themes": [
+        "light"
+      ],
+      "at": 8.0,
+      "expect": [
+        "a good archive remembers"
+      ],
+      "visible_expect": [
+        "a good archive remembers"
+      ],
+      "min_texts": 10,
+      "tree": false
+    },
+    {
+      "id": "calendar-year",
+      "script": "scripts/calendar-year.json",
+      "dataset": "main",
+      "route": "calendar",
+      "size": "1440x900",
+      "themes": [
+        "light"
+      ],
+      "at": 3.2,
+      "expect": [
+        "2025",
+        "jan",
+        "dec"
+      ],
+      "min_texts": 10
+    },
+    {
+      "id": "calendar-week",
+      "script": "scripts/calendar-week.json",
+      "dataset": "main",
+      "route": "calendar",
+      "size": "1440x900",
+      "themes": [
+        "light"
+      ],
+      "at": 3.0,
+      "expect": [
+        "august 2025",
+        "mon",
+        "sun"
+      ],
+      "min_texts": 8
     }
   ],
   "limits": {

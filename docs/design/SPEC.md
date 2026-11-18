@@ -53,7 +53,7 @@ eterea is a local reading app for an X/Twitter bookmark archive. It imports a CS
 - Feed: reading column 720px centered. Marginalia rail 86px wide, right-aligned, ending 12px left of the column. The 150px rail ending 30px left from the Daylight prototype does not fit a 720px column inside the 960px minimum window, so the rail stays narrow; a wider rail is a follow-up once the column is responsive. Content starts 64px below the header.
 - Post rhythm: 64px between posts, carried as 32px above and below each post. A saved-day change puts one 1px `line` inside that rhythm; it does not add to it.
 - Selection: 2px pale accent rule (32% accent) in the 12px rail gap, 18px tall and aligned with the byline's centre. It is not full post height. Selected post scrolls into view.
-- Detail: same column, 740px when media needs the room, vertically centered when short. Back returns to the previous scroll position. Viewer tags are editable, the last line carries `edit tags` and `delete`; delete confirms before writing.
+- Detail: same column, 740px when media needs the room, vertically centered when short. Back returns to the previous scroll position by anchoring the opened post where it was drawn, so avatars or media finishing above it never move the reader's spot. Viewer tags are editable, the last line carries `edit tags` and `delete`; delete confirms before writing.
 - Media: column width. One image 720x420; two 358x252 with 3px gaps; three: one 720x360 plus two 358x252; four: 2x2 at 358x252. Radius 2px. Always reserve the aspect ratio.
 - Quote: 18px indent, 1px `quote rule` on the left, 14/21 Instrument text, optional 72px thumbnail on the right. No label, no card, no rounded box.
 - Right/left margins stay empty. Do not add a sidebar or inspector.
@@ -170,11 +170,21 @@ A filter row at the top of the column: 720px wide, 36px tall, 1px `line` bottom 
 
 ### Graph
 
-White field. Nodes are tags, 12.5px labels, colored dots; edges are 1px `line`. Deterministic layout, 720px square centered, with wheel/pinch zoom around the pointer, Shift-wheel and drag pan, `+`/`-`/`0` and arrow keys. Click a tag to filter the feed; Esc returns. Hover/Tab focuses a node; `c` opens eight token color swatches and a persisted per-tag override. Enter filters. No counts on nodes; the count can appear in the status line while a node is focused.
+One of the two full-bleed screens (with the lightbox): the graph uses the whole content area after the 56px header and 24px footer, inset 24px, instead of the 720px reading column. Empty space is part of the instrument; nothing is cropped by a fixed square.
+
+Nodes are tags: colored dots sized by saved-post count, 12.5px labels; edges are hairline `line` strokes, thicker and accent-tinted around the focused node. The layout is deterministic force-directed on the unit disc (co-occurring tags attract, popular tags drift toward the centre, tag-name hash seeds the start), scaled to the field's aspect ratio, so a wide window fills its width. Wheel/pinch zoom around the pointer, Shift-wheel and drag pan, `+`/`-`/`0` (fit) and arrow keys; zoom and pan are clamped so the constellation can never be lost off-screen, and `0` returns to the fitted view. Double-press fits too.
+
+Label level of detail keeps a thousand tags legible: up to 140 tags show every label; larger graphs label the 36 most-saved tags plus whatever is focused, and the rest stay as dots. Click a tag to filter the feed; Esc returns. Hover/Tab focuses a node; `c` opens eight token color swatches and a persisted per-tag override. Enter filters. No counts on nodes; the count can appear in the status line while a node is focused.
 
 ### Calendar
 
-Month title in Newsreader 24. Mon-first 5-week grid, 12.5px numbers, 4px marks per saved post, 2px accent rule on the selected week. Click a week to filter/scroll the feed; click a mark to open the post. Arrow keys move weeks; Enter filters. No dashboard chrome, no totals banner. One count in the selected week row if it is a data count.
+Browses the archive by month and year without leaving the reading column.
+
+- **Header:** `November 2026` in Newsreader 24, centred, with quiet `‹` / `›` chevrons. The title is a button that opens the **year overview**; returning from it restores the month. Clicking a chevron moves one month (or one year in the overview). Month switches fade and rise 160ms; reduced motion snaps.
+- **Month grid:** mon-first, 5/6 weeks, 12.5px numbers, up to four 4px accent marks per saved day, a 2px accent rule on the selected week, and that week's saved-post count in 10.5px mono in the left gutter. Today's number is accent. Click a day to filter the feed by that day; click a mark to filter that day and open the post; click the week gutter/rule to select the week.
+- **Year overview:** twelve month plates, four per row, 168x120 each. Each plate has a lowercase mono month name and a 7-column day grid of 4px dots: no saved post is `line`, one to two is 28% accent, three to eight is 55% accent, nine or more is full accent. The focused month carries the 2px accent rule; clicking a plate opens that month; clicking a day dot filters that day.
+- **Keyboard (Calendar route):** `←`/`→` previous/next week (crossing a month edge loads the neighbour and continues), `↑`/`↓` previous/next month, `[`/`]` previous/next month, `y` toggles the year overview, `t` jumps to the current month, `Enter` filters the feed by the selected week, `Esc` leaves the year overview first, then returns to the feed. In the year overview arrows move the focused month (`←`/`→` by one, `↑`/`↓` by four), `[`/`]` move years, `Enter` opens the focused month.
+- No dashboard chrome and no totals banner; the only count is the selected week's data count.
 
 ### Import
 

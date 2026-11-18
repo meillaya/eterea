@@ -3,7 +3,9 @@
 //! These exercise the public [`StoreHandle`] exactly like the desktop shell
 //! will: queue a typed request, poll a typed response, and compare request ids.
 
-use eterea_app::{BookmarkQuery, CalendarRequest, GraphRequest, Response, StoreHandle};
+use eterea_app::{
+    BookmarkQuery, CalendarRequest, CalendarYearRequest, GraphRequest, Response, StoreHandle,
+};
 use std::time::Duration;
 use tempfile::NamedTempFile;
 
@@ -135,6 +137,17 @@ fn actor_covers_feed_detail_mutations_stats_and_indexes() {
             assert_eq!(calendar.days.len(), 35);
         }
         other => panic!("expected calendar response, got {other:?}"),
+    }
+    let year_id = handle.calendar_year(CalendarYearRequest::new(2026));
+    match recv(&handle) {
+        Response::CalendarYear { id, result } => {
+            assert_eq!(id, year_id);
+            let year = result.expect("calendar year should load");
+            assert_eq!(year.year, 2026);
+            assert!(!year.days.is_empty());
+            assert!(year.days.iter().all(|day| day.date.starts_with("2026-")));
+        }
+        other => panic!("expected calendar year response, got {other:?}"),
     }
 
     // Delete mutation.

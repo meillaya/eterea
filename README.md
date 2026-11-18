@@ -160,6 +160,10 @@ The archive lives at `<platform data dir>/eterea/bookmarks.db`. On Linux that is
   round-trippable nested data.
 - Keeps quotes, favorites, media metadata, an interactive tag graph with persisted
   colors, and a calendar month.
+- Browses the archive on a calendar: month grid with a selected-week rule and
+  per-day marks, a year overview of twelve month plates whose dots shade with
+  saved-post density, `‹ ›` month chevrons, `[`/`]`, `t` for today and `y` for
+  the year view.
 - Switches between system, light and dark appearance, three text sizes, automatic
   or on-demand media, and system or reduced motion. Preferences persist.
 - Ships a Verus reference model, bounded Kani harnesses, Miri tests and fuzz

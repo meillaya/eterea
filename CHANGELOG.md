@@ -6,6 +6,22 @@ has actually been captured.
 
 ## Unreleased
 
+- The graph now uses the whole content area instead of a fixed 720px square:
+  wheel/pinch zoom and pan are clamped so the constellation cannot be cropped,
+  `0`/double-press fit it, and the deterministic layout is force-directed rather
+  than a plain circle, scaled to the field's aspect ratio. Up to 1,200 tags and
+  6,000 edges are supported; labels are level-of-detail (140 tags label
+  everything, larger graphs label the 36 most-saved plus the focused tag).
+- Reworked the calendar into a real browser: a header with month chevrons and a
+  year-overview toggle, a selected-week accent rule with the week's data count,
+  clickable per-day marks that open the post, keyboard week/month/year
+  navigation (`←/→`, `↑/↓`, `[`/`]`, `y`, `t`, `Enter`), cached months and a
+  twelve-plate year overview whose dot shading shows saved-post density.
+- Returning from a post now restores the feed exactly where it was: the opened
+  post is remembered as a layout anchor (or the raw scroll offset when the
+  selection was off screen), so `esc`/mouse-back land on the same spot even
+  after avatars or media finish loading. Returning to the cached feed no longer
+  re-queries page 0.
 - Added an opt-in `repair media` palette command: rows imported without media
   are filled from X's public embed payload (media and video variants, quoted
   post with its carousel, expanded links, hashtags, current author name and

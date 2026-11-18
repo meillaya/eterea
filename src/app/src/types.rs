@@ -153,8 +153,8 @@ pub struct GraphRequest {
 impl GraphRequest {
     pub const DEFAULT_MAX_NODES: usize = 40;
     pub const DEFAULT_MAX_EDGES: usize = 240;
-    pub const MAX_NODES: usize = 200;
-    pub const MAX_EDGES: usize = 2_000;
+    pub const MAX_NODES: usize = 1_200;
+    pub const MAX_EDGES: usize = 6_000;
 
     pub fn new(max_nodes: usize, max_edges: usize) -> Self {
         Self {
@@ -225,6 +225,32 @@ impl CalendarRequest {
             month: month.into(),
         }
     }
+}
+
+/// Requested calendar year, for the year overview.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CalendarYearRequest {
+    pub year: i32,
+}
+
+impl CalendarYearRequest {
+    pub fn new(year: i32) -> Self {
+        Self { year }
+    }
+}
+
+/// One day with saved posts, for the year overview heatmap.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CalendarDayCount {
+    pub date: String,
+    pub bookmark_count: i64,
+}
+
+/// A whole year of saved-post counts (only days that have posts).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct CalendarYearData {
+    pub year: i32,
+    pub days: Vec<CalendarDayCount>,
 }
 
 /// One day cell of the calendar grid.

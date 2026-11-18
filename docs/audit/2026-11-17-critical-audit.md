@@ -157,6 +157,11 @@ schema v3) and fixed:
   the 12px rail gap and aligned with the byline centre; the old full-height ink
   bar ran the length of media posts and clipped the date rail (the marker sat
   at -14px while the rail ended at -12px).
+- **Leaving and returning keeps the reader's place.** The feed remembers the
+  opened post's window position as a layout anchor (falling back to the raw
+  scroll offset when the selection was off screen) and restores it on
+  `esc`/mouse-back, without re-querying page 0. Verified to the pixel in a
+  headless script (scrolled feed → Enter → Esc, post positions unchanged).
 - **Clicking a post selects the post under the pointer.** Body, quote card and
   media tiles now set the selection first; previously the body handler called
   `open_detail` on the stale selection, so a click opened the keyboard-selected
@@ -213,7 +218,27 @@ user-supplied token remains the durable alternative (not implemented). The
 payload's `user.id_str` is not stored yet — adding it (schema v4) is the clean
 way to survive handle renames.
 
-### 2.8 Documentation corrected in this pass
+### 2.8 Calendar browsing and feed-return (approved follow-up)
+
+The calendar's known gaps (single static month, no week selection, arrow keys
+falling through to the hidden feed) were closed: month chevrons and a year
+overview, a selected-week accent rule with its data count, mark-to-post,
+month/week/year keys, cached months and a year heatmap. The feed now remembers
+the opened post as a layout anchor and restores it on `esc`/mouse-back (verified
+pixel-identical in a headless script), without re-querying page 0.
+
+### 2.9 Graph scale and calendar colour (approved follow-up)
+
+The graph's fixed 720px square became a full-bleed field sized from
+`Cx::layout_size`, with clamped zoom/pan, `0`/double-press fit, and an
+aspect-scaled deterministic force-directed layout on the store thread. Caps
+rose to 1,200 nodes / 6,000 edges and label level-of-detail keeps the view
+readable (140 tags at or below label everything; larger graphs label the 36
+most-saved plus the focused tag). Calendar marks, the selected-week rule, today
+and the year heatmap now use the same lavender token as the repair progress
+bar, so the two new surfaces match the rest of the interface.
+
+### 2.10 Documentation corrected in this pass
 
 - `docs/design/SPEC.md`: header nav now includes `search`; footer hint and
   scrimless key sheet; 64 px rhythm wording; rail width documented as 86 px
@@ -227,7 +252,7 @@ way to survive handle renames.
 - `docs/architecture.md`: schema version 3 and the migration-v3 reason.
 - `verification/COVERAGE.md`, `docs/operations/release-readiness.md`,
   `docs/verification/formal-verification.md`, `verification/README.md`:
-  UI-matrix and media-test counts corrected (95 captures, 101+16 media tests).
+  UI-matrix and media-test counts corrected (98 captures, 101+16 media tests).
 
 ---
 
@@ -415,7 +440,7 @@ cannot prove real-GPU text shaping or input-device behaviour.
 | `cargo test --workspace` | PASS — every workspace test target green; `eterea-core` 114 tests (2 ignored perf), media 97 unit + 16 public-API + 1 doc-test, app/desktop tests green, 0 failures. |
 | `cargo clippy --workspace --all-targets` | PASS, 0 warnings. |
 | `cargo fmt --all -- --check` | PASS after applying `cargo fmt` to the tree (two new backend tests were unformatted). |
-| UI matrix (`scripts/ui-harness.sh --strict`) | **PASS — 95/95 cases**, goldens image 95/95 and tree 95/95, copy lint 0 errors, 0 clipping warnings; 10 scripted cases cover the keys sheet, search, mouse back, directory filter, click-to-open, export, selection and carousel. |
+| UI matrix (`scripts/ui-harness.sh --strict`) | **PASS — 98/98 cases**, goldens image 98/98 and tree 98/98, copy lint 0 errors, 0 clipping warnings; 12 scripted cases cover the keys sheet, search, mouse back, directory filter, click-to-open, export, selection, carousel, feed-return and calendar browsing. |
 | `python3 scripts/check-doc-links.py README.md 'docs/**/*.md'` | PASS, 0 broken local targets. |
 | Release packaging | unchanged by this pass; `scripts/package-linux-release.sh` still the distributable path (release build not re-run here). |
 | Local archive reproducibility | Migration v3 was verified end-to-end on a copy of the live archive: 11,846 bookmarks preserved, FTS "film" = 553, `integrity_check` ok, `user_version = 3`; system SQLite 3.54 now opens the migrated file (before: shadow-trigger parse error). |

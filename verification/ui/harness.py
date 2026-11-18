@@ -120,6 +120,10 @@ class Case:
     absent: tuple[str, ...] = ()
     min_texts: int = 6
     visible_min: int = 0
+    # Scripts that mount media/avatars asynchronously can leave the element
+    # tree timing-dependent while the image stays stable; such cases check the
+    # pixels only.
+    tree: bool = True
 
     @property
     def width(self) -> int:
@@ -285,6 +289,7 @@ def build_cases(matrix: dict) -> list[Case]:
                     absent=tuple(script_case.get("absent", [])),
                     min_texts=int(script_case.get("min_texts", 8)),
                     visible_min=int(script_case.get("min_visible_texts", len(visible))),
+                    tree=bool(script_case.get("tree", True)),
                 )
             )
     return cases
@@ -851,7 +856,9 @@ def golden_errors(
                     f"got {str(info.get('image_sha256'))[:16]}; {info.get('image_bytes')} bytes); "
                     "review the visual change, then run --update"
                 )
-        if info.get("tree_sha256") is None:
+        if not case.tree:
+            pass
+        elif info.get("tree_sha256") is None:
             pass  # the capture itself is missing or invalid; reported above
         elif expected.get("tree_sha256") == info.get("tree_sha256"):
             tree_matches += 1

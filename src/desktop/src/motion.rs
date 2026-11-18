@@ -14,7 +14,6 @@ pub const LIGHTBOX: Spring = Spring::new(0.18, 0.0);
 pub const MEDIA: Spring = Spring::new(0.18, 0.0);
 pub const STATUS: Spring = Spring::new(0.12, 0.0);
 pub const CAROUSEL: Spring = Spring::new(0.16, 0.08);
-pub const GRAPH: Spring = Spring::new(0.12, 0.0);
 
 pub fn spring(reduced: bool, normal: Spring) -> Spring {
     if reduced {

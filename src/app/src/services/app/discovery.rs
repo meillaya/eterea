@@ -6,7 +6,8 @@
 
 use super::AppServices;
 use crate::types::{
-    CalendarData, CalendarDay, CalendarRequest, GraphData, GraphEdge, GraphNode, GraphRequest,
+    CalendarData, CalendarDay, CalendarDayCount, CalendarRequest, CalendarYearData,
+    CalendarYearRequest, GraphData, GraphEdge, GraphNode, GraphRequest,
 };
 use anyhow::{bail, Context, Result};
 use chrono::{Datelike, Duration as ChronoDuration, NaiveDate, TimeZone, Utc};
@@ -24,24 +25,23 @@ impl AppServices {
             .db
             .get_top_tags(request.max_nodes)
             .context("failed to load graph tags")?;
-        let nodes = layout_nodes(&tags);
+        let index: HashMap<&str, usize> = tags
+            .iter()
+            .enumerate()
+            .map(|(node_index, (tag, _))| (tag.as_str(), node_index))
+            .collect();
 
-        let mut edges = Vec::new();
-        if request.max_edges > 0 && !nodes.is_empty() {
-            let index: HashMap<&str, usize> = nodes
-                .iter()
-                .enumerate()
-                .map(|(node_index, node)| (node.tag.as_str(), node_index))
-                .collect();
+        let mut pairs = Vec::new();
+        if request.max_edges > 0 && !tags.is_empty() {
             // Ask for more pairs than needed because pairs touching tags that
             // did not make the node cut are filtered out below.
-            let scan_limit = request.max_edges.saturating_mul(8);
-            let pairs = self
+            let scan_limit = request.max_edges.saturating_mul(4);
+            for pair in self
                 .db
                 .get_tag_cooccurrences(scan_limit)
-                .context("failed to load graph edges")?;
-            for pair in pairs {
-                if edges.len() >= request.max_edges {
+                .context("failed to load graph edges")?
+            {
+                if pairs.len() >= request.max_edges {
                     break;
                 }
                 let (Some(&source), Some(&target)) = (
@@ -50,15 +50,49 @@ impl AppServices {
                 ) else {
                     continue;
                 };
-                edges.push(GraphEdge {
-                    source,
-                    target,
-                    weight: pair.bookmark_count,
-                });
+                pairs.push((source, target, pair.bookmark_count));
             }
         }
 
+        let nodes = layout_nodes(&tags, &pairs);
+        let edges = pairs
+            .into_iter()
+            .map(|(source, target, weight)| GraphEdge {
+                source,
+                target,
+                weight,
+            })
+            .collect();
         Ok(GraphData { nodes, edges })
+    }
+
+    /// One year of per-day saved-post counts for the year overview.
+    pub fn calendar_year_data(&self, request: &CalendarYearRequest) -> Result<CalendarYearData> {
+        if !(1970..=2100).contains(&request.year) {
+            anyhow::bail!("calendar year {} is out of range", request.year);
+        }
+        let start = Utc
+            .with_ymd_and_hms(request.year, 1, 1, 0, 0, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("invalid calendar year {}", request.year))?;
+        let end = Utc
+            .with_ymd_and_hms(request.year + 1, 1, 1, 0, 0, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("invalid calendar year {}", request.year))?;
+        let days = self
+            .db
+            .get_calendar_year_counts(start.timestamp(), end.timestamp())
+            .context("failed to load calendar year counts")?
+            .into_iter()
+            .map(|(date, bookmark_count)| CalendarDayCount {
+                date,
+                bookmark_count,
+            })
+            .collect();
+        Ok(CalendarYearData {
+            year: request.year,
+            days,
+        })
     }
 
     /// Monday-first calendar grid for one UTC month.
@@ -127,26 +161,123 @@ impl AppServices {
     }
 }
 
-/// Place tags on the unit circle: first tag at the top, clockwise, equal
-/// spacing. A single tag sits at the centre.
-fn layout_nodes(tags: &[(String, i64)]) -> Vec<GraphNode> {
-    let node_count = tags.len();
-    tags.iter()
-        .enumerate()
-        .map(|(index, (tag, bookmark_count))| {
-            let (x, y) = if node_count <= 1 {
-                (0.0, 0.0)
-            } else {
-                let step = std::f32::consts::TAU / node_count as f32;
-                let angle = -std::f32::consts::FRAC_PI_2 + step * index as f32;
-                (angle.cos(), angle.sin())
-            };
-            GraphNode {
-                tag: tag.clone(),
-                bookmark_count: *bookmark_count,
-                x,
-                y,
+/// Deterministic force-directed layout on the unit disc.
+///
+/// Co-occurring tags attract, every node repels its neighbours through a grid
+/// (so the pass stays near-linear for a thousand nodes), popular tags get a
+/// gentle pull to the middle, and the final cloud is normalised to a unit
+/// disc. The seed is the tag name, not its rank, so the same archive always
+/// produces the same constellation.
+fn layout_nodes(tags: &[(String, i64)], edges: &[(usize, usize, i64)]) -> Vec<GraphNode> {
+    let count = tags.len();
+    if count == 0 {
+        return Vec::new();
+    }
+    let mut positions: Vec<(f32, f32)> = tags
+        .iter()
+        .map(|(tag, _)| {
+            let hash = tag.bytes().fold(0xcbf29ce484222325u64, |hash, byte| {
+                hash.wrapping_mul(1099511628211).wrapping_add(byte as u64)
+            });
+            let angle = (hash % 10_000) as f32 / 10_000.0 * std::f32::consts::TAU;
+            let radius = 0.18 + 0.7 * ((hash >> 20) % 1_000) as f32 / 1_000.0;
+            (angle.cos() * radius, angle.sin() * radius)
+        })
+        .collect();
+    if count == 1 {
+        return vec![GraphNode {
+            tag: tags[0].0.clone(),
+            bookmark_count: tags[0].1,
+            x: 0.0,
+            y: 0.0,
+        }];
+    }
+
+    let iterations = if count > 600 {
+        80
+    } else if count > 250 {
+        130
+    } else {
+        200
+    };
+    let ideal = (2.0 / (count as f32).sqrt()).max(0.02);
+    let mut force = vec![(0.0f32, 0.0f32); count];
+
+    for step in 0..iterations {
+        let temperature = 0.1 * (1.0 - step as f32 / iterations as f32) + 0.004;
+        let cell = (ideal * 3.0).max(0.04);
+        let mut buckets: HashMap<(i32, i32), Vec<usize>> = HashMap::with_capacity(count);
+        for (index, (x, y)) in positions.iter().enumerate() {
+            buckets
+                .entry(((x / cell).floor() as i32, (y / cell).floor() as i32))
+                .or_default()
+                .push(index);
+        }
+        for index in 0..count {
+            let (x, y) = positions[index];
+            let mut sum = (0.0, 0.0);
+            let key = ((x / cell).floor() as i32, (y / cell).floor() as i32);
+            for dx in -1..=1 {
+                for dy in -1..=1 {
+                    let Some(neighbours) = buckets.get(&(key.0 + dx, key.1 + dy)) else {
+                        continue;
+                    };
+                    for &other in neighbours {
+                        if other == index {
+                            continue;
+                        }
+                        let (ox, oy) = positions[other];
+                        let (rx, ry) = (x - ox, y - oy);
+                        let distance = (rx * rx + ry * ry).sqrt().max(0.001);
+                        let repulsion = ideal * ideal / distance;
+                        sum.0 += rx / distance * repulsion;
+                        sum.1 += ry / distance * repulsion;
+                    }
+                }
             }
+            force[index] = sum;
+        }
+        for &(source, target, weight) in edges {
+            if source >= count || target >= count {
+                continue;
+            }
+            let (sx, sy) = positions[source];
+            let (tx, ty) = positions[target];
+            let (dx, dy) = (tx - sx, ty - sy);
+            let distance = (dx * dx + dy * dy).sqrt().max(0.001);
+            let strength = (weight.max(1) as f32).ln().max(0.4) * 0.25;
+            let attraction = distance * distance / ideal * strength;
+            let (ux, uy) = (dx / distance, dy / distance);
+            force[source].0 += ux * attraction;
+            force[source].1 += uy * attraction;
+            force[target].0 -= ux * attraction;
+            force[target].1 -= uy * attraction;
+        }
+        for index in 0..count {
+            let (x, y) = positions[index];
+            let weight = (tags[index].1.max(1) as f32).ln().max(0.3);
+            let gravity = 0.05 * weight;
+            let (fx, fy) = force[index];
+            let (fx, fy) = (fx - x * gravity, fy - y * gravity);
+            let length = (fx * fx + fy * fy).sqrt().max(0.0001);
+            let step = length.min(temperature);
+            positions[index] = (x + fx / length * step, y + fy / length * step);
+        }
+    }
+
+    let extent = positions
+        .iter()
+        .map(|(x, y)| (x * x + y * y).sqrt())
+        .fold(0.0f32, f32::max)
+        .max(0.001);
+    let scale = 0.92 / extent;
+    tags.iter()
+        .zip(positions)
+        .map(|((tag, bookmark_count), (x, y))| GraphNode {
+            tag: tag.clone(),
+            bookmark_count: *bookmark_count,
+            x: x * scale,
+            y: y * scale,
         })
         .collect()
 }
@@ -187,7 +318,7 @@ mod tests {
     }
 
     #[test]
-    fn graph_layout_is_deterministic_and_unit_circle() {
+    fn graph_layout_is_deterministic_and_bounded() {
         let services = imported_services();
         let first = services.graph_data(&GraphRequest::default()).unwrap();
         let second = services.graph_data(&GraphRequest::default()).unwrap();
@@ -195,9 +326,13 @@ mod tests {
 
         assert!(!first.nodes.is_empty());
         assert_eq!(first.nodes[0].tag, "architecture");
+        let mut extent: f32 = 0.0;
         for node in &first.nodes {
-            assert!((node.x * node.x + node.y * node.y - 1.0).abs() < 0.001);
+            let radius = (node.x * node.x + node.y * node.y).sqrt();
+            extent = extent.max(radius);
+            assert!(radius <= 0.921, "node sits outside the unit disc: {radius}");
         }
+        assert!(extent > 0.7, "layout should use the disc: {extent}");
         // Fixture bookmark 1 carries rust + architecture, so that pair exists.
         let pair = first
             .edges
