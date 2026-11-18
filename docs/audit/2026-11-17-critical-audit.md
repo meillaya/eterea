@@ -328,7 +328,19 @@ feed and detail show a quiet indication instead of silently presenting a dead
 post. Covered by composed-filter, saved-search persistence and availability
 round-trip tests.
 
-### 2.19 Documentation corrected in this pass
+### 2.19 Accessibility and thread limitation (approved follow-up)
+
+Graph focus is now announced: while a node is focused the footer shows `tag:
+name · N saved posts · enter filters` (also read via the canvas accessibility
+label), keeping the canvas-batched graph usable for keyboard/screen-reader
+readers without per-node DOM. The thread limitation is documented honestly: live
+archives imported from text CSV have zero `conversation_id` rows, and the embed
+endpoint does not expose reply ids, so backfilling requires the official API with
+a user token — deliberately not implemented rather than scraping conversation
+pages. Release-mode performance evidence is recorded in `docs/performance.md`
+with an ignored benchmark.
+
+### 2.20 Documentation corrected in this pass
 
 - `docs/design/SPEC.md`: header nav now includes `search`; footer hint and
   scrimless key sheet; 64 px rhythm wording; rail width documented as 86 px

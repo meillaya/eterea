@@ -49,9 +49,30 @@ predicting a discrete GPU:
 The first frame includes process and GPU initialization. Steady-state frame
 costs are dominated by software rasterization and image decode.
 
+## Application benchmarks
+
+The service layer has explicit, gated benchmarks rather than implicit timing
+claims:
+
+| Benchmark | Command | Budget |
+|:---|:---|:---|
+| 1,200-tag graph build (import + restricted co-occurrence query + force layout + normalization) | `cargo test -p eterea-app --release --lib release_large_graph_benchmark -- --ignored --nocapture` | < 1,000 ms release |
+| Feed and filtered-feed pages on a file-backed archive | `scripts/perf-baseline.sh` (see its `--help`; stress mode via `--stress <count>`) | Reported by the baseline, no hard gate |
+| Backend query baselines (search, calendar, graph) | `cargo test -p eterea-core --release --test v2_benchmarks -- --ignored` | Reported with release gate labels in the test names |
+
+Measured on the reference host in a release build (rustc release profile):
+**1,200 nodes / 1,200 edges in 520 ms** for the whole import-free build pass
+(restricted co-occurrence query, deterministic force layout, normalization). The
+graph benchmark prints node/edge counts and elapsed time; the ignored test also
+asserts the 1,000 ms budget so a regression fails CI when the release-like
+gate is run. Debug builds are slower and are intentionally not gated.
+
 ## Reproduce
 
 ```bash
+# release application benchmark (release profile)
+cargo test -p eterea-app --release --lib release_large_graph_benchmark -- --ignored --nocapture
+
 # mbx, with its store kept inside the workspace
 XDG_CACHE_HOME=$PWD/.work/cache XDG_CONFIG_HOME=$PWD/.work/mbx-config \
   mbx build -p eterea-desktop

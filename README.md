@@ -170,8 +170,10 @@ The archive lives at `<platform data dir>/eterea/bookmarks.db`. On Linux that is
   rest), and the dry-run duplicate estimate uses exactly the insert's rules.
 - Reconstructs threads when the export carries conversation ids (X API v2
   `conversation_id`) and shows the whole thread in detail, oldest first, with the
-  opened post highlighted; archives without thread ids open the single post as
-  before.
+  opened post highlighted. Archives imported from text-only CSVs carry no
+  conversation ids, so the thread view appears only for sources that included
+  them (X API v2/archive JSON); filling them in for older archives would need the
+  official API with your token, which eterea does not implement.
 - Opens media in a lightbox with a `n / m` count, pointer and mouse-back paging,
   wheel/`+`/`-`/`0` zoom from fit to 3×, and video scrubbing with `,`/`.` (±5s,
   restart-at-offset) with a live position/duration readout.

@@ -4408,6 +4408,34 @@ fn footer(state: &State, p: Palette) -> El {
                     .child(keys),
             );
     }
+    if state.route == Route::Graph {
+        if let Some(index) = state.graph_focus {
+            if let Some(node) = state
+                .graph
+                .as_ref()
+                .and_then(|graph| graph.nodes.get(index))
+            {
+                return row()
+                    .w_full()
+                    .h(24.0)
+                    .px(52.0)
+                    .center_y()
+                    .justify_between()
+                    .fill(p.bg)
+                    .child(
+                        text(format!(
+                            "tag: {} · {} saved post{} · enter filters",
+                            node.tag,
+                            node.bookmark_count,
+                            plural(node.bookmark_count.max(0) as usize)
+                        ))
+                        .font(theme::mono(10.5))
+                        .color(p.muted),
+                    )
+                    .child(keys);
+            }
+        }
+    }
     let message = state
         .status
         .as_ref()
@@ -5095,7 +5123,19 @@ fn graph_view(state: &State, p: Palette, cx: &mut Cx<State>) -> El {
         .key("graph-edges")
         .size(viewport[0], viewport[1])
         .role("img")
-        .label("tag graph; tab cycles tags, enter filters")
+        .label(
+            match state.graph_focus.and_then(|index| {
+                graph
+                    .nodes
+                    .get(index)
+                    .map(|node| (node.tag.as_str(), node.bookmark_count))
+            }) {
+                Some((tag, count)) => format!(
+                    "tag graph; focused {tag}, {count} saved posts; tab cycles tags, enter filters"
+                ),
+                None => "tag graph; tab cycles tags, enter filters".to_string(),
+            },
+        )
         .on_pointer_move_local(
             |state: &mut State, event: rune::PointerEvent, _tx: &mut Tx| {
                 state.graph_hover = graph_hit_test(state, event.x, event.y);

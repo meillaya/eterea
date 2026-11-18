@@ -315,6 +315,46 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "release-mode benchmark: cargo test -p eterea-app --release --lib release_large_graph_benchmark -- --ignored --nocapture"]
+    fn release_large_graph_benchmark() {
+        let services = AppServices::open_memory().expect("in-memory services should open");
+        let mut json = String::from("[");
+        for index in 0..1_200usize {
+            if index > 0 {
+                json.push(',');
+            }
+            let first = format!("tag{index:04}");
+            let second = format!("tag{:04}", (index + 7) % 1_200);
+            json.push_str(&format!(
+                r#"{{"tweet_url":"https://x.com/scale/status/{index}","full_text":"scale fixture {index} #{first} #{second}","tweeted_at":"2024-05-01T12:00:00Z","screen_name":"scale","name":"Scale"}}"#
+            ));
+        }
+        json.push(']');
+        services
+            .import_content("scale.json", &json)
+            .expect("synthetic import should succeed");
+
+        let started = std::time::Instant::now();
+        let graph = services
+            .graph_data(&GraphRequest::new(1_200, 6_000))
+            .expect("large graph should build");
+        let elapsed = started.elapsed();
+        assert_eq!(graph.nodes.len(), 1_200);
+        assert!(!graph.edges.is_empty());
+        // Release budget: the layout owns the pass. Debug runs take about twice
+        // this and are not gated.
+        assert!(
+            elapsed < std::time::Duration::from_millis(1_000),
+            "1,200-tag graph exceeded the 1,000 ms release budget: {elapsed:?}"
+        );
+        eprintln!(
+            "release 1,200-tag graph: {} nodes, {} edges in {elapsed:?}",
+            graph.nodes.len(),
+            graph.edges.len()
+        );
+    }
+
+    #[test]
     fn graph_handles_twelve_hundred_tags_with_cooccurrence_edges() {
         // Synthetic archive at the data-layer cap: 1,200 tags, each post
         // carrying two tags from a rolling window so the restricted pair query

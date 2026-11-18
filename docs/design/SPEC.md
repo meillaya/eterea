@@ -136,7 +136,7 @@ No visual/multi-select mode. One selected post at a time.
 
 Post: rail (date, time, favorite pin, actions), byline (30px avatar, name, handle), text, media, quote. No card, no border, no shadow. Links are accent text underlined on hover. Hashtags and mentions are links to filtered views. Emoji render in color. CJK and RTL follow the font fallback.
 
-Threads: when the source carried a conversation id (X API v2 `conversation_id`), detail lists every saved post of that conversation oldest first — the opened post renders fully, the rest as compact byline+text rows — under a mono `thread · n posts` label. Without thread ids the detail stays a single post.
+Threads: when the source carried a conversation id (X API v2 `conversation_id`), detail lists every saved post of that conversation oldest first — the opened post renders fully, the rest as compact byline+text rows — under a mono `thread · n posts` label. Without thread ids the detail stays a single post. Existing archives imported from text-only CSVs carry no conversation ids, so threads appear only for X API v2/archive JSON imports that included `conversation_id`; backfilling ids for older archives needs the official API with a user token (not implemented) — the local-first embed endpoint does not expose reply/conversation ids.
 
 Media: avatars, images and video posters load automatically by default, fading in 180ms; Settings can switch post media to on-demand and keep the 720x180 `band` with `load media` for that mode. Images use the best available rendition through a bounded disk cache. A post with up to 20 media renders a paged carousel (1/2/3/4 layouts; >4 pages in groups of four with `‹ n/m ›`); the lightbox covers every item. X and quote URLs are removed from the text; external links keep their display URL; quote cards use the same media rules.
 
@@ -177,6 +177,8 @@ One of the two full-bleed screens (with the lightbox): the graph uses the whole 
 Nodes are tags: colored dots (drawn in one canvas batch, hit-tested against the same projection), labels as text; edges are hairline `line` strokes, thicker and accent-tinted around the focused node. The layout is deterministic force-directed on the unit disc (co-occurring tags attract, popular tags drift toward the centre, tag-name hash seeds the start), scaled to the field's aspect ratio, so a wide window fills its width. Wheel/pinch zoom around the pointer, Shift-wheel and drag pan, `+`/`-`/`0` (fit) and arrow keys; zoom and pan are clamped so the constellation can never be lost off-screen, and `0` returns to the fitted view. Double-press fits too.
 
 `/` opens a tag filter: the field dims every node whose tag does not contain the text live, enter commits it (esc clears), and hover/click still work on dimmed dots. Adjacent labels skip anchors that would overlap an already-labelled one.
+
+While a node is focused the footer announces it for keyboard and screen-reader users (`tag: design · 12 saved posts · enter filters`), and the canvas accessibility label names the focused tag and count; Tab cycles, Enter filters.
 
 Label level of detail keeps a thousand tags legible: up to 140 tags show every label; larger graphs label the 36 most-saved tags plus whatever is focused, and the rest stay as dots. Click a tag to filter the feed; Esc returns. Hover/Tab focuses a node; `c` opens eight token color swatches and a persisted per-tag override. Enter filters. No counts on nodes; the count can appear in the status line while a node is focused.
 
