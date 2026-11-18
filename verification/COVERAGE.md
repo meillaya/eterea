@@ -7,7 +7,7 @@ surface is covered by the data-v2 service and store tests; the headless UI
 harness was refreshed for the new routes, selection, history, export and
 carousel, keys sheet, search, mouse back and directory filter, and now covers
 104 deterministic cases. Findings from the 2026-11-17 critical audit are tracked
-in [`../../docs/audit/2026-11-17-critical-audit.md`](../../docs/audit/2026-11-17-critical-audit.md).
+in [`../docs/audit/2026-11-17-critical-audit.md`](../docs/audit/2026-11-17-critical-audit.md).
 
 > **No whole-app verification claim.** The Verus layer proves a reference model
 > of the URL policy, not `src/logic` as written. Kani checks bounded pure
