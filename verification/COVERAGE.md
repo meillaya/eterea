@@ -25,7 +25,7 @@ in [`../docs/audit/2026-11-17-critical-audit.md`](../docs/audit/2026-11-17-criti
 | Miri `nightly-2026-11-16` | `scripts/verify/miri.sh` | 5 passed, 0 failed, no UB reported |
 | cargo-fuzz `0.13.2` | `scripts/verify/fuzz.sh` | 2 targets: `url_policy`, `import_text`; local 10 s run per target, CI 5 s |
 | plain stable Rust | `cd verification/kani && cargo test` | 10 passed, 1 ignored |
-| Rune headless harness | `bash scripts/ui-harness.sh` | 122/122 captures pass image and tree goldens, copy lint 0/0, no clipping warnings |
+| Rune headless harness | `bash scripts/ui-harness.sh` | 128/128 captures pass image and tree goldens, copy lint 0/0, no clipping warnings |
 
 Pins, URLs and sha256 are in [`../scripts/verify/versions.env`](../scripts/verify/versions.env).
 
@@ -38,7 +38,7 @@ Pins, URLs and sha256 are in [`../scripts/verify/versions.env`](../scripts/verif
 | Kani advisory | `scripts/verify/ci.sh --full` on workflow_dispatch | 7 expensive URL/MIME harnesses, never a pass gate |
 | Miri | `scripts/verify/miri.sh` | standalone pure-crate tests |
 | Fuzz | `scripts/verify/fuzz.sh` | URL/MIME policy and JSON/CSV/archive import parsers |
-| UI harness | `bash scripts/ui-harness.sh` | 122 deterministic captures: 84 scenes, 16 main routes, 4 dataset routes, 18 script captures (keys sheet, search, mouse back, directory filter, click-to-open, export, selection, carousel) |
+| UI harness | `bash scripts/ui-harness.sh` | 128 deterministic captures: 90 scenes, 16 main routes, 4 dataset routes, 18 script captures (keys sheet, search, mouse back, directory filter, click-to-open, export, selection, carousel) |
 | Workspace tests | `cargo test --workspace` | storage, store actor, parsers, media workers, desktop model |
 | Data v2 tests | `cargo test -p eterea-core -p eterea-app -p eterea-logic` | schema v2, batch import, tags/read/bulk, history/undo, export round-trips, 10k benchmarks |
 | Media v2 tests | `cargo test -p eterea-media` | image worker/cache, video cache, tools discovery, audio lifecycle, real local ffmpeg fixture |
@@ -105,7 +105,7 @@ It checks:
 * copy lint on all captured strings;
 * image hash and canonical tree signature against committed goldens.
 
-Final result on the reference host: **122/122 cases pass, 122/122 image and tree
+Final result on the reference host: **128/128 cases pass, 128/128 image and tree
 goldens, copy lint 0/0, 0 clipping warnings**. This is runtime validation of
 render states and geometry bounds, not proof, pixel-level QA or exhaustive
 interaction testing. Motion, contrast ratios, hover, focus traversal, clipboard,

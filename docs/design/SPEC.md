@@ -202,7 +202,15 @@ Browses the archive by month and year without leaving the reading column.
 
 Any filter is a composable spec: text query, all-tags (AND), author, date range, favorites, unread and has-media. The feed shows a chip line (10.5px mono) with one chip per facet; pressing a chip removes just that facet, `clear filters` clears them all, and `add tag filter` composes another tag. `save search` names the current spec and stores it in `app_metadata`; `saved searches` lists them (enter applies, backspace deletes, esc closes). Empty filters cannot be saved.
 
+A text query marks matching terms in feed/detail bodies: ASCII case-insensitive byte ranges get a pale lavender background (up to 40 per body), links keep their accent colour.
+
 Schema v7 adds a per-bookmark `unavailable` flag. Only a network check sets it: the opt-in `check availability` pass (and the media repair pass) marks rows whose embed payload is a tombstone — deleted tweet, protected author, deactivated account — and clears the flag when a payload succeeds. Feed rows show a 10.5px mono “no longer available on x” line; detail adds “deleted, protected, or the account no longer exists”. Nothing is fetched automatically.
+
+### Trash and backups
+
+The palette's `trash` opens the newest recoverable deletions (used by the trash table): author handle, preview and deletion date, with the selected row restorable by Enter or its `restore` action. `e` asks once more, then empties the trash. Deleting is always recoverable until the trash is emptied or 200 newer deletions push a row out.
+
+Backups: a consistent rotating copy is written on every launch before migrations (newest five kept), Settings offers `backup now`, `check integrity` and `restore`, and restoring always shows a confirmation panel first; the store snapshots the current archive before replacing it and reloads the feed afterwards.
 
 ### Notes
 

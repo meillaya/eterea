@@ -19,6 +19,13 @@ has actually been captured.
   anchors that would collide, and `/` opens a tag filter that dims non-matching
   nodes (enter commits, esc clears); a synthetic 1,200-tag benchmark test covers
   the data-layer cap (2.1s in debug, layout included).
+- Search highlighting: when a text query is active, matching terms in feed and
+  detail bodies get a pale lavender mark (ASCII-insensitive, up to 40 spans).
+- Trash browser and restore safeguard: `trash` lists the newest recoverable
+  deletes with author, preview and date, Enter/restore reinstates one, `e` twice
+  empties the trash, and restoring a backup now opens a confirmation panel
+  (Settings also exposes restore next to backup/integrity). Rotating automatic
+  copies continue to be taken on every launch.
 - Saved searches and composable filters: the feed filter is now a composable
   spec (query, tags, author, date range, read, favorite, media), shown as a chip
   line with per-facet removal; named combinations save to `app_metadata` via

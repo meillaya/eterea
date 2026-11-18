@@ -25,7 +25,8 @@
     "note",
     "filters",
     "saved",
-    "unavailable"
+    "unavailable",
+    "trash"
   ],
   "scene_env": {
     "hidden": {
@@ -439,6 +440,13 @@
       "unavailable": [
         "no longer available on x",
         "Mira Okonkwo"
+      ],
+      "trash": [
+        "2 deleted posts recoverable",
+        "› @noorhaddad",
+        "restore",
+        "empty",
+        "enter restores, e empties, esc closes"
       ]
     },
     "scene_no_nav": [
@@ -458,7 +466,8 @@
       "note": 20,
       "filters": 20,
       "saved": 20,
-      "unavailable": 20
+      "unavailable": 20,
+      "trash": 20
     },
     "routes": {
       "feed": [

@@ -12,14 +12,14 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::{Datelike, NaiveDate, Utc};
+use chrono::{Datelike, NaiveDate, TimeZone, Utc};
 use eterea_app::{
     AuthorSummary, BookmarkQuery, BookmarkSelection, BookmarkStats, CalendarData, CalendarRequest,
     CalendarYearData, CalendarYearRequest, DirectoryPageRequest, ExportFormat, ExportRequest,
     ExportScope, FilterSpec, GraphData, GraphRequest, HistoryDetail, HistoryEvent, HistoryKind,
     HistoryListRequest, HistoryState, ImportBatchPreview, ImportBatchSummary, ImportProgress,
     RepairEvent, RepairOptions, RequestId, Response, SavedSearch, StoreHandle, TagMutation,
-    TagSuggestion, TopicSummary,
+    TagSuggestion, TopicSummary, TrashEntry,
 };
 use eterea_media::{ImageKind, VideoCache, VideoCacheConfig, VideoPlayer, VideoPlayerOptions};
 use eterea_ui_model::{Mode, Route};
@@ -70,6 +70,8 @@ enum Overlay {
     SaveSearch,
     SavedSearches,
     FilterTag,
+    Trash,
+    ConfirmRestore,
 }
 
 struct TagEdit {
@@ -112,6 +114,7 @@ enum CommandItem {
     SavedSearches,
     AddTagFilter,
     CheckAvailability,
+    Trash,
 }
 
 const COMMANDS: &[(&str, CommandItem)] = &[
@@ -147,6 +150,7 @@ const COMMANDS: &[(&str, CommandItem)] = &[
     ("saved searches", CommandItem::SavedSearches),
     ("add tag filter", CommandItem::AddTagFilter),
     ("check availability", CommandItem::CheckAvailability),
+    ("trash", CommandItem::Trash),
     ("retry media", CommandItem::RetryMedia),
 ];
 
@@ -388,6 +392,11 @@ pub(crate) struct State {
     saved_search_buffer: TextEdit,
     saved_search_selected: usize,
     filter_tag_buffer: TextEdit,
+    trash_entries: Vec<TrashEntry>,
+    trash_total: i64,
+    trash_selected: usize,
+    trash_confirm_empty: bool,
+    pending_restore: Option<PathBuf>,
     /// Latest import progress tick and the channel it arrives on.
     import_progress: Option<ImportProgress>,
     import_progress_rx: Option<ProgressReceiver<ImportProgress>>,
@@ -526,6 +535,11 @@ impl State {
             saved_search_buffer: TextEdit::new(""),
             saved_search_selected: 0,
             filter_tag_buffer: TextEdit::new(""),
+            trash_entries: Vec::new(),
+            trash_total: 0,
+            trash_selected: 0,
+            trash_confirm_empty: false,
+            pending_restore: None,
             import_progress: None,
             import_progress_rx: None,
             video: None,
@@ -1194,6 +1208,7 @@ impl State {
                 self.overlay = Overlay::SavedSearches;
                 self.saved_search_selected = 0;
             }
+            CommandItem::Trash => open_trash(self),
             CommandItem::CheckAvailability => {
                 let now = tx.clock();
                 start_availability_check(self, now);
@@ -1679,12 +1694,8 @@ fn poll(state: &mut State, clock: f64, tx: &mut Tx) -> bool {
         match receiver.try_recv() {
             Ok(Some(path)) => {
                 state.restore_picker = None;
-                if let Some(store) = state.store.as_ref() {
-                    store.restore_backup(path);
-                    state.pending_views += 1;
-                    let now = tx.clock();
-                    state.set_status("restoring backup", now);
-                }
+                state.pending_restore = Some(path);
+                state.overlay = Overlay::ConfirmRestore;
                 changed = true;
             }
             Ok(None) => {
@@ -2046,6 +2057,51 @@ fn handle_response(state: &mut State, response: Response, clock: f64) {
                 Ok(count) => state.set_status(format!("{count} deleted posts recoverable"), now),
                 Err(error) => state.set_status(error.message, now),
             }
+        }
+        Response::TrashList { result, .. } => {
+            state.pending_views = state.pending_views.saturating_sub(1);
+            let now = clock;
+            match result {
+                Ok((entries, total)) => {
+                    state.trash_entries = entries;
+                    state.trash_total = total;
+                    state.trash_selected = state
+                        .trash_selected
+                        .min(state.trash_entries.len().saturating_sub(1));
+                }
+                Err(error) => state.set_status(error.message, now),
+            }
+        }
+        Response::RestoreTrash { result, .. } => {
+            state.pending_views = state.pending_views.saturating_sub(1);
+            let now = clock;
+            match result {
+                Ok(Some(bookmark)) => {
+                    state.set_status(format!("restored post by @{}", bookmark.author_handle), now);
+                    state.refresh_feed();
+                    if state.overlay == Overlay::Trash {
+                        if let Some(store) = state.store.as_ref() {
+                            store.trash_list(0, 100);
+                            state.pending_views += 1;
+                        }
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => state.set_status(error.message, now),
+            }
+        }
+        Response::EmptyTrash { result, .. } => {
+            state.pending_views = state.pending_views.saturating_sub(1);
+            let now = clock;
+            match result {
+                Ok(0) => state.set_status("trash was already empty", now),
+                Ok(count) => state.set_status(format!("emptied trash ({count} posts)"), now),
+                Err(error) => state.set_status(error.message, now),
+            }
+            state.trash_entries.clear();
+            state.trash_total = 0;
+            state.trash_selected = 0;
+            state.overlay = Overlay::None;
         }
         Response::BackupNow { result, .. } => {
             state.pending_views = state.pending_views.saturating_sub(1);
@@ -2809,6 +2865,39 @@ fn overlay_key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
                 dismiss_overlay(state);
             }
         }
+        Overlay::Trash => match &event.key {
+            Key::Escape => dismiss_overlay(state),
+            Key::Up => {
+                state.trash_selected = state.trash_selected.saturating_sub(1);
+            }
+            Key::Down => {
+                if !state.trash_entries.is_empty() {
+                    state.trash_selected =
+                        (state.trash_selected + 1).min(state.trash_entries.len() - 1);
+                }
+            }
+            Key::Enter => restore_selected_trash(state, tx.clock()),
+            Key::Text(t) if t.as_str() == "e" => {
+                if state.trash_confirm_empty {
+                    if let Some(store) = state.store.as_ref() {
+                        store.empty_trash();
+                        state.pending_views += 1;
+                    }
+                    state.trash_confirm_empty = false;
+                } else {
+                    state.trash_confirm_empty = true;
+                }
+            }
+            _ => {}
+        },
+        Overlay::ConfirmRestore => match &event.key {
+            Key::Escape => {
+                state.pending_restore = None;
+                state.overlay = Overlay::None;
+            }
+            Key::Enter => confirm_restore(state),
+            _ => {}
+        },
         Overlay::SaveSearch => match &event.key {
             Key::Escape => dismiss_overlay(state),
             Key::Enter => save_search_now(state, tx.clock()),
@@ -3607,6 +3696,48 @@ fn restore_feed_position(state: &mut State, tx: &mut Tx) {
     } else {
         tx.scroll_to_y("feed", returning.scroll);
     }
+}
+
+fn open_trash(state: &mut State) {
+    state.overlay = Overlay::Trash;
+    state.trash_selected = 0;
+    state.trash_confirm_empty = false;
+    state.trash_entries.clear();
+    state.trash_total = 0;
+    if let Some(store) = state.store.as_ref() {
+        store.trash_list(0, 100);
+        state.pending_views += 1;
+    }
+}
+
+fn restore_selected_trash(state: &mut State, now: f64) {
+    let Some(entry) = state.trash_entries.get(state.trash_selected).cloned() else {
+        return;
+    };
+    if let Some(store) = state.store.as_ref() {
+        store.restore_trash(entry.id);
+        state.pending_views += 1;
+    }
+    state.set_status("restoring deleted post", now);
+}
+
+fn confirm_restore(state: &mut State) {
+    let Some(path) = state.pending_restore.take() else {
+        state.overlay = Overlay::None;
+        return;
+    };
+    if let Some(store) = state.store.as_ref() {
+        store.restore_backup(path);
+        state.pending_views += 1;
+    }
+    state.overlay = Overlay::None;
+}
+
+fn trash_deleted_label(deleted_at: i64) -> String {
+    Utc.timestamp_opt(deleted_at, 0)
+        .single()
+        .map(|time| time.format("%d %b %Y").to_string())
+        .unwrap_or_default()
 }
 
 fn saved_search_summary(search: &SavedSearch) -> String {
@@ -4461,7 +4592,12 @@ fn feed_view(state: &State, p: Palette) -> El {
                     .child(el().w(CONTENT).h(1.0).fill(p.line)),
             );
         }
-        list = list.child(post_view(state, post, index, p, false).pt(32.0).pb(32.0));
+        let highlight = active_query(state);
+        list = list.child(
+            post_view(state, post, index, p, false, highlight.as_deref())
+                .pt(32.0)
+                .pb(32.0),
+        );
     }
     if state.feed_pending && state.feed_has_more {
         list = list.child(
@@ -4515,7 +4651,15 @@ fn detail_view(state: &State, p: Palette) -> El {
         for thread_post in &state.thread {
             let is_anchor = thread_post.id == post.id;
             if is_anchor {
-                column = column.child(post_view(state, post, state.selected, p, true));
+                let highlight = active_query(state);
+                column = column.child(post_view(
+                    state,
+                    post,
+                    state.selected,
+                    p,
+                    true,
+                    highlight.as_deref(),
+                ));
                 continue;
             }
             column = column.child(
@@ -4555,7 +4699,15 @@ fn detail_view(state: &State, p: Palette) -> El {
             );
         }
     } else {
-        column = column.child(post_view(state, post, state.selected, p, true));
+        let highlight = active_query(state);
+        column = column.child(post_view(
+            state,
+            post,
+            state.selected,
+            p,
+            true,
+            highlight.as_deref(),
+        ));
     }
     column
         .scroll(ScrollSpec {
@@ -5958,6 +6110,194 @@ fn overlay_view(state: &State, p: Palette) -> El {
                     text("enter filters the graph, esc clears")
                         .font(theme::mono(10.5))
                         .color(p.muted),
+                );
+            el().w_full()
+                .h_full()
+                .absolute(0.0, 0.0)
+                .child(scrim)
+                .child(
+                    row()
+                        .w_full()
+                        .h_full()
+                        .justify_center()
+                        .center_y()
+                        .child(panel),
+                )
+        }
+        Overlay::Trash => {
+            let mut panel = col()
+                .w(680.0)
+                .gap(12.0)
+                .padding(18.0)
+                .fill(p.bg)
+                .border(1.0, p.line)
+                .radius(2.0)
+                .child(text("trash").font(theme::serif(20.0)).color(p.ink))
+                .child(
+                    text(format!(
+                        "{} deleted post{} recoverable",
+                        state.trash_total,
+                        plural(state.trash_total.max(0) as usize)
+                    ))
+                    .font(theme::mono(10.5))
+                    .color(p.muted),
+                );
+            if state.trash_entries.is_empty() {
+                panel = panel.child(
+                    text("nothing in the trash")
+                        .font(theme::ui(12.5, 400.0))
+                        .color(p.muted),
+                );
+            } else {
+                let mut rows = col().w_full().gap(4.0).max_h(380.0);
+                for (index, entry) in state.trash_entries.iter().enumerate() {
+                    let selected = index == state.trash_selected;
+                    let preview: String = entry.preview.chars().take(80).collect();
+                    rows = rows.child(
+                        row()
+                            .w_full()
+                            .center_y()
+                            .gap(12.0)
+                            .pt(5.0)
+                            .pb(5.0)
+                            .on_press(move |state: &mut State| {
+                                state.trash_selected = index;
+                            })
+                            .child(
+                                text(if selected {
+                                    format!("› @{}", entry.author_handle)
+                                } else {
+                                    format!("  @{}", entry.author_handle)
+                                })
+                                .font(theme::mono(11.0))
+                                .color(if selected {
+                                    p.accent
+                                } else {
+                                    p.ink
+                                }),
+                            )
+                            .child(text(preview).font(theme::ui(12.0, 400.0)).color(p.muted))
+                            .child(el().grow(1.0))
+                            .child(
+                                text(trash_deleted_label(entry.deleted_at))
+                                    .font(theme::mono(10.0))
+                                    .color(p.muted),
+                            )
+                            .child(
+                                text("restore")
+                                    .font(theme::ui(11.5, 400.0))
+                                    .color(p.accent)
+                                    .on_press_tx(move |state: &mut State, tx: &mut Tx| {
+                                        state.trash_selected = index;
+                                        restore_selected_trash(state, tx.clock());
+                                    }),
+                            ),
+                    );
+                }
+                panel = panel.child(rows.scroll(ScrollSpec {
+                    stick_bottom: false,
+                }));
+            }
+            panel = panel.child(
+                row()
+                    .w_full()
+                    .justify_between()
+                    .center_y()
+                    .child(
+                        text(if state.trash_confirm_empty {
+                            "press e again to empty the trash"
+                        } else {
+                            "enter restores, e empties, esc closes"
+                        })
+                        .font(theme::mono(10.5))
+                        .color(if state.trash_confirm_empty {
+                            p.ink
+                        } else {
+                            p.muted
+                        }),
+                    )
+                    .child(
+                        text(if state.trash_confirm_empty {
+                            "empty trash"
+                        } else {
+                            "empty"
+                        })
+                        .font(theme::ui(12.0, 400.0))
+                        .color(p.muted)
+                        .on_press(|state: &mut State| {
+                            if state.trash_confirm_empty {
+                                if let Some(store) = state.store.as_ref() {
+                                    store.empty_trash();
+                                    state.pending_views += 1;
+                                }
+                                state.trash_confirm_empty = false;
+                            } else {
+                                state.trash_confirm_empty = true;
+                            }
+                        }),
+                    ),
+            );
+            el().w_full()
+                .h_full()
+                .absolute(0.0, 0.0)
+                .child(scrim)
+                .child(
+                    row()
+                        .w_full()
+                        .h_full()
+                        .justify_center()
+                        .center_y()
+                        .child(panel),
+                )
+        }
+        Overlay::ConfirmRestore => {
+            let path = state
+                .pending_restore
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_default();
+            let panel = col()
+                .w(560.0)
+                .gap(14.0)
+                .padding(20.0)
+                .fill(p.bg)
+                .border(1.0, p.line)
+                .radius(2.0)
+                .child(
+                    text("restore this backup?")
+                        .font(theme::serif(20.0))
+                        .color(p.ink),
+                )
+                .child(
+                    text(truncate(&path, 76))
+                        .font(theme::mono(10.5))
+                        .color(p.muted),
+                )
+                .child(
+                    text("the current archive is copied first, then replaced")
+                        .font(theme::ui(12.0, 400.0))
+                        .color(p.muted),
+                )
+                .child(
+                    row()
+                        .w_full()
+                        .justify_end()
+                        .gap(18.0)
+                        .child(
+                            text("cancel")
+                                .font(theme::ui(12.5, 400.0))
+                                .color(p.muted)
+                                .on_press(|state: &mut State| {
+                                    state.pending_restore = None;
+                                    state.overlay = Overlay::None;
+                                }),
+                        )
+                        .child(
+                            text("restore")
+                                .font(theme::ui(12.5, 500.0))
+                                .color(p.accent)
+                                .on_press(|state: &mut State| confirm_restore(state)),
+                        ),
                 );
             el().w_full()
                 .h_full()
@@ -7443,6 +7783,12 @@ fn settings_view(state: &State, p: Palette) -> El {
                             state.pending_views += 1;
                         }
                     }),
+            )
+            .child(
+                text("restore")
+                    .font(theme::ui(12.0, 400.0))
+                    .color(p.accent)
+                    .on_press(|state: &mut State| state.choose_restore_backup()),
             ),
     );
     rows = rows.child(
@@ -7781,8 +8127,61 @@ fn calendar_key(state: &mut State, event: &KeyEvent) -> Option<bool> {
     }
 }
 
-fn post_text(post: &Post, p: Palette, width: f32, detail: bool, index: usize) -> El {
+/// Case-insensitive byte ranges of the filter query's terms in `body`.
+fn query_highlight_ranges(body: &str, query: &str) -> Vec<(usize, usize)> {
+    let lowered = body.to_lowercase();
+    let ascii_body = lowered.len() == body.len();
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for term in query.split_whitespace() {
+        let term = term.trim_matches(|ch: char| ch == '"' || ch == '#');
+        if term.len() < 2 {
+            continue;
+        }
+        let needle = term.to_lowercase();
+        if !seen.insert(needle.clone()) {
+            continue;
+        }
+        let haystack = if ascii_body { lowered.as_str() } else { body };
+        let needle = if ascii_body { needle.as_str() } else { term };
+        let mut from = 0usize;
+        while let Some(offset) = haystack.get(from..).and_then(|rest| rest.find(needle)) {
+            let start = from + offset;
+            let end = start + needle.len();
+            if end > start {
+                ranges.push((start, end));
+            }
+            if ranges.len() >= 40 {
+                return ranges;
+            }
+            from = end;
+        }
+    }
+    ranges
+}
+
+fn active_query(state: &State) -> Option<String> {
+    state
+        .filter
+        .as_ref()
+        .map(filter_spec)
+        .and_then(|spec| spec.query)
+        .map(|query| query.trim().to_string())
+        .filter(|query| !query.is_empty())
+}
+
+fn post_text(
+    post: &Post,
+    p: Palette,
+    width: f32,
+    detail: bool,
+    index: usize,
+    highlight: Option<&str>,
+) -> El {
     let (body, pieces) = body_text(post);
+    let highlight_ranges = highlight
+        .map(|query| query_highlight_ranges(&body, query))
+        .unwrap_or_default();
     let mut view = text(body)
         .w(width)
         .wrap()
@@ -7804,6 +8203,9 @@ fn post_text(post: &Post, p: Palette, width: f32, detail: bool, index: usize) ->
             spans.push(Span::new(start, end).color(p.accent));
             view = view.link(Link::new(start..end, format!("mention:{handle}")));
         }
+    }
+    for (start, end) in highlight_ranges {
+        spans.push(Span::new(start, end).bg(p.progress.alpha(0.40), 1.0));
     }
     if !spans.is_empty() {
         view = view.spans(spans);
@@ -7989,7 +8391,14 @@ fn link_label(value: &str) -> Option<String> {
     Some(host.to_string())
 }
 
-fn post_view(state: &State, post: &Post, index: usize, p: Palette, detail: bool) -> El {
+fn post_view(
+    state: &State,
+    post: &Post,
+    index: usize,
+    p: Palette,
+    detail: bool,
+    highlight: Option<&str>,
+) -> El {
     let content_w = if detail { DETAIL_CONTENT } else { CONTENT };
     let selected = state.selected == index && !detail;
     let marked = state.selection.mode
@@ -8055,7 +8464,7 @@ fn post_view(state: &State, post: &Post, index: usize, p: Palette, detail: bool)
         );
     }
     content = content.child(byline);
-    content = content.child(post_text(post, p, content_w, detail, index));
+    content = content.child(post_text(post, p, content_w, detail, index, highlight));
 
     if detail && !post.tags.is_empty() {
         let mut tags = row().w(content_w).gap(10.0).flex_wrap();
@@ -8608,6 +9017,30 @@ pub fn spec() -> AppSpec<State> {
                 s.lightbox = Some((1, 0));
                 s.overlay = Overlay::Lightbox;
             }),
+            ("trash", |s: &mut State| {
+                s.overlay = Overlay::Trash;
+                s.trash_total = 2;
+                s.trash_entries = vec![
+                    TrashEntry {
+                        id: 2,
+                        bookmark_id: "demo-trash-2".to_string(),
+                        deleted_at: 1_762_000_000,
+                        author_handle: "noorhaddad".to_string(),
+                        author_name: "Noor Haddad".to_string(),
+                        preview: "Spent the morning removing things from a reading app."
+                            .to_string(),
+                    },
+                    TrashEntry {
+                        id: 1,
+                        bookmark_id: "demo-trash-1".to_string(),
+                        deleted_at: 1_761_900_000,
+                        author_handle: "miraokonkwo".to_string(),
+                        author_name: "Mira Okonkwo".to_string(),
+                        preview: "Barbican at seven. The concrete goes pink.".to_string(),
+                    },
+                ];
+                s.trash_selected = 0;
+            }),
             ("unavailable", |s: &mut State| {
                 s.selected = 1;
                 s.demo_unavailable = vec![1];
@@ -8652,5 +9085,35 @@ pub fn spec() -> AppSpec<State> {
             }),
         ],
         ..AppSpec::new("eterea", (1440.0, 900.0), State::new, view)
+    }
+}
+
+#[cfg(test)]
+mod highlight_tests {
+    use super::query_highlight_ranges;
+
+    #[test]
+    fn query_terms_highlight_case_insensitively_and_skip_short_terms() {
+        let body = "Film diary: a film about film.";
+        let ranges = query_highlight_ranges(body, "film a");
+        assert_eq!(ranges.len(), 3);
+        assert_eq!(&body[ranges[0].0..ranges[0].1], "Film");
+        assert_eq!(&body[ranges[1].0..ranges[1].1], "film");
+        assert_eq!(&body[ranges[2].0..ranges[2].1], "film");
+    }
+
+    #[test]
+    fn repeated_terms_are_highlighted_once() {
+        let body = "design design";
+        let ranges = query_highlight_ranges(body, "design design");
+        assert_eq!(ranges.len(), 2);
+    }
+
+    #[test]
+    fn unicode_bodies_do_not_panic() {
+        let body = "東京の夜 film";
+        let ranges = query_highlight_ranges(body, "film");
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(&body[ranges[0].0..ranges[0].1], "film");
     }
 }

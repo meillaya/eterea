@@ -16,6 +16,18 @@ impl AppServices {
     }
 
     /// Replace one bookmark's tags exactly.
+    pub fn trash_list(
+        &self,
+        offset: usize,
+        limit: usize,
+    ) -> Result<(Vec<eterea_core::storage::TrashEntry>, i64)> {
+        Ok(self.db.list_trash(offset, limit)?)
+    }
+
+    pub fn restore_trash(&self, trash_id: i64) -> Result<Option<eterea_core::Bookmark>> {
+        Ok(self.db.restore_trash(trash_id)?)
+    }
+
     pub fn rename_tag(&self, from: &str, to: &str) -> Result<eterea_core::TagRenameReport> {
         Ok(self.db.rename_tag(from, to)?)
     }

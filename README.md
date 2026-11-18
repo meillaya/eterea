@@ -182,6 +182,9 @@ The archive lives at `<platform data dir>/eterea/bookmarks.db`. On Linux that is
   the feed and detail (with an explanation that the tweet was deleted, protected
   or its account no longer exists). The opt-in `check availability` pass fills
   those flags and can be cancelled; a later successful check clears them.
+- Highlights search terms in the feed body with a pale lavender mark, and opens
+  the trash (`trash`) to list recoverable deletes by author with selective
+  restore or a two-step empty; restoring a backup asks for confirmation.
 - Curates tags: `rename tag` renames a tag on the selected post (merging into an
   existing tag folds both together, with autocomplete suggestions), `prune tags`
   removes unused tags, and per-tag colours can be reset to their seeded colour.

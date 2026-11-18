@@ -342,7 +342,7 @@ round-trip tests.
 - `docs/architecture.md`: schema version 3 and the migration-v3 reason.
 - `verification/COVERAGE.md`, `docs/operations/release-readiness.md`,
   `docs/verification/formal-verification.md`, `verification/README.md`:
-  UI-matrix and media-test counts corrected (122 captures, 101+16 media tests).
+  UI-matrix and media-test counts corrected (128 captures, 101+16 media tests).
 
 ---
 
@@ -530,7 +530,7 @@ cannot prove real-GPU text shaping or input-device behaviour.
 | `cargo test --workspace` | PASS — every workspace test target green; `eterea-core` 114 tests (2 ignored perf), media 97 unit + 16 public-API + 1 doc-test, app/desktop tests green, 0 failures. |
 | `cargo clippy --workspace --all-targets` | PASS, 0 warnings. |
 | `cargo fmt --all -- --check` | PASS after applying `cargo fmt` to the tree (two new backend tests were unformatted). |
-| UI matrix (`scripts/ui-harness.sh --strict`) | **PASS — 122/122 cases**, goldens image 122/122 and tree 121/122, copy lint 0 errors, 0 clipping warnings; 12 scripted cases cover the keys sheet, search, mouse back, directory filter, click-to-open, export, selection, carousel, feed-return and calendar browsing. |
+| UI matrix (`scripts/ui-harness.sh --strict`) | **PASS — 128/128 cases**, goldens image 128/128 and tree 127/128, copy lint 0 errors, 0 clipping warnings; 12 scripted cases cover the keys sheet, search, mouse back, directory filter, click-to-open, export, selection, carousel, feed-return and calendar browsing. |
 | `python3 scripts/check-doc-links.py README.md 'docs/**/*.md'` | PASS, 0 broken local targets. |
 | Release packaging | unchanged by this pass; `scripts/package-linux-release.sh` still the distributable path (release build not re-run here). |
 | Local archive reproducibility | Migration v3 was verified end-to-end on a copy of the live archive: 11,846 bookmarks preserved, FTS "film" = 553, `integrity_check` ok, `user_version = 3`; system SQLite 3.54 now opens the migrated file (before: shadow-trigger parse error). |

@@ -91,6 +91,12 @@ pub enum Command {
     RestoreBackup(PathBuf),
     RestoreDeleted,
     TrashCount,
+    TrashList {
+        offset: usize,
+        limit: usize,
+    },
+    RestoreTrash(i64),
+    EmptyTrash,
     ImportPreviewFile(PathBuf),
     ImportFile(PathBuf),
     ImportPreviewContent {
@@ -247,6 +253,18 @@ pub enum Response {
         id: RequestId,
         result: Result<i64, StoreError>,
     },
+    TrashList {
+        id: RequestId,
+        result: Result<(Vec<eterea_core::storage::TrashEntry>, i64), StoreError>,
+    },
+    RestoreTrash {
+        id: RequestId,
+        result: Result<Option<Box<Bookmark>>, StoreError>,
+    },
+    EmptyTrash {
+        id: RequestId,
+        result: Result<usize, StoreError>,
+    },
     ImportPreview {
         id: RequestId,
         result: Result<ImportPreview, StoreError>,
@@ -363,6 +381,9 @@ impl Response {
             | Self::RestoreBackup { id, .. }
             | Self::RestoreDeleted { id, .. }
             | Self::TrashCount { id, .. }
+            | Self::TrashList { id, .. }
+            | Self::RestoreTrash { id, .. }
+            | Self::EmptyTrash { id, .. }
             | Self::ImportPreview { id, .. }
             | Self::Import { id, .. }
             | Self::SetTags { id, .. }
@@ -551,6 +572,21 @@ impl StoreHandle {
     /// Count recoverable deletions.
     pub fn trash_count(&self) -> RequestId {
         self.issue(Command::TrashCount)
+    }
+
+    /// Paged listing of recoverable deletions, newest first.
+    pub fn trash_list(&self, offset: usize, limit: usize) -> RequestId {
+        self.issue(Command::TrashList { offset, limit })
+    }
+
+    /// Restore one trashed bookmark by trash-row id.
+    pub fn restore_trash(&self, trash_id: i64) -> RequestId {
+        self.issue(Command::RestoreTrash(trash_id))
+    }
+
+    /// Permanently drop every trashed bookmark.
+    pub fn empty_trash(&self) -> RequestId {
+        self.issue(Command::EmptyTrash)
     }
 
     pub fn import_preview_file(&self, path: impl Into<PathBuf>) -> RequestId {
@@ -849,6 +885,21 @@ fn dispatch(services: &mut AppServices, request: Request) -> Response {
         Command::TrashCount => Response::TrashCount {
             id,
             result: services.trash_count().map_err(StoreError::from),
+        },
+        Command::TrashList { offset, limit } => Response::TrashList {
+            id,
+            result: services.trash_list(offset, limit).map_err(StoreError::from),
+        },
+        Command::RestoreTrash(trash_id) => Response::RestoreTrash {
+            id,
+            result: services
+                .restore_trash(trash_id)
+                .map(|bookmark| bookmark.map(Box::new))
+                .map_err(StoreError::from),
+        },
+        Command::EmptyTrash => Response::EmptyTrash {
+            id,
+            result: services.empty_trash().map_err(StoreError::from),
         },
         Command::ImportPreviewFile(path) => Response::ImportPreview {
             id,
