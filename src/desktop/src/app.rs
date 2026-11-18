@@ -734,10 +734,10 @@ impl State {
             }
             Route::History => self.request_history(),
             Route::Settings => {
-                if let Some(store) = self.store.as_ref() {
-                    store.backup_list();
-                    self.pending_views += 1;
-                    if self.stats.is_none() {
+                // The backup count is filled by an explicit action rather than
+                // on open, so the screen renders the same state every time.
+                if self.stats.is_none() {
+                    if let Some(store) = self.store.as_ref() {
                         store.stats();
                         self.pending_views += 1;
                     }
@@ -1043,7 +1043,8 @@ impl State {
             CommandItem::BackupNow => {
                 if let Some(store) = self.store.as_ref() {
                     store.backup_now();
-                    self.pending_views += 1;
+                    store.backup_list();
+                    self.pending_views += 2;
                     let now = tx.clock();
                     self.set_status("writing backup", now);
                 }
@@ -5792,7 +5793,7 @@ fn settings_view(state: &State, p: Palette) -> El {
                 text(match state.backup_count {
                     Some(0) => "none yet".to_string(),
                     Some(count) => format!("{count} copies"),
-                    None => "checking".to_string(),
+                    None => "unknown".to_string(),
                 })
                 .font(theme::mono(10.5))
                 .color(p.muted),

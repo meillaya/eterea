@@ -20,7 +20,7 @@
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/previews/hero-dark.webp">
-  <img src="docs/assets/previews/hero-light.webp" alt="The eterea feed: a selected post with a photograph pair, date rail and keyboard selection rule" width="100%">
+  <img src="docs/assets/previews/hero-light.webp" alt="The eterea feed: a selected post with a quoted post, media, date rail and selection rule" width="100%">
 </picture>
 
 </div>
@@ -30,7 +30,7 @@ in SQLite, and draws the archive with Rune on the GPU. There is no account and n
 server. The desktop app is keyboard first, with a selection rule, a command
 palette, search and a key sheet.
 
-Screenshots use a reference archive, not a personal library.
+Screenshots are captures of the maintainer's live archive (11,841 posts).
 
 ---
 
@@ -38,7 +38,7 @@ Screenshots use a reference archive, not a personal library.
 
 | Daylight | Night |
 |:---:|:---:|
-| <img src="docs/assets/previews/feed-light.webp" alt="Feed: selected post, marginalia rail and photographs" width="100%"> | <img src="docs/assets/previews/feed-dark.webp" alt="The same feed at night" width="100%"> |
+| <img src="docs/assets/previews/feed-light.webp" alt="Feed: selected post with a quoted post, video poster and date rail" width="100%"> | <img src="docs/assets/previews/feed-dark.webp" alt="The same feed at night" width="100%"> |
 | <img src="docs/assets/previews/detail-light.webp" alt="Detail: one post at reading width" width="100%"> | <img src="docs/assets/previews/detail-dark.webp" alt="The same detail at night" width="100%"> |
 | <img src="docs/assets/previews/graph-light.webp" alt="Tag graph with labels and edges" width="100%"> | <img src="docs/assets/previews/graph-dark.webp" alt="The tag graph at night" width="100%"> |
 | <img src="docs/assets/previews/palette-light.webp" alt="Command palette open over the feed" width="100%"> | <img src="docs/assets/previews/palette-dark.webp" alt="The command palette at night" width="100%"> |
@@ -48,7 +48,7 @@ Screenshots use a reference archive, not a personal library.
 | <img src="docs/assets/previews/history-light.webp" alt="History: the five latest actions with exact before/after detail and undo" width="100%"> | <img src="docs/assets/previews/history-dark.webp" alt="History at night" width="100%"> |
 | <img src="docs/assets/previews/export-light.webp" alt="Export sheet with all or filtered scope and CSV or JSON format" width="100%"> | <img src="docs/assets/previews/export-dark.webp" alt="Export at night" width="100%"> |
 | <img src="docs/assets/previews/selection-light.webp" alt="Selection bar after selecting two posts, with tag, delete, read and unread actions" width="100%"> | <img src="docs/assets/previews/selection-dark.webp" alt="Selection at night" width="100%"> |
-| <img src="docs/assets/previews/carousel-light.webp" alt="A twenty-item media post paged as a carousel" width="100%"> | <img src="docs/assets/previews/carousel-dark.webp" alt="The media carousel at night" width="100%"> |
+| <img src="docs/assets/previews/carousel-light.webp" alt="A media post paged as a carousel" width="100%"> | <img src="docs/assets/previews/carousel-dark.webp" alt="The media carousel at night" width="100%"> |
 
 Photograph credits: [`CREDITS.md`](docs/assets/previews/CREDITS.md).
 

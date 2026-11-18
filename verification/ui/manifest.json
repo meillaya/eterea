@@ -129,20 +129,20 @@
       "visible_texts": 14
     },
     "route/settings/1440x900/dark": {
-      "image_bytes": 59009,
-      "image_sha256": "ca459d6857d2c0725c24617b2c2157291ec243aa7100963422134cbf58712c34",
-      "texts": 53,
+      "image_bytes": 54973,
+      "image_sha256": "f56c35e400f18a46eca619a23c4ac9f696a677e15426feb5676e3ca1dd82f4e0",
+      "texts": 52,
       "tree_nodes": 57,
-      "tree_sha256": "c347115476e26ced61b4122f816de6c699f7011603b2671fc7c4c34c8d0d26c4",
-      "visible_texts": 52
+      "tree_sha256": "2187771ca43524ac739ef210d89296c3323f48964aa6643469e7f4f69db338f4",
+      "visible_texts": 51
     },
     "route/settings/1440x900/light": {
-      "image_bytes": 58837,
-      "image_sha256": "7b46a44ca2259f0dbea8307fe257cc619e03a1f2c86a7405f31743f0fa841020",
-      "texts": 53,
+      "image_bytes": 54659,
+      "image_sha256": "9cc997c62d44824cdf927f64bdd9b87e06bddba74439fec6ecbe21849d554f5a",
+      "texts": 52,
       "tree_nodes": 57,
-      "tree_sha256": "5642c23010a1a862aabc927e7422e83ab1fd2d2276e736abf72f1da9d3c81623",
-      "visible_texts": 52
+      "tree_sha256": "6e392769ca58a136af14ea22100a681bcb0d535d734c7efdda8f77cdf0d3dbc3",
+      "visible_texts": 51
     },
     "route/topics/1440x900/dark": {
       "image_bytes": 32135,
@@ -665,36 +665,36 @@
       "visible_texts": 26
     },
     "script/carousel-page-1/1440x900/dark": {
-      "image_bytes": 39816,
-      "image_sha256": "0b323499fd4e9de7ccdbeddea49d3e4c194ac54e7bd5c85da6a16801860fb7ed",
-      "texts": 28,
+      "image_bytes": 36317,
+      "image_sha256": "6060595392141719fddf5735bce99bee18b9b6a67db4f3822d8c2b8af71b7bc1",
+      "texts": 27,
       "tree_nodes": 33,
-      "tree_sha256": "5f34c6ce07ef98239cbcd7cc15b81e6496a4e3dc9b9d8f4d63d82240fff516c0",
-      "visible_texts": 21
+      "tree_sha256": "caad7bdafb7f43e6365468459e92c9ac8205796f723c598c615e4981c779921e",
+      "visible_texts": 20
     },
     "script/carousel-page-1/1440x900/light": {
-      "image_bytes": 39339,
-      "image_sha256": "3eb41caaeb817ae2da8c38a754e4debdbd93e5252e56d7a4df6ce82d46d8091e",
-      "texts": 28,
+      "image_bytes": 35735,
+      "image_sha256": "ceeaf49cc8d2f3354c8999ca55bdd98990d57b75e87bef979af274ba9379a53c",
+      "texts": 27,
       "tree_nodes": 33,
-      "tree_sha256": "8fb3758b53dc10bf8407e3241da978dae2c05df999cd8738d45f7c365df2293e",
-      "visible_texts": 21
+      "tree_sha256": "97e664c94ca45adc9c985ac7ddefaced8cb4e1ec26fc02a80e51f8748f8dff45",
+      "visible_texts": 20
     },
     "script/carousel-page-2/1440x900/dark": {
-      "image_bytes": 39754,
-      "image_sha256": "03b1b53f8f59ce70d5eafb55865e4d156fa52e66d6a115fc93e8e0ae43c5a2fa",
-      "texts": 28,
+      "image_bytes": 36419,
+      "image_sha256": "406b03145b19c1172514aea6a2953c2fd9daa0dff7c41e10dd88b0a7df5100e6",
+      "texts": 27,
       "tree_nodes": 33,
-      "tree_sha256": "ea803247699a512b2fe265988a5bcd4bbade97b7f2c15891ae6f259c50ac2ed7",
-      "visible_texts": 21
+      "tree_sha256": "4063d7ca5e32777da78e8bfcb52865d1689b619d879b48fe7003fe4b8ff33e2e",
+      "visible_texts": 20
     },
     "script/carousel-page-2/1440x900/light": {
-      "image_bytes": 39433,
-      "image_sha256": "25c7fd10d3fd1fe252aed6d0a3dfbeacd77bb72dc31d9acb4e0c039829c3df3e",
-      "texts": 28,
+      "image_bytes": 35827,
+      "image_sha256": "77bb612a3f4886e5aca6628511a5b62265b39cf94e7ecc5496748144495a7d39",
+      "texts": 27,
       "tree_nodes": 33,
-      "tree_sha256": "804723e6e069128c12c86ac2e162adc67578f810dfa5dbbefb37a3eecfde6d04",
-      "visible_texts": 21
+      "tree_sha256": "a55fc16b47b8c864d516c682435d55422d093dfa36c68182cbf26a3fcea3123d",
+      "visible_texts": 20
     },
     "script/click-post/1440x900/light": {
       "image_bytes": 44429,
@@ -725,7 +725,7 @@
       "image_sha256": "ca60178841be092015077b945315ac5720d28156b3971f1e1205c4d1bcfa6b1d",
       "texts": 105,
       "tree_nodes": 111,
-      "tree_sha256": "e72fb61ad15416679f7e36fa890936fd3bba065cbef0afad3f39b67f1b7424c8",
+      "tree_sha256": "79ec4ee3abd8f4abc915fbb06f87fe62eb46edb71488e630ba80cc36900674d9",
       "visible_texts": 82
     },
     "script/keys-sheet/1440x900/dark": {
@@ -791,7 +791,7 @@
       "fixtures/eterea-export-carousel.json": "62c2a32a0cc757ecd3c5afe2eb0b68633d396b3b3fa1597de7114976d11a9767",
       "fixtures/x-api-v2-demo.json": "1e1382c40b87d909caff7cf230b08e03e750c94c98c62350684c9dddce8c2612"
     },
-    "matrix_sha256": "05f9ee22140aec670b20bdc4391322149e380fac544f5166d660682ae4c3b6ec",
+    "matrix_sha256": "3f0b0eb56852625b6aa755ec7ebdbadc20ed6492e45b1c85cf9d119df8ae702b",
     "scripts": {
       "scripts/authors-filter.json": "02435b0b928eac584118cdbbbbdd151b1f1377e43dbe4ecf9862e13971187d44",
       "scripts/calendar-week.json": "79fa5adf46d915e3b750b424adbea6bf12cdc47217bb5a0b3ea4cdc74a094cae",

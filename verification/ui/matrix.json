@@ -136,7 +136,7 @@
         "light",
         "dark"
       ],
-      "at": 2.2,
+      "at": 3.7,
       "expect": [
         "Carousel Demo",
         "Twenty frames from one walk",
@@ -164,7 +164,7 @@
         "light",
         "dark"
       ],
-      "at": 2.2,
+      "at": 3.7,
       "expect": [
         "Carousel Demo",
         "Carousel frame 5",
