@@ -90,6 +90,11 @@ enum CommandItem {
     Reload,
     RepairMedia,
     CancelRepair,
+    BackupNow,
+    IntegrityCheck,
+    RestoreBackup,
+    BackupList,
+    RestoreDeleted,
 }
 
 const COMMANDS: &[(&str, CommandItem)] = &[
@@ -112,6 +117,11 @@ const COMMANDS: &[(&str, CommandItem)] = &[
     ("reload", CommandItem::Reload),
     ("repair media", CommandItem::RepairMedia),
     ("cancel repair", CommandItem::CancelRepair),
+    ("backup now", CommandItem::BackupNow),
+    ("list backups", CommandItem::BackupList),
+    ("check integrity", CommandItem::IntegrityCheck),
+    ("restore backup", CommandItem::RestoreBackup),
+    ("restore last deleted", CommandItem::RestoreDeleted),
 ];
 
 enum InitResult {
@@ -287,6 +297,7 @@ pub(crate) struct State {
     import: ImportState,
     import_paths: Vec<PathBuf>,
     import_picker: Option<Receiver<Vec<PathBuf>>>,
+    restore_picker: Option<Receiver<Option<PathBuf>>>,
     import_drop: bool,
     import_pending: bool,
     video: Option<VideoPlayer>,
@@ -396,6 +407,7 @@ impl State {
             import: ImportState::Idle,
             import_paths: Vec::new(),
             import_picker: None,
+            restore_picker: None,
             import_drop: false,
             import_pending: false,
             video: None,
@@ -1011,7 +1023,55 @@ impl State {
                 start_media_repair(self, now);
             }
             CommandItem::CancelRepair => request_cancel_repair(self),
+            CommandItem::BackupNow => {
+                if let Some(store) = self.store.as_ref() {
+                    store.backup_now();
+                    self.pending_views += 1;
+                    let now = tx.clock();
+                    self.set_status("writing backup", now);
+                }
+            }
+            CommandItem::BackupList => {
+                if let Some(store) = self.store.as_ref() {
+                    store.backup_list();
+                    self.pending_views += 1;
+                }
+            }
+            CommandItem::IntegrityCheck => {
+                if let Some(store) = self.store.as_ref() {
+                    store.integrity_check();
+                    self.pending_views += 1;
+                    let now = tx.clock();
+                    self.set_status("checking database", now);
+                }
+            }
+            CommandItem::RestoreBackup => self.choose_restore_backup(),
+            CommandItem::RestoreDeleted => {
+                if let Some(store) = self.store.as_ref() {
+                    store.restore_deleted();
+                    self.pending_views += 1;
+                    let now = tx.clock();
+                    self.set_status("restoring deleted post", now);
+                }
+            }
         }
+    }
+
+    fn choose_restore_backup(&mut self) {
+        if self.restore_picker.is_some() {
+            return;
+        }
+        let (sender, receiver) = mpsc::channel();
+        self.restore_picker = Some(receiver);
+        let _ = std::thread::Builder::new()
+            .name("eterea-restore-picker".into())
+            .spawn(move || {
+                let picked = rfd::FileDialog::new()
+                    .add_filter("Eterea database", &["db", "sqlite", "sqlite3"])
+                    .set_title("restore an eterea backup")
+                    .pick_file();
+                let _ = sender.send(picked);
+            });
     }
 
     fn close_overlay(&mut self) {
@@ -1413,6 +1473,29 @@ fn poll(state: &mut State, clock: f64, tx: &mut Tx) -> bool {
             }
         }
     }
+    if let Some(receiver) = state.restore_picker.as_ref() {
+        match receiver.try_recv() {
+            Ok(Some(path)) => {
+                state.restore_picker = None;
+                if let Some(store) = state.store.as_ref() {
+                    store.restore_backup(path);
+                    state.pending_views += 1;
+                    let now = tx.clock();
+                    state.set_status("restoring backup", now);
+                }
+                changed = true;
+            }
+            Ok(None) => {
+                state.restore_picker = None;
+                changed = true;
+            }
+            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Disconnected) => {
+                state.restore_picker = None;
+                changed = true;
+            }
+        }
+    }
 
     if state.images.poll() {
         changed = true;
@@ -1717,6 +1800,94 @@ fn handle_response(state: &mut State, response: Response, clock: f64) {
                 }
             }
         }
+        Response::RestoreDeleted { result, .. } => {
+            state.pending_views = state.pending_views.saturating_sub(1);
+            let now = clock;
+            match result {
+                Ok(Some(bookmark)) => {
+                    state.set_status(
+                        format!("restored deleted post by @{}", bookmark.author_handle),
+                        now,
+                    );
+                    state.refresh_feed();
+                }
+                Ok(None) => state.set_status("nothing to restore", now),
+                Err(error) => state.set_status(error.message, now),
+            }
+        }
+        Response::TrashCount { result, .. } => {
+            state.pending_views = state.pending_views.saturating_sub(1);
+            let now = clock;
+            match result {
+                Ok(0) => state.set_status("trash is empty", now),
+                Ok(count) => state.set_status(format!("{count} deleted posts recoverable"), now),
+                Err(error) => state.set_status(error.message, now),
+            }
+        }
+        Response::BackupNow { result, .. } => {
+            state.pending_views = state.pending_views.saturating_sub(1);
+            let now = clock;
+            match result {
+                Ok(backup) => {
+                    state.set_status(format!("backup written ({} KB)", backup.bytes / 1024), now)
+                }
+                Err(error) => state.set_status(error.message, now),
+            }
+        }
+        Response::BackupList { result, .. } => {
+            state.pending_views = state.pending_views.saturating_sub(1);
+            let now = clock;
+            match result {
+                Ok(backups) if backups.is_empty() => state.set_status("no backups yet", now),
+                Ok(backups) => state.set_status(
+                    format!(
+                        "{} backups, newest {}",
+                        backups.len(),
+                        backups
+                            .first()
+                            .and_then(|backup| std::path::Path::new(&backup.path)
+                                .file_name()
+                                .and_then(|name| name.to_str())
+                                .map(str::to_string))
+                            .unwrap_or_default()
+                    ),
+                    now,
+                ),
+                Err(error) => state.set_status(error.message, now),
+            }
+        }
+        Response::IntegrityCheck { result, .. } => {
+            state.pending_views = state.pending_views.saturating_sub(1);
+            let now = clock;
+            match result {
+                Ok(report) => state.set_status(report.summary(), now),
+                Err(error) => state.set_status(error.message, now),
+            }
+        }
+        Response::RestoreBackup { result, .. } => {
+            state.pending_views = state.pending_views.saturating_sub(1);
+            let now = clock;
+            match result {
+                Ok(summary) => {
+                    state.set_status(
+                        format!("restored {} bookmarks from backup", summary.bookmarks),
+                        now,
+                    );
+                    // Everything the shell cached belongs to the old archive.
+                    state.calendar_cache.clear();
+                    state.calendar = None;
+                    state.calendar_request = None;
+                    state.calendar_year_data = None;
+                    state.calendar_year_request = None;
+                    state.latest_month = None;
+                    state.history = Vec::new();
+                    state.history_total = 0;
+                    state.selected = 0;
+                    state.request_feed(None);
+                }
+                Err(error) => state.set_status(error.message, now),
+            }
+        }
         Response::PreviewFiles { result, .. } => {
             state.import_pending = false;
             state.import = match result {
@@ -1848,7 +2019,13 @@ fn handle_response(state: &mut State, response: Response, clock: f64) {
         Response::BulkDelete { result, .. } => match result {
             Ok(bulk) => {
                 let now = clock;
-                state.set_status(format!("{} posts deleted", bulk.affected), now);
+                state.set_status(
+                    format!(
+                        "{} posts deleted, restore last deleted to recover",
+                        bulk.affected
+                    ),
+                    now,
+                );
                 clear_selection(state);
                 state.route = Route::Feed;
                 state.refresh_feed();
@@ -1881,7 +2058,7 @@ fn handle_response(state: &mut State, response: Response, clock: f64) {
                     }
                     state.route = Route::Feed;
                     let now = clock;
-                    state.set_status("post deleted", now);
+                    state.set_status("post deleted, restore last deleted to recover", now);
                     state.refresh_feed();
                 }
                 Ok(false) => {}

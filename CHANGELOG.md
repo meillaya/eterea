@@ -6,6 +6,15 @@ has actually been captured.
 
 ## Unreleased
 
+- Recoverable deletes: single and bulk deletes snapshot the post into a 200-entry
+  trash inside the same transaction (new schema v4 table with a pre-migration
+  backup), `restore last deleted` restores the newest entry, and repeated `u`
+  keeps walking the undo journal.
+- Data safety: a consistent pre-migration copy is written on every open of an
+  existing archive (newest five kept), `backup now`/`list backups`/`restore
+  backup`/`check integrity` are palette commands, restores validate the copy's
+  integrity and schema version first and swap it in through SQLite's online
+  backup API, and old copies are migrated forward on restore.
 - The graph now uses the whole content area instead of a fixed 720px square:
   wheel/pinch zoom and pan are clamped so the constellation cannot be cropped,
   `0`/double-press fit it, and the deterministic layout is force-directed rather

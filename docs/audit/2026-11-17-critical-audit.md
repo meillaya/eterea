@@ -238,7 +238,18 @@ most-saved plus the focused tag). Calendar marks, the selected-week rule, today
 and the year heatmap now use the same lavender token as the repair progress
 bar, so the two new surfaces match the rest of the interface.
 
-### 2.10 Documentation corrected in this pass
+### 2.10 Data safety (approved follow-up)
+
+Backups, integrity checks and restore are live: `Database::open` snapshots a
+pre-existing archive before migrations (five rotating copies in `backups/`),
+the palette writes manual copies and lists them, `check integrity` runs
+`PRAGMA integrity_check` plus `foreign_key_check`, and `restore backup`
+validates the chosen file (integrity and schema version), snapshots first, and
+copies it into the live connection with SQLite's online backup API before
+migrating it forward. Covered by backend round-trip/rotation tests and a
+store-actor end-to-end test.
+
+### 2.11 Documentation corrected in this pass
 
 - `docs/design/SPEC.md`: header nav now includes `search`; footer hint and
   scrimless key sheet; 64 px rhythm wording; rail width documented as 86 px

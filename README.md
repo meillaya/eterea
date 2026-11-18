@@ -160,6 +160,14 @@ The archive lives at `<platform data dir>/eterea/bookmarks.db`. On Linux that is
   round-trippable nested data.
 - Keeps quotes, favorites, media metadata, an interactive tag graph with persisted
   colors, and a calendar month.
+- Makes deletes recoverable: every delete keeps a full snapshot in a bounded
+  trash (`restore last deleted` in the palette), and undo (`u`) walks back
+  through recent actions instead of stopping at one.
+- Protects the archive: a consistent copy is written before every migration
+  pass (the newest five rotate), `backup now` makes a manual copy, a palette
+  `check integrity` runs SQLite's integrity and foreign-key checks, and
+  `restore backup` validates a chosen copy byte-for-byte before replacing the
+  live archive page-wise.
 - Browses the archive on a calendar: month grid with a selected-week rule and
   per-day marks, a year overview of twelve month plates whose dots shade with
   saved-post density, `‹ ›` month chevrons, `[`/`]`, `t` for today and `y` for

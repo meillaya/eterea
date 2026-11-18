@@ -297,3 +297,132 @@ fn shutdown_stops_answering_and_a_reopened_actor_reads_persisted_archive() {
     }
     reopened.shutdown();
 }
+
+#[test]
+fn backups_round_trip_through_the_store_actor() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("bookmarks.db");
+    let handle = StoreHandle::open(&path).unwrap();
+
+    let import_id = handle.import_content("bookmarks.json", SAMPLE_JSON);
+    match recv(&handle) {
+        Response::Import { id, result } => {
+            assert_eq!(id, import_id);
+            let inserted = result.expect("import should succeed");
+            assert_eq!(inserted, 3);
+        }
+        other => panic!("expected import response, got {other:?}"),
+    }
+
+    let backup_id = handle.backup_now();
+    let backup_path = match recv(&handle) {
+        Response::BackupNow { id, result } => {
+            assert_eq!(id, backup_id);
+            let backup = result.expect("backup should succeed");
+            assert!(backup.bytes > 0);
+            std::path::PathBuf::from(backup.path)
+        }
+        other => panic!("expected backup response, got {other:?}"),
+    };
+    assert!(backup_path.is_file());
+
+    let list_id = handle.backup_list();
+    match recv(&handle) {
+        Response::BackupList { id, result } => {
+            assert_eq!(id, list_id);
+            let backups = result.expect("backup list should succeed");
+            assert!(!backups.is_empty());
+        }
+        other => panic!("expected backup list response, got {other:?}"),
+    }
+
+    let check_id = handle.integrity_check();
+    match recv(&handle) {
+        Response::IntegrityCheck { id, result } => {
+            assert_eq!(id, check_id);
+            let report = result.expect("integrity check should succeed");
+            assert!(report.ok, "report: {report:?}");
+        }
+        other => panic!("expected integrity response, got {other:?}"),
+    }
+
+    let restore_id = handle.restore_backup(&backup_path);
+    match recv(&handle) {
+        Response::RestoreBackup { id, result } => {
+            assert_eq!(id, restore_id);
+            let summary = result.expect("restore should succeed");
+            assert_eq!(summary.bookmarks, 3);
+        }
+        other => panic!("expected restore response, got {other:?}"),
+    }
+
+    handle.shutdown();
+}
+
+#[test]
+fn deletes_are_recoverable_from_trash_through_the_store_actor() {
+    let handle = StoreHandle::open_memory().unwrap();
+    handle.import_content("bookmarks.json", SAMPLE_JSON);
+    recv(&handle);
+
+    let feed_id = handle.feed(BookmarkQuery {
+        limit: 10,
+        ..BookmarkQuery::default()
+    });
+    let target = match recv(&handle) {
+        Response::Feed { id, result } => {
+            assert_eq!(id, feed_id);
+            result
+                .expect("feed should load")
+                .items
+                .first()
+                .expect("archive should have a post")
+                .clone()
+        }
+        other => panic!("expected feed response, got {other:?}"),
+    };
+
+    let delete_id = handle.delete_bookmark(&target.id);
+    match recv(&handle) {
+        Response::DeleteBookmark { id, result } => {
+            assert_eq!(id, delete_id);
+            assert!(result.expect("delete should succeed"));
+        }
+        other => panic!("expected delete response, got {other:?}"),
+    }
+
+    let count_id = handle.trash_count();
+    match recv(&handle) {
+        Response::TrashCount { id, result } => {
+            assert_eq!(id, count_id);
+            assert_eq!(result.expect("trash count should load"), 1);
+        }
+        other => panic!("expected trash count response, got {other:?}"),
+    }
+
+    let restore_id = handle.restore_deleted();
+    match recv(&handle) {
+        Response::RestoreDeleted { id, result } => {
+            assert_eq!(id, restore_id);
+            let restored = result
+                .expect("restore should succeed")
+                .expect("trash entry");
+            assert_eq!(restored.id, target.id);
+        }
+        other => panic!("expected restore response, got {other:?}"),
+    }
+
+    let feed_id = handle.feed(BookmarkQuery {
+        limit: 10,
+        ..BookmarkQuery::default()
+    });
+    match recv(&handle) {
+        Response::Feed { id, result } => {
+            assert_eq!(id, feed_id);
+            assert_eq!(result.expect("feed should reload").items.len(), 3);
+        }
+        other => panic!("expected feed response, got {other:?}"),
+    }
+
+    handle.shutdown();
+}

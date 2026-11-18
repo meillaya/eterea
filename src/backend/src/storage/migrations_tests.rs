@@ -588,7 +588,10 @@ fn create_legacy_database(path: &Path) -> crate::Result<()> {
 
 fn create_future_version_database(path: &Path) -> crate::Result<()> {
     let conn = Connection::open(path)?;
-    conn.execute_batch("PRAGMA user_version = 4;")?;
+    conn.execute_batch(&format!(
+        "PRAGMA user_version = {};",
+        CURRENT_SCHEMA_USER_VERSION + 1
+    ))?;
     create_legacy_schema(&conn)?;
     insert_legacy_bookmark(&conn)
 }

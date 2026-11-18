@@ -17,6 +17,6 @@ pub use models::{
     UndoResult,
 };
 pub use storage::{
-    BookmarkQuery, BookmarkSelection, Database, ExportFormat, ExportRequest, ExportScope,
-    ExportSummary,
+    BackupInfo, BookmarkQuery, BookmarkSelection, Database, ExportFormat, ExportRequest,
+    ExportScope, ExportSummary, IntegrityReport, RestoreSummary,
 };

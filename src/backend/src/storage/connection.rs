@@ -28,10 +28,15 @@ impl Database {
         }
 
         info!(target: "eterea::db", "opening database");
+        let had_archive = path.metadata().map(|meta| meta.len() > 0).unwrap_or(false);
         let conn = Connection::open(path)?;
         conn.busy_timeout(SQLITE_BUSY_TIMEOUT)?;
 
         let db = Self { conn };
+        if had_archive {
+            // Protect the pre-migration shape before `initialize` can touch it.
+            db.rotate_backup_before_migration(path)?;
+        }
         db.initialize()?;
 
         Ok(db)

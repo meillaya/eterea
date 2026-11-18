@@ -353,52 +353,52 @@
       "visible_texts": 58
     },
     "scene/palette/1280x820/dark": {
-      "image_bytes": 114759,
-      "image_sha256": "8e1f2268b55b9afb63748b36dee5b045b9cb195270a2f92b193c3ff6c069342b",
-      "texts": 112,
-      "tree_nodes": 129,
-      "tree_sha256": "6a92db3e13fbb245ef5e102f6549e7d4bd599b58b43e1c18645ef801d84f6808",
-      "visible_texts": 76
+      "image_bytes": 112187,
+      "image_sha256": "cccb768a4b3ef45635f746cb9a21e8e1a7c100321ced69524f1d04f51ea88455",
+      "texts": 122,
+      "tree_nodes": 139,
+      "tree_sha256": "1e42f97a6244db3257bf96c6c6d2ae8176ea6ba0e1b7c027ad36b54e2ffeaf37",
+      "visible_texts": 81
     },
     "scene/palette/1280x820/light": {
-      "image_bytes": 127520,
-      "image_sha256": "f5ec8d7f9679b9c1863d95023bebded7391fd6f48b1a5156f914ebd525b2561e",
-      "texts": 112,
-      "tree_nodes": 129,
-      "tree_sha256": "4be8258233701eab563a1fd83bf9c1be84cc25760e1147b664696e2ca645c8a5",
-      "visible_texts": 76
+      "image_bytes": 124179,
+      "image_sha256": "a26efb96c2bc943b7833c66b8e5538849c4e6f50f46e61c39865df1077ea4782",
+      "texts": 122,
+      "tree_nodes": 139,
+      "tree_sha256": "0a114ce16ed0c6d97f37d25ed064234843c994a540b5ba768c1f820e40ed2fcc",
+      "visible_texts": 81
     },
     "scene/palette/1440x900/dark": {
-      "image_bytes": 148119,
-      "image_sha256": "38e604adee7c7f23b1286ca7cd0caa183b3980451e57c3120b6b4f73927f81c1",
-      "texts": 112,
-      "tree_nodes": 129,
-      "tree_sha256": "d1b19075100aaef0209b695b9f856caf04b27826653cfa69901c25cf38a3aecc",
-      "visible_texts": 76
+      "image_bytes": 145608,
+      "image_sha256": "f9d2f87272b450985a38f6c343ba4c8421c142ff46fb9356da1548485b06b5fe",
+      "texts": 122,
+      "tree_nodes": 139,
+      "tree_sha256": "e2185b5808dd1ff4b161453e788d8f17f3165b47dbc438fafe0f4c1095b51f21",
+      "visible_texts": 81
     },
     "scene/palette/1440x900/light": {
-      "image_bytes": 166075,
-      "image_sha256": "d0a5e236c32192b750dbea7773ac6d8493e22c3d809ea3f457e7f8cde1595d41",
-      "texts": 112,
-      "tree_nodes": 129,
-      "tree_sha256": "d67593bfd7fa21a833483e3164c63acbdba43e853dabf378deff528470b0222d",
-      "visible_texts": 76
+      "image_bytes": 162561,
+      "image_sha256": "9c3873120bddc27e9c55a175c4cf13b544f139b60ca8eae00454a5738947da36",
+      "texts": 122,
+      "tree_nodes": 139,
+      "tree_sha256": "9701d228495c5a4d3014893842306540e4b7de2c983068df6c529c595f2fd4ac",
+      "visible_texts": 81
     },
     "scene/palette/960x640/dark": {
-      "image_bytes": 83842,
-      "image_sha256": "c52c11c4313f839b743c5ca62d683b1b8171cd88119f1577a1f51fa80a9ef449",
-      "texts": 112,
-      "tree_nodes": 129,
-      "tree_sha256": "dd32e75162b6176adf2c654d59035056de2b0fbd5671fc6cbb3e5167ff2586f1",
-      "visible_texts": 76
+      "image_bytes": 83845,
+      "image_sha256": "0e931ec537c7fb1f9fab030c37ea8e3feec1804693b70d6f750009253668cac2",
+      "texts": 122,
+      "tree_nodes": 139,
+      "tree_sha256": "601f9802105fe79ca0123a6c9292cab88a7e3d7c0a8ff730d5ae5a64eaf2c517",
+      "visible_texts": 81
     },
     "scene/palette/960x640/light": {
-      "image_bytes": 91531,
-      "image_sha256": "54bbf8e16e1b05e9917b2ae7a2f2abbdda8ae90ab3f728c2060be9bb19116f7f",
-      "texts": 112,
-      "tree_nodes": 129,
-      "tree_sha256": "ecac2dafb27d8a7a28081822046f260f759ae5dddac1a20e1ff7396e4f40529d",
-      "visible_texts": 76
+      "image_bytes": 91526,
+      "image_sha256": "278f85b2552992d4fcf3a1bacdcb5f82e1c9319f32f50c47298b1562f5d22b86",
+      "texts": 122,
+      "tree_nodes": 139,
+      "tree_sha256": "f1c0f38a92fc69d49b152d890e8724a9eca2fb891ee2cc826e28015673d4d587",
+      "visible_texts": 81
     },
     "scene/quote/1280x820/dark": {
       "image_bytes": 63792,

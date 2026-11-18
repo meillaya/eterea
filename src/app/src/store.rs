@@ -21,7 +21,7 @@ use crate::types::{
 };
 use crate::AppServices;
 use crossbeam_channel::{unbounded, Receiver, Sender};
-use eterea_core::Bookmark;
+use eterea_core::{BackupInfo, Bookmark, IntegrityReport, RestoreSummary};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -83,6 +83,12 @@ pub enum Command {
     Graph(GraphRequest),
     Calendar(CalendarRequest),
     CalendarYear(CalendarYearRequest),
+    BackupNow,
+    BackupList,
+    IntegrityCheck,
+    RestoreBackup(PathBuf),
+    RestoreDeleted,
+    TrashCount,
     ImportPreviewFile(PathBuf),
     ImportFile(PathBuf),
     ImportPreviewContent {
@@ -185,6 +191,30 @@ pub enum Response {
         id: RequestId,
         result: Result<CalendarYearData, StoreError>,
     },
+    BackupNow {
+        id: RequestId,
+        result: Result<BackupInfo, StoreError>,
+    },
+    BackupList {
+        id: RequestId,
+        result: Result<Vec<BackupInfo>, StoreError>,
+    },
+    IntegrityCheck {
+        id: RequestId,
+        result: Result<IntegrityReport, StoreError>,
+    },
+    RestoreBackup {
+        id: RequestId,
+        result: Result<RestoreSummary, StoreError>,
+    },
+    RestoreDeleted {
+        id: RequestId,
+        result: Result<Option<Box<Bookmark>>, StoreError>,
+    },
+    TrashCount {
+        id: RequestId,
+        result: Result<i64, StoreError>,
+    },
     ImportPreview {
         id: RequestId,
         result: Result<ImportPreview, StoreError>,
@@ -270,6 +300,12 @@ impl Response {
             | Self::Graph { id, .. }
             | Self::Calendar { id, .. }
             | Self::CalendarYear { id, .. }
+            | Self::BackupNow { id, .. }
+            | Self::BackupList { id, .. }
+            | Self::IntegrityCheck { id, .. }
+            | Self::RestoreBackup { id, .. }
+            | Self::RestoreDeleted { id, .. }
+            | Self::TrashCount { id, .. }
             | Self::ImportPreview { id, .. }
             | Self::Import { id, .. }
             | Self::SetTags { id, .. }
@@ -417,6 +453,36 @@ impl StoreHandle {
         self.issue(Command::CalendarYear(request))
     }
 
+    /// Write a manual, consistent backup beside the archive.
+    pub fn backup_now(&self) -> RequestId {
+        self.issue(Command::BackupNow)
+    }
+
+    /// List the backup copies already on disk, newest first.
+    pub fn backup_list(&self) -> RequestId {
+        self.issue(Command::BackupList)
+    }
+
+    /// Run SQLite's integrity and foreign-key checks.
+    pub fn integrity_check(&self) -> RequestId {
+        self.issue(Command::IntegrityCheck)
+    }
+
+    /// Replace the live archive with the backup at `path`.
+    pub fn restore_backup(&self, path: impl Into<PathBuf>) -> RequestId {
+        self.issue(Command::RestoreBackup(path.into()))
+    }
+
+    /// Restore the newest recoverable deletion.
+    pub fn restore_deleted(&self) -> RequestId {
+        self.issue(Command::RestoreDeleted)
+    }
+
+    /// Count recoverable deletions.
+    pub fn trash_count(&self) -> RequestId {
+        self.issue(Command::TrashCount)
+    }
+
     pub fn import_preview_file(&self, path: impl Into<PathBuf>) -> RequestId {
         self.issue(Command::ImportPreviewFile(path.into()))
     }
@@ -546,19 +612,19 @@ impl StoreHandle {
     }
 }
 
-fn run_actor(services: AppServices, requests: Receiver<Request>, responses: Sender<Response>) {
+fn run_actor(mut services: AppServices, requests: Receiver<Request>, responses: Sender<Response>) {
     while let Ok(request) = requests.recv() {
         if matches!(request.command, Command::Shutdown) {
             break;
         }
-        let response = dispatch(&services, request);
+        let response = dispatch(&mut services, request);
         if responses.send(response).is_err() {
             break;
         }
     }
 }
 
-fn dispatch(services: &AppServices, request: Request) -> Response {
+fn dispatch(services: &mut AppServices, request: Request) -> Response {
     let Request { id, command } = request;
     match command {
         Command::Feed(query) => Response::Feed {
@@ -614,6 +680,33 @@ fn dispatch(services: &AppServices, request: Request) -> Response {
             result: services
                 .calendar_year_data(&year_request)
                 .map_err(StoreError::from),
+        },
+        Command::BackupNow => Response::BackupNow {
+            id,
+            result: services.backup_now().map_err(StoreError::from),
+        },
+        Command::BackupList => Response::BackupList {
+            id,
+            result: services.backup_list().map_err(StoreError::from),
+        },
+        Command::IntegrityCheck => Response::IntegrityCheck {
+            id,
+            result: services.integrity_check().map_err(StoreError::from),
+        },
+        Command::RestoreBackup(path) => Response::RestoreBackup {
+            id,
+            result: services.restore_backup(&path).map_err(StoreError::from),
+        },
+        Command::RestoreDeleted => Response::RestoreDeleted {
+            id,
+            result: services
+                .restore_deleted()
+                .map(|bookmark| bookmark.map(Box::new))
+                .map_err(StoreError::from),
+        },
+        Command::TrashCount => Response::TrashCount {
+            id,
+            result: services.trash_count().map_err(StoreError::from),
         },
         Command::ImportPreviewFile(path) => Response::ImportPreview {
             id,

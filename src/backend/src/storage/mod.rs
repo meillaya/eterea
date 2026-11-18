@@ -2,6 +2,7 @@
 //!
 //! Uses SQLite with FTS5 for lightning-fast full-text search.
 
+mod backup;
 mod connection;
 mod database;
 mod directory_queries;
@@ -19,8 +20,12 @@ mod read_queries;
 mod schema;
 mod stats;
 mod tag_colors;
+mod trash;
 mod writes;
 
+pub use backup::{
+    BackupInfo, IntegrityReport, RestoreSummary, AUTOMATIC_BACKUPS_KEPT, BACKUP_DIR_NAME,
+};
 pub use database::Database;
 pub use discovery_queries::TagCooccurrence;
 pub use export::{
@@ -33,4 +38,5 @@ pub use queries::{AuthorStats, BookmarkStats};
 pub use query::{
     BookmarkQuery, BookmarkSelection, ExportFormat, ExportRequest, ExportScope, ExportSummary,
 };
+pub use trash::{TrashEntry, TRASH_LIMIT};
 pub use writes::{BatchImportOutcome, FileImportOutcome};

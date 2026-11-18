@@ -90,6 +90,15 @@ CREATE TABLE IF NOT EXISTS tag_colors (
 
 -- Undo journal. Payloads are JSON blobs; only the newest five events are kept
 -- and only the newest non-undone event can be undone.
+CREATE TABLE IF NOT EXISTS trash (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    bookmark_id TEXT NOT NULL,
+    deleted_at INTEGER NOT NULL,
+    payload_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_trash_deleted_at ON trash(deleted_at DESC, id DESC);
+
 CREATE TABLE IF NOT EXISTS history_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     kind TEXT NOT NULL,

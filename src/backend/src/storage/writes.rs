@@ -560,6 +560,7 @@ impl Database {
             let Some(bookmark) = self.get_bookmark(id)? else {
                 return Ok(false);
             };
+            self.trash_snapshots(std::slice::from_ref(&bookmark))?;
             let deleted = self.delete_bookmark_ids(std::slice::from_ref(&bookmark.id))?;
             if deleted == 0 {
                 return Ok(false);

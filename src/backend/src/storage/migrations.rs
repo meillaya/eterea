@@ -6,7 +6,7 @@ use crate::{Error, Result};
 use rusqlite::types::ValueRef;
 use tracing::debug;
 
-const CURRENT_SCHEMA_USER_VERSION: i64 = 3;
+pub const CURRENT_SCHEMA_USER_VERSION: i64 = 4;
 
 /// Pre-v3 FTS external-content document table. The name ended with `_content`,
 /// which is an FTS5 shadow-table suffix for the `bookmarks_fts` virtual table;

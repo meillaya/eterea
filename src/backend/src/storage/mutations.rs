@@ -118,6 +118,7 @@ impl Database {
             }
             let (where_clause, where_params) = self.selection_where(selection)?;
 
+            self.trash_snapshots(&snapshots)?;
             self.delete_selection(&where_clause, &where_params)?;
 
             let summary = HistorySummary {
