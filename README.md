@@ -172,6 +172,13 @@ The archive lives at `<platform data dir>/eterea/bookmarks.db`. On Linux that is
   per-day marks, a year overview of twelve month plates whose dots shade with
   saved-post density, `‹ ›` month chevrons, `[`/`]`, `t` for today and `y` for
   the year view.
+- Remembers the window's size and position, refuses a second instance on the
+  same profile, writes `settings.json` atomically, and shows the database path,
+  backup count, tool availability and a retry for media that hit a transient
+  network failure.
+- `g g` / `G` jump to the top/end of the feed, a visible `filtered: …` line
+  says when a filter is on and offers `clear`, and `retry media` re-requests
+  images that failed for network reasons.
 - Switches between system, light and dark appearance, three text sizes, automatic
   or on-demand media, and system or reduced motion. Preferences persist.
 - Ships a Verus reference model, bounded Kani harnesses, Miri tests and fuzz

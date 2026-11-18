@@ -95,6 +95,7 @@ enum CommandItem {
     RestoreBackup,
     BackupList,
     RestoreDeleted,
+    RetryMedia,
 }
 
 const COMMANDS: &[(&str, CommandItem)] = &[
@@ -122,6 +123,7 @@ const COMMANDS: &[(&str, CommandItem)] = &[
     ("check integrity", CommandItem::IntegrityCheck),
     ("restore backup", CommandItem::RestoreBackup),
     ("restore last deleted", CommandItem::RestoreDeleted),
+    ("retry media", CommandItem::RetryMedia),
 ];
 
 enum InitResult {
@@ -235,6 +237,13 @@ pub(crate) struct State {
     feed_return: Option<FeedReturn>,
     /// A pending restore to apply when the feed view is next drawn.
     feed_restore: Option<FeedReturn>,
+    /// Clock time of a first `g` press, for the `g g` top-of-feed mnemonic.
+    pending_g: Option<f64>,
+    /// Last laid-out window size and desktop origin, for persistence on close.
+    window_size: Option<(f32, f32)>,
+    /// Backups listed when Settings opened, for the safety section.
+    backup_count: Option<usize>,
+    window_origin: Option<(i32, i32)>,
     favorite_request: Option<(u64, String)>,
     delete_request: Option<(u64, String)>,
     demo: bool,
@@ -360,6 +369,10 @@ impl State {
             feed_viewport_height: Live::new(0.0),
             feed_return: None,
             feed_restore: None,
+            pending_g: None,
+            window_size: None,
+            window_origin: None,
+            backup_count: None,
             favorite_request: None,
             delete_request: None,
             demo: false,
@@ -720,10 +733,14 @@ impl State {
                 }
             }
             Route::History => self.request_history(),
-            Route::Settings if self.stats.is_none() => {
+            Route::Settings => {
                 if let Some(store) = self.store.as_ref() {
-                    store.stats();
+                    store.backup_list();
                     self.pending_views += 1;
+                    if self.stats.is_none() {
+                        store.stats();
+                        self.pending_views += 1;
+                    }
                 }
             }
             Route::Calendar => {
@@ -1046,6 +1063,13 @@ impl State {
                 }
             }
             CommandItem::RestoreBackup => self.choose_restore_backup(),
+            CommandItem::RetryMedia => {
+                self.images.retry_failed();
+                request_avatars(self);
+                request_all_media(self);
+                let now = tx.clock();
+                self.set_status("retrying media", now);
+            }
             CommandItem::RestoreDeleted => {
                 if let Some(store) = self.store.as_ref() {
                     store.restore_deleted();
@@ -1419,6 +1443,10 @@ fn request_directory_avatars(state: &mut State) {
 
 fn poll(state: &mut State, clock: f64, tx: &mut Tx) -> bool {
     let mut changed = false;
+    if let Some(message) = settings::take_error() {
+        state.set_status(message, clock);
+        changed = true;
+    }
     let mut init = None;
     if let Some(rx) = state.init_rx.as_ref() {
         match rx.try_recv() {
@@ -1457,6 +1485,18 @@ fn poll(state: &mut State, clock: f64, tx: &mut Tx) -> bool {
         }
     }
 
+    let failed_media = state.images.take_new_failures();
+    if failed_media > 0 {
+        state.set_status(
+            if failed_media == 1 {
+                "one image unavailable, retry media to try again".to_string()
+            } else {
+                format!("{failed_media} images unavailable, retry media to try again")
+            },
+            clock,
+        );
+        changed = true;
+    }
     if let Some(receiver) = state.import_picker.as_ref() {
         match receiver.try_recv() {
             Ok(paths) => {
@@ -1837,6 +1877,9 @@ fn handle_response(state: &mut State, response: Response, clock: f64) {
         Response::BackupList { result, .. } => {
             state.pending_views = state.pending_views.saturating_sub(1);
             let now = clock;
+            if let Ok(backups) = &result {
+                state.backup_count = Some(backups.len());
+            }
             match result {
                 Ok(backups) if backups.is_empty() => state.set_status("no backups yet", now),
                 Ok(backups) => state.set_status(
@@ -2221,6 +2264,32 @@ fn on_key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
         }
         Key::Text(t) if t.as_str() == "?" => {
             state.overlay = Overlay::Keys;
+            true
+        }
+        Key::Text(t) if t.as_str() == "g" && !event.mods.shift => {
+            let now = tx.clock();
+            if state
+                .pending_g
+                .take()
+                .is_some_and(|first| now - first <= 0.8)
+            {
+                if !state.posts.is_empty() {
+                    state.selected = 0;
+                }
+                tx.scroll_to_y("feed", 0.0);
+            } else {
+                state.pending_g = Some(now);
+            }
+            true
+        }
+        Key::Text(t) if t.as_str() == "G" && event.mods.shift => {
+            if !state.posts.is_empty() {
+                state.selected = state.posts.len() - 1;
+            }
+            if state.feed_has_more {
+                state.load_more_feed();
+            }
+            tx.scroll_to_bottom("feed");
             true
         }
         Key::Text(t) if t.as_str() == "h" => {
@@ -3332,7 +3401,25 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
     if state.overlay != Overlay::None {
         root = root.child(overlay_view(state, p).transition(crate::motion::overlay_enter(reduced)));
     }
-    root
+    root.on_layout(|state: &mut State, rect: [f32; 4]| {
+        state.window_size = Some((rect[2], rect[3]));
+    })
+    .on_screen_layout(|state: &mut State, rect: [f32; 4]| {
+        state.window_origin = Some((rect[0] as i32, rect[1] as i32));
+    })
+}
+
+/// Persist the last window size and position when the window closes.
+pub(crate) fn persist_window_on_close(state: &mut State, _tx: &mut Tx) {
+    let (Some((width, height)), Some((x, y))) = (state.window_size, state.window_origin) else {
+        return;
+    };
+    settings::save_window(settings::WindowGeometry {
+        width,
+        height,
+        x,
+        y,
+    });
 }
 
 fn header(state: &State, p: Palette, dark: bool) -> El {
@@ -3545,16 +3632,54 @@ fn onboarding(state: &State, p: Palette) -> El {
     lines
 }
 
+fn feed_filter_label(filter: &Filter) -> String {
+    match filter {
+        Filter::Author(handle) => format!("filtered: @{handle}"),
+        Filter::Topic(tag) => format!("filtered: #{tag}"),
+        Filter::Day(from, _) => format!("filtered: {}", from.get(..10).unwrap_or(from)),
+        Filter::Query(query) => format!("filtered: {query}"),
+        Filter::Favorites => "filtered: favorites".to_string(),
+        Filter::Unread => "filtered: unread".to_string(),
+    }
+}
+
+fn feed_filter_line(state: &State, p: Palette) -> Option<El> {
+    let filter = state.filter.as_ref()?;
+    Some(
+        row().w_full().h(20.0).justify_center().child(
+            row()
+                .w(CONTENT)
+                .center_y()
+                .gap(12.0)
+                .child(
+                    text(feed_filter_label(filter))
+                        .font(theme::mono(10.5))
+                        .color(p.muted),
+                )
+                .child(
+                    text("clear")
+                        .font(theme::mono(10.5))
+                        .color(p.muted)
+                        .role("button")
+                        .label("clear filter")
+                        .on_press(|state: &mut State| state.request_feed(None)),
+                ),
+        ),
+    )
+}
+
 fn feed_view(state: &State, p: Palette) -> El {
+    let mut column = col().w_full().h_full();
+    if let Some(line) = feed_filter_line(state, p) {
+        column = column.child(line);
+    }
     if state.posts.is_empty() {
         let message = if state.feed_pending {
             "loading"
         } else {
             "no matches"
         };
-        return col()
-            .w_full()
-            .h_full()
+        return column
             .justify_center()
             .items_center()
             .child(text(message).font(theme::serif(24.0)).color(p.muted));
@@ -3585,25 +3710,27 @@ fn feed_view(state: &State, p: Palette) -> El {
     let scroll_offset = state.feed_scroll_offset.clone();
     let viewport_top = state.feed_viewport_top.clone();
     let viewport_height = state.feed_viewport_height.clone();
-    list.scroll(ScrollSpec {
-        stick_bottom: false,
-    })
-    .key("feed")
-    .grow(1.0)
-    .min_h(0.0)
-    .on_scroll_offset(move |pos| {
-        scroll_offset.set(pos.offset[1]);
-    })
-    .on_layout_tx(move |_state: &mut State, rect: [f32; 4], tx: &mut Tx| {
-        viewport_top.set(rect[1]);
-        viewport_height.set(rect[3]);
-        tx.live_only();
-    })
-    .on_at_bottom(|state: &mut State, at| {
-        if at {
-            state.load_more_feed();
-        }
-    })
+    let list = list
+        .scroll(ScrollSpec {
+            stick_bottom: false,
+        })
+        .key("feed")
+        .grow(1.0)
+        .min_h(0.0)
+        .on_scroll_offset(move |pos| {
+            scroll_offset.set(pos.offset[1]);
+        })
+        .on_layout_tx(move |_state: &mut State, rect: [f32; 4], tx: &mut Tx| {
+            viewport_top.set(rect[1]);
+            viewport_height.set(rect[3]);
+            tx.live_only();
+        })
+        .on_at_bottom(|state: &mut State, at| {
+            if at {
+                state.load_more_feed();
+            }
+        });
+    column.child(list)
 }
 
 fn detail_view(state: &State, p: Palette) -> El {
@@ -5632,6 +5759,107 @@ fn settings_view(state: &State, p: Palette) -> El {
                     ),
             );
     }
+    let database = std::env::var_os("ETEREA_DB")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(eterea_core::Database::default_path);
+    rows = rows.child(
+        row()
+            .gap(22.0)
+            .center_y()
+            .child(
+                text("database")
+                    .w(140.0)
+                    .font(theme::ui(12.0, 400.0))
+                    .color(p.muted),
+            )
+            .child(
+                text(database.display().to_string())
+                    .font(theme::mono(10.5))
+                    .color(p.muted),
+            ),
+    );
+    rows = rows.child(
+        row()
+            .gap(22.0)
+            .center_y()
+            .child(
+                text("backups")
+                    .w(140.0)
+                    .font(theme::ui(12.0, 400.0))
+                    .color(p.muted),
+            )
+            .child(
+                text(match state.backup_count {
+                    Some(0) => "none yet".to_string(),
+                    Some(count) => format!("{count} copies"),
+                    None => "checking".to_string(),
+                })
+                .font(theme::mono(10.5))
+                .color(p.muted),
+            )
+            .child(
+                text("backup now")
+                    .font(theme::ui(12.0, 400.0))
+                    .color(p.accent)
+                    .on_press_tx(|state: &mut State, _tx: &mut Tx| {
+                        if let Some(store) = state.store.as_ref() {
+                            store.backup_now();
+                            state.pending_views += 1;
+                        }
+                    }),
+            )
+            .child(
+                text("check integrity")
+                    .font(theme::ui(12.0, 400.0))
+                    .color(p.accent)
+                    .on_press_tx(|state: &mut State, _tx: &mut Tx| {
+                        if let Some(store) = state.store.as_ref() {
+                            store.integrity_check();
+                            state.pending_views += 1;
+                        }
+                    }),
+            ),
+    );
+    rows = rows.child(
+        row()
+            .gap(22.0)
+            .center_y()
+            .child(
+                text("tools")
+                    .w(140.0)
+                    .font(theme::ui(12.0, 400.0))
+                    .color(p.muted),
+            )
+            .child(
+                text(tool_status("ffmpeg"))
+                    .font(theme::mono(10.5))
+                    .color(p.muted),
+            )
+            .child(
+                text(tool_status("ffplay"))
+                    .font(theme::mono(10.5))
+                    .color(p.muted),
+            ),
+    );
+    rows = rows.child(
+        row()
+            .gap(22.0)
+            .center_y()
+            .child(
+                text("source")
+                    .w(140.0)
+                    .font(theme::ui(12.0, 400.0))
+                    .color(p.muted),
+            )
+            .child(
+                text("github.com/meillaya/eterea")
+                    .font(theme::ui(12.0, 400.0))
+                    .color(p.accent)
+                    .on_press_tx(|_state: &mut State, tx: &mut Tx| {
+                        let _ = tx.open_url("https://github.com/meillaya/eterea");
+                    }),
+            ),
+    );
     rows = rows.child(
         row()
             .gap(22.0)
@@ -5756,6 +5984,20 @@ fn clear_caches(state: &mut State, now: f64) {
         request_all_media(state);
     }
     state.set_status("cache cleared", now);
+}
+
+fn tool_status(program: &str) -> String {
+    let found = std::env::var_os("PATH").is_some_and(|paths| {
+        std::env::split_paths(&paths).any(|dir| {
+            let candidate = dir.join(program);
+            candidate.is_file()
+        })
+    });
+    if found {
+        format!("{program} found")
+    } else {
+        format!("{program} missing")
+    }
 }
 
 fn format_bytes(bytes: u64) -> String {

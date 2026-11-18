@@ -24,7 +24,7 @@ pub fn light() -> Palette {
     Palette {
         bg: color::hex("#f7f6f3").unwrap(),
         ink: color::hex("#1a1a18").unwrap(),
-        muted: color::hex("#787770").unwrap(),
+        muted: color::hex("#706f68").unwrap(),
         line: color::hex("#dedcd6").unwrap(),
         accent: color::hex("#2447b8").unwrap(),
         progress: color::hex("#b3a4e8").unwrap(),
@@ -69,4 +69,30 @@ pub fn ui(size: f32, weight: f32) -> TextStyle {
 
 pub fn mono(size: f32) -> TextStyle {
     TextStyle::new(scaled(size), 400.0).family(Family::Named("IBM Plex Mono"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn contrast(a: Color, b: Color) -> f32 {
+        let (light, dark) = (
+            a.luminance().max(b.luminance()),
+            a.luminance().min(b.luminance()),
+        );
+        (light + 0.05) / (dark + 0.05)
+    }
+
+    #[test]
+    fn muted_text_clears_the_contrast_gate() {
+        for palette in [light(), night()] {
+            let ratio = contrast(palette.muted, palette.bg);
+            assert!(ratio >= 4.5, "muted/bg contrast {ratio:.2} is below 4.5");
+            let ink_ratio = contrast(palette.ink, palette.bg);
+            assert!(
+                ink_ratio >= 7.0,
+                "ink/bg contrast {ink_ratio:.2} is below 7"
+            );
+        }
+    }
 }

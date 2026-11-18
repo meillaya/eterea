@@ -18,6 +18,10 @@ pub struct ImageStore {
     pending: HashMap<u64, String>,
     requested: HashSet<String>,
     failed: HashSet<String>,
+    /// Transient failures retried so far, per key.
+    retries: HashMap<String, u8>,
+    /// Terminal failures since the shell last read them, for an honest status.
+    new_failures: usize,
     /// Keys the bounded worker queue refused; re-driven from `poll` once room
     /// frees up instead of being marked failed for the session.
     deferred: Vec<(String, ImageKind)>,
@@ -35,6 +39,8 @@ impl ImageStore {
             pending: HashMap::new(),
             requested: HashSet::new(),
             failed: HashSet::new(),
+            retries: HashMap::new(),
+            new_failures: 0,
             deferred: Vec::new(),
             next_id: 1,
         }
@@ -58,6 +64,8 @@ impl ImageStore {
             pending: HashMap::new(),
             requested: HashSet::new(),
             failed: HashSet::new(),
+            retries: HashMap::new(),
+            new_failures: 0,
             deferred: Vec::new(),
             next_id: 1,
         }
@@ -99,6 +107,17 @@ impl ImageStore {
         self.failed.contains(key)
     }
 
+    /// Terminal failures since the last call, for the status line.
+    pub fn take_new_failures(&mut self) -> usize {
+        std::mem::take(&mut self.new_failures)
+    }
+
+    /// Forget terminal failures so a later request can try again (offline→online).
+    pub fn retry_failed(&mut self) {
+        self.failed.clear();
+        self.retries.clear();
+    }
+
     pub fn cache_stats(&self) -> Option<CacheStats> {
         self.manager
             .as_ref()
@@ -116,7 +135,9 @@ impl ImageStore {
         self.pending.clear();
         self.requested.clear();
         self.failed.clear();
+        self.retries.clear();
         self.deferred.clear();
+        self.new_failures = 0;
         cleared
     }
 
@@ -179,9 +200,20 @@ impl ImageStore {
                         }
                     }
                 }
-                MediaEvent::ImageFailed { id, .. } => {
+                MediaEvent::ImageFailed { id, kind, error } => {
                     if let Some(key) = self.pending.remove(&id.value()) {
-                        self.failed.insert(key);
+                        self.requested.remove(&key);
+                        let attempts = self.retries.entry(key.clone()).or_insert(0);
+                        // A timeout, a dropped connection, a 429 or a 5xx is
+                        // worth two more tries; anything else is terminal for
+                        // this session (a bad URL, an unsafe host, a 404).
+                        if is_transient(&error) && *attempts < 2 {
+                            *attempts += 1;
+                            self.deferred.push((key, kind));
+                        } else {
+                            self.failed.insert(key);
+                            self.new_failures += 1;
+                        }
                         changed = true;
                     }
                 }
@@ -208,5 +240,13 @@ impl ImageStore {
             }
         }
         changed
+    }
+}
+
+fn is_transient(error: &MediaError) -> bool {
+    match error {
+        MediaError::Timeout | MediaError::Connection => true,
+        MediaError::HttpStatus(status) => *status == 429 || *status >= 500,
+        _ => false,
     }
 }

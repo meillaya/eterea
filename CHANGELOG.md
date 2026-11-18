@@ -6,6 +6,13 @@ has actually been captured.
 
 ## Unreleased
 
+- Polish: `g g`/`G` top/end of feed, a visible `filtered: …` line with a
+  `clear` action, persisted window size/position, a single-instance guard,
+  atomic `settings.json` writes with status on failure, a Settings safety
+  section (database path, backup count + actions, ffmpeg/ffplay availability,
+  source link), transient media failures retried twice before being marked
+  unavailable (plus a `retry media` command), and a contrast-gated muted colour
+  (4.67:1 on light).
 - Search results for a text query are now ordered by FTS `bm25` relevance rather
   than recency, while filters keep their usual order. Page totals are counted
   separately, so a page scrolled past the last result reports the real total
