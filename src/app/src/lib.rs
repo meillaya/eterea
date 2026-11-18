@@ -3,6 +3,7 @@ pub mod store;
 pub mod types;
 
 pub use services::app::AppServices;
+pub use services::repair::{repair_missing_media, RepairEvent, RepairOptions, RepairSummary};
 pub use store::{Command, Request, RequestId, Response, StoreError, StoreHandle};
 pub use types::{
     AuthorSummary, BookmarkPage, BookmarkQuery, BookmarkSelection, BookmarkStats, BulkResult,

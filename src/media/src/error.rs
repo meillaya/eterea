@@ -44,6 +44,8 @@ pub enum MediaError {
     DecodeFailed,
     /// `ffplay` is not installed or could not start; sound cannot play.
     AudioUnavailable,
+    /// The embed payload could not be parsed into a post.
+    SyndicationResponse,
     /// The request or destination path was invalid.
     InvalidConfig,
     /// A local file operation failed (destination path, cache I/O).
@@ -72,6 +74,7 @@ impl fmt::Display for MediaError {
             Self::AudioUnavailable => f.write_str(
                 "ffplay not found: install ffmpeg (it includes ffplay) or add it to PATH",
             ),
+            Self::SyndicationResponse => f.write_str("unreadable post payload"),
             Self::InvalidConfig => f.write_str("invalid media configuration"),
             Self::Io => f.write_str("local file error"),
         }

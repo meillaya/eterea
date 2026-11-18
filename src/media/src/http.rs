@@ -306,7 +306,7 @@ fn check_cancelled(cancel: Option<&AtomicBool>) -> Result<(), MediaError> {
     }
 }
 
-fn map_transport_error(error: ureq::Error) -> MediaError {
+pub(crate) fn map_transport_error(error: ureq::Error) -> MediaError {
     match error {
         ureq::Error::StatusCode(status) => MediaError::HttpStatus(status),
         ureq::Error::Timeout(_) => MediaError::Timeout,

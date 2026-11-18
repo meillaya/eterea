@@ -6,6 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::Arc;
 use std::time::Duration;
@@ -15,7 +16,8 @@ use eterea_app::{
     AuthorSummary, BookmarkQuery, BookmarkSelection, BookmarkStats, CalendarData, CalendarRequest,
     DirectoryPageRequest, ExportFormat, ExportRequest, ExportScope, GraphData, GraphRequest,
     HistoryDetail, HistoryEvent, HistoryKind, HistoryListRequest, HistoryState, ImportBatchPreview,
-    ImportBatchSummary, RequestId, Response, StoreHandle, TagMutation, TopicSummary,
+    ImportBatchSummary, RepairEvent, RepairOptions, RequestId, Response, StoreHandle, TagMutation,
+    TopicSummary,
 };
 use eterea_media::{ImageKind, VideoCache, VideoCacheConfig, VideoPlayer, VideoPlayerOptions};
 use eterea_ui_model::{Mode, Route};
@@ -86,6 +88,7 @@ enum CommandItem {
     OpenOnX,
     ClearFilter,
     Reload,
+    RepairMedia,
 }
 
 const COMMANDS: &[(&str, CommandItem)] = &[
@@ -106,6 +109,7 @@ const COMMANDS: &[(&str, CommandItem)] = &[
     ("open on x", CommandItem::OpenOnX),
     ("clear filter", CommandItem::ClearFilter),
     ("reload", CommandItem::Reload),
+    ("repair media", CommandItem::RepairMedia),
 ];
 
 enum InitResult {
@@ -204,6 +208,12 @@ pub(crate) struct State {
     topics: Vec<TopicSummary>,
     topics_total: i64,
     topics_pending: bool,
+    /// Path of the archive database, for the opt-in repair worker.
+    db_path: Option<PathBuf>,
+    /// Progress from the opt-in metadata repair worker.
+    repair_rx: Option<Receiver<RepairEvent>>,
+    repair_cancel: Option<Arc<AtomicBool>>,
+    repair_active: bool,
     /// Avatar URLs per handle, newest first. The champion is shown on every
     /// post of that handle, so a changed account stops showing an expired
     /// profile-image URL on its older posts.
@@ -298,6 +308,10 @@ impl State {
             topics: Vec::new(),
             topics_total: 0,
             topics_pending: false,
+            db_path: None,
+            repair_rx: None,
+            repair_cancel: None,
+            repair_active: false,
             avatar_variants: HashMap::new(),
             avatar_choice: HashMap::new(),
             directory_filter: String::new(),
@@ -803,6 +817,10 @@ impl State {
                 let filter = self.filter.clone();
                 self.request_feed(filter);
             }
+            CommandItem::RepairMedia => {
+                let now = tx.clock();
+                start_media_repair(self, now);
+            }
         }
     }
 
@@ -828,6 +846,11 @@ fn dismiss_overlay(state: &mut State) {
 }
 
 fn setup(state: &mut State, waker: Waker) {
+    state.db_path = Some(
+        std::env::var_os("ETEREA_DB")
+            .map(PathBuf::from)
+            .unwrap_or_else(eterea_core::Database::default_path),
+    );
     let cache = ImageCache::new(waker.clone());
     // Decode the logo off the UI thread; the view draws whichever is ready.
     state.logo = Some(cache.svg(
@@ -1245,6 +1268,10 @@ fn poll(state: &mut State, clock: f64, tx: &mut Tx) -> bool {
         changed = true;
     }
 
+    if poll_media_repair(state, clock) {
+        changed = true;
+    }
+
     if let Some(status) = &state.status {
         if clock > status.until {
             state.status = None;
@@ -1263,6 +1290,9 @@ fn poll(state: &mut State, clock: f64, tx: &mut Tx) -> bool {
         || state.status.is_some()
     {
         tx.wake_after(Duration::from_millis(33));
+    }
+    if state.repair_active {
+        tx.wake_after(Duration::from_millis(200));
     }
 
     changed
@@ -1640,6 +1670,14 @@ fn handle_response(state: &mut State, response: Response, clock: f64) {
 }
 
 fn on_key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
+    if state.repair_active && matches!(event.key, Key::Escape) {
+        if let Some(cancel) = state.repair_cancel.as_ref() {
+            cancel.store(true, Ordering::Relaxed);
+        }
+        let now = tx.clock();
+        state.set_status("cancelling repair", now);
+        return true;
+    }
     if state.overlay != Overlay::None {
         return overlay_key(state, event, tx);
     }
@@ -2176,6 +2214,109 @@ fn reload_directory(state: &mut State) {
         Route::Topics => state.request_topics(0),
         _ => {}
     }
+}
+
+/// Start the opt-in repair pass on a worker thread. The worker owns its own
+/// database connection (SQLite WAL), so navigation, search and scrolling stay
+/// responsive while it runs; it reports progress over a channel.
+fn start_media_repair(state: &mut State, now: f64) {
+    if state.repair_active {
+        return;
+    }
+    if state.demo {
+        state.set_status("repair needs the real archive", now);
+        return;
+    }
+    let Some(path) = state.db_path.clone() else {
+        state.set_status("archive path unknown", now);
+        return;
+    };
+    // Test/headless switches mirror the other ETEREA_* overrides; normal runs
+    // repair the whole missing set at a polite pace.
+    let limit = std::env::var("ETEREA_REPAIR_LIMIT")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(usize::MAX);
+    let delay_ms = std::env::var("ETEREA_REPAIR_DELAY_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(320);
+    let options = RepairOptions {
+        limit,
+        delay: Duration::from_millis(delay_ms.max(1)),
+    };
+    let (tx, rx) = mpsc::channel();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let worker_cancel = Arc::clone(&cancel);
+    state.repair_rx = Some(rx);
+    state.repair_cancel = Some(cancel);
+    state.repair_active = true;
+    state.set_status("repairing media", now);
+    let spawned = std::thread::Builder::new()
+        .name("eterea-repair".into())
+        .spawn(move || {
+            let result = eterea_app::repair_missing_media(&path, options, worker_cancel, |event| {
+                let _ = tx.send(event);
+            });
+            if result.is_err() {
+                // A finished event with a failure tells the shell to report it.
+                let _ = tx.send(RepairEvent {
+                    total: 0,
+                    failed: 1,
+                    finished: true,
+                    ..RepairEvent::default()
+                });
+            }
+        });
+    if spawned.is_err() {
+        state.repair_active = false;
+        state.repair_rx = None;
+        state.repair_cancel = None;
+        state.set_status("repair could not start", now);
+    }
+}
+
+fn poll_media_repair(state: &mut State, clock: f64) -> bool {
+    let Some(rx) = state.repair_rx.take() else {
+        return false;
+    };
+    let mut events = Vec::new();
+    while let Ok(event) = rx.try_recv() {
+        events.push(event);
+    }
+    let finished = events.last().is_some_and(|event| event.finished);
+    if !finished {
+        state.repair_rx = Some(rx);
+    }
+    let mut changed = false;
+    for event in events {
+        if event.finished {
+            state.repair_active = false;
+            state.repair_rx = None;
+            state.repair_cancel = None;
+            let message = if event.cancelled {
+                "repair cancelled".to_string()
+            } else if event.failed > 0 && event.repaired == 0 {
+                "repair failed".to_string()
+            } else if event.unavailable > 0 || event.failed > 0 {
+                format!(
+                    "repaired {} posts, {} unavailable, {} failed",
+                    event.repaired, event.unavailable, event.failed
+                )
+            } else {
+                format!("repaired {} posts", event.repaired)
+            };
+            state.set_status(message, clock);
+            state.refresh_feed();
+        } else {
+            state.set_status(
+                format!("repairing media {}/{}", event.done, event.total),
+                clock,
+            );
+        }
+        changed = true;
+    }
+    changed
 }
 
 fn stop_video(state: &mut State) {
@@ -3458,8 +3599,11 @@ fn overlay_view(state: &State, p: Palette) -> El {
     match state.overlay {
         Overlay::Palette => {
             let commands = state.filtered_commands();
+            // The panel scrolls once commands outgrow the smallest window; at
+            // 960x640 the full list still fits without scrolling.
             let mut panel = col()
                 .w(560.0)
+                .max_h(552.0)
                 .fill(p.bg)
                 .border(1.0, p.line)
                 .radius(2.0)
@@ -3474,7 +3618,7 @@ fn overlay_view(state: &State, p: Palette) -> El {
                 let item = *item;
                 panel = panel.child(
                     row()
-                        .h(30.0)
+                        .h(28.0)
                         .px(14.0)
                         .center_y()
                         .on_press_tx(move |state: &mut State, tx| {
@@ -3501,7 +3645,9 @@ fn overlay_view(state: &State, p: Palette) -> El {
                         .items_start()
                         .justify_center()
                         .pt(80.0)
-                        .child(panel),
+                        .child(panel.scroll(ScrollSpec {
+                            stick_bottom: false,
+                        })),
                 )
         }
         Overlay::Keys => {

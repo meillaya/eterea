@@ -79,7 +79,8 @@ tests, the Verus/Kani/Miri gate and a 5 s-per-target fuzz smoke step in the
 | URL policy literals | Kani corpora, Verus model, fuzz `url_policy` | model-checked + fuzz |
 | URL policy helper properties | symbolic Kani bounded 9–12 bytes | bounded model-checked |
 | Image MIME allowlist | Kani `image_mime_accepts_allowlist` / `image_mime_rejects_other_types` | model-checked |
-| HTTPS fetch, byte cap, cache, cancellation, image MIME, decoder failure | `cargo test -p eterea-media` (97 unit + 16 public-API tests; no live network) | runtime-validated |
+| HTTPS fetch, byte cap, cache, cancellation, image MIME, decoder failure | `cargo test -p eterea-media` (unit + public-API tests; no live network) | runtime-validated |
+| Embed payload parsing for opt-in `repair media` | `cargo test -p eterea-media --test syndication_payload` on captured payload fixtures; mapping/enrichment covered in `eterea-app` tests | runtime-validated; the live endpoint is not part of CI |
 | Redirect/DNS residual risk | documented in media crate and `SPEC.md` | trusted/limit |
 
 ### UI model and keyboard (`INV-UI-*`)

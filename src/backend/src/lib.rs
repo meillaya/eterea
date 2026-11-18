@@ -12,8 +12,9 @@ pub mod storage;
 pub use error::{Error, Result};
 pub use ingestion::Ingester;
 pub use models::{
-    Bookmark, HistoryDetail, HistoryEvent, HistoryItem, HistoryKind, HistoryState, HistorySummary,
-    LinkEntity, LinkKind, Media, MediaType, QuotedTweet, TagColor, TagMutation, UndoResult,
+    Bookmark, BookmarkBuilder, HistoryDetail, HistoryEvent, HistoryItem, HistoryKind, HistoryState,
+    HistorySummary, LinkEntity, LinkKind, Media, MediaType, QuotedTweet, TagColor, TagMutation,
+    UndoResult,
 };
 pub use storage::{
     BookmarkQuery, BookmarkSelection, Database, ExportFormat, ExportRequest, ExportScope,

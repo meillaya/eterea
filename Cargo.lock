@@ -894,7 +894,10 @@ dependencies = [
  "chrono",
  "crossbeam-channel",
  "eterea-core",
+ "eterea-logic",
+ "eterea-media",
  "serde",
+ "serde_json",
  "tempfile",
 ]
 
@@ -944,6 +947,7 @@ dependencies = [
  "anyhow",
  "crossbeam-channel",
  "eterea-logic",
+ "serde_json",
  "ureq",
 ]
 

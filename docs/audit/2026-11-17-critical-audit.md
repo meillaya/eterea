@@ -172,7 +172,44 @@ and the 3,564-row JSON were checked directly), so those two posts can only gain
 media from a future export that includes it — importing one now merges it into
 the existing rows.
 
-### 2.7 Documentation corrected in this pass
+### 2.7 Opt-in metadata repair (new feature)
+
+The text-only-export gap from §2.6 is only fixable by fetching the metadata
+from X. The Web-facing embed payload endpoint
+(`cdn.syndication.twimg.com/tweet-result`, what embedded tweets use) was tested
+and works without an account, cookie or bearer token: it returned the exact
+Paulie Swan video (4 progressive MP4 variants, 720p) and the AYOMI quote with
+its **five videos**, plus expanded t.co entities, hashtags and the author's
+stable `user.id_str`. The poster JPEG (66 KiB) and smallest MP4 (849 KiB) were
+downloaded with a plain GET, so bytes are cacheable too.
+
+The shipped implementation:
+
+- a `repair media` palette command starts a worker thread with its own
+  SQLite connection, so reading, search and scrolling stay responsive;
+- it visits only rows whose `has_media = 0`, newest first (~6,300 rows on the
+  live archive; at three payloads a second that is roughly an hour, resumable);
+- payloads are merged through the duplicate-enrichment path: media rows
+  (photos and video poster + best progressive MP4 + duration + variants), quote
+  with its own media carousel, link entities, hashtags, note text, and the
+  account's current name/avatar. Existing read/favorite state is untouched and
+  no history event is written;
+- it is paced (320 ms default), retries with backoff on 429/5xx, treats
+  `TweetTombstone` (deleted/protected posts) as unavailable, reports progress in
+  the status line, and `esc` cancels between posts. Media bytes are not
+  pre-downloaded; the existing cache fetches them when a post is shown.
+
+Verified on a copy of the live archive: the AYOMI row gained its quoted post
+with five videos, the Paulie Swan row gained its video media, and two other
+in-range candidates were enriched the same way; text-only posts correctly stay
+text. Limits: the endpoint is undocumented and can change or rate-limit without
+notice; deleted/protected posts cannot be recovered; scraping sits in a ToS gray
+area so the command is opt-in and off by default; the official X API with a
+user-supplied token remains the durable alternative (not implemented). The
+payload's `user.id_str` is not stored yet — adding it (schema v4) is the clean
+way to survive handle renames.
+
+### 2.8 Documentation corrected in this pass
 
 - `docs/design/SPEC.md`: header nav now includes `search`; footer hint and
   scrimless key sheet; 64 px rhythm wording; rail width documented as 86 px

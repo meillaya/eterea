@@ -69,6 +69,7 @@ mod http;
 mod manager;
 mod player;
 mod request;
+mod syndication;
 mod tools;
 mod url;
 mod video;
@@ -85,6 +86,11 @@ pub use player::{
     PLAYBACK_WIDTH,
 };
 pub use request::{ImageKind, ImageRequest, ImageSource, MediaEvent, RequestId};
+pub use syndication::{
+    embed_token, endpoint_url, parse_tweet_payload, tweet_id_from_url, SyndicatedAuthor,
+    SyndicatedLink, SyndicatedMedia, SyndicatedMediaKind, SyndicatedQuote, SyndicatedTweet,
+    SyndicatedVariant, SyndicationClient, SyndicationOutcome, MAX_SYNDICATION_BYTES,
+};
 pub use tools::{MediaTools, ToolStatus};
 pub use url::is_allowed_media_url;
 pub use video::{VideoDownload, VideoJob, DEFAULT_VIDEO_BYTES};

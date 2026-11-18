@@ -23,7 +23,7 @@ Media bytes never reach SQLite.
 
 ## Trust boundaries
 
-Imported archives are untrusted: post text, handles, tags, URLs, alt text, quotes and media URLs are rendered as text and never as HTML. Remote media is fetched only over safe HTTPS (no credentials, fragments, private hosts or non-canonical numeric addresses), without cookies or referrer, with byte and time caps. Opening a stored link requires an explicit action. Quote posts without a body stay marked unavailable rather than invented.
+Imported archives are untrusted: post text, handles, tags, URLs, alt text, quotes and media URLs are rendered as text and never as HTML. One optional feature crosses the network for metadata after import: the `repair media` command fetches X's public embed payload (`cdn.syndication.twimg.com`, no account, cookies or token) for posts that have no media, paced and cancellable, and merges only additive metadata into existing rows. It is never automatic and it never pre-downloads media bytes. Remote media is fetched only over safe HTTPS (no credentials, fragments, private hosts or non-canonical numeric addresses), without cookies or referrer, with byte and time caps. Opening a stored link requires an explicit action. Quote posts without a body stay marked unavailable rather than invented.
 
 ## Source layout
 

@@ -157,7 +157,7 @@ Same column; 740px when a gallery needs it. Post, media at full size, quote, edi
 
 ### Command palette
 
-`:` or `Ctrl/Cmd-P`. 560px wide, top 80px, centered, `bg` panel with a 1px `line` border, 2px radius. One field, one list. Commands, lowercase, no descriptions, keycaps only where a shortcut exists: feed, favorites, authors, topics, graph, calendar, import, settings, favorite, load media, copy link, open on x, clear filter, reload. Filter with substring; arrows move; Enter runs; Esc closes. No footer hints.
+`:` or `Ctrl/Cmd-P`. 560px wide, top 80px, centered, `bg` panel with a 1px `line` border, 2px radius. One field, one list. Commands, lowercase, no descriptions, keycaps only where a shortcut exists: feed, favorites, authors, topics, graph, calendar, import, settings, favorite, load media, copy link, open on x, clear filter, reload, repair media. `repair media` is the only command that touches the network after import; it shows progress in the status area and `esc` cancels it. Filter with substring; arrows move; Enter runs; Esc closes. No footer hints.
 
 ### Key sheet
 

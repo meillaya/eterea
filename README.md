@@ -149,6 +149,12 @@ The archive lives at `<platform data dir>/eterea/bookmarks.db`. On Linux that is
   to the selection.
 - Keeps the last five import, delete and tag actions in History. The newest can
   be undone from its exact before-state; older actions stay visible with detail.
+- Repairs missing media and quotes on demand: posts imported from a text-only
+  export can be filled in from the public embed payload X serves for embedded
+  posts (media list, quoted post, expanded links, hashtags, current author
+  name/avatar). Opt-in via the `repair media` palette command, paced and
+  cancellable; deleted and protected posts are skipped, and media bytes still
+  fill the normal cache when shown.
 - Exports the archive, the current filter or the selection as CSV or JSON, with
   round-trippable nested data.
 - Keeps quotes, favorites, media metadata, an interactive tag graph with persisted
@@ -245,6 +251,15 @@ default; Settings can switch media back to on-demand. Fetches use HTTPS only,
 without cookies or referrer, and a redirect is followed only when the next hop
 is safe too. Stored links open only through an explicit action. Preferences are a
 small JSON file. History payloads for the last five actions also stay local.
+
+The optional `repair media` command is the only feature that fetches post data
+from X after import. It uses X's public embed payload endpoint
+(`cdn.syndication.twimg.com`), which needs no account, cookies or bearer token,
+and only runs when the reader invokes it. It stores metadata in the archive and
+never pre-downloads media bytes; the payload comes from an undocumented endpoint
+that X may change or rate-limit at any time, and deleted or protected posts
+cannot be recovered. If that is not acceptable, do not run the command: the
+archive otherwise makes no network requests except for media you can see.
 
 ---
 

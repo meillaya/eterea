@@ -31,7 +31,15 @@ pub struct BatchImportOutcome {
 }
 
 /// Columns read from an existing row when a duplicate import arrives.
-type ExistingBookmarkRow = (String, i64, String, String, Option<String>, Option<String>);
+type ExistingBookmarkRow = (
+    String,
+    i64,
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+);
 
 struct BookmarkInsertStatements<'conn> {
     bookmark: CachedStatement<'conn>,
@@ -306,12 +314,12 @@ impl Database {
         &self,
         bookmark: &Bookmark,
         statements: &mut BookmarkInsertStatements<'_>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let existing: Option<ExistingBookmarkRow> = self
             .conn
             .query_row(
                 r#"SELECT id, has_media, COALESCE(links_json, ''), content,
-                          author_profile_image, author_profile_url
+                          COALESCE(note_text, ''), author_profile_image, author_profile_url
                    FROM bookmarks WHERE id = ?1 OR tweet_url = ?2 LIMIT 1"#,
                 params![bookmark.id, bookmark.tweet_url],
                 |row| {
@@ -322,14 +330,22 @@ impl Database {
                         row.get(3)?,
                         row.get(4)?,
                         row.get(5)?,
+                        row.get(6)?,
                     ))
                 },
             )
             .optional()?;
-        let Some((existing_id, existing_has_media, existing_links, existing_content, _, _)) =
-            existing
+        let Some((
+            existing_id,
+            existing_has_media,
+            existing_links,
+            existing_content,
+            existing_note,
+            _,
+            _,
+        )) = existing
         else {
-            return Ok(());
+            return Ok(false);
         };
 
         // Author metadata is a snapshot: prefer the newest non-empty values the
@@ -363,6 +379,23 @@ impl Database {
                 "UPDATE bookmarks_search_docs SET content = ?2 WHERE bookmark_id = ?1",
                 params![existing_id, bookmark.content],
             )?;
+        }
+
+        if existing_note.trim().is_empty() {
+            if let Some(note) = bookmark
+                .note_text
+                .as_deref()
+                .filter(|note| !note.trim().is_empty())
+            {
+                self.conn.execute(
+                    "UPDATE bookmarks SET note_text = ?2 WHERE id = ?1",
+                    params![existing_id, note],
+                )?;
+                self.conn.execute(
+                    "UPDATE bookmarks_search_docs SET note_text = ?2 WHERE bookmark_id = ?1",
+                    params![existing_id, note],
+                )?;
+            }
         }
 
         if (existing_links.trim().is_empty() || existing_links == "[]")
@@ -464,7 +497,60 @@ impl Database {
             }
         }
 
-        Ok(())
+        Ok(true)
+    }
+
+    /// Merge enriched metadata into existing rows without creating a history
+    /// event. Used by the opt-in repair pass; read/favorite state is preserved
+    /// and unmatched rows are ignored.
+    pub fn enrich_bookmarks(&self, bookmarks: &[Bookmark]) -> Result<usize> {
+        let conn = &self.conn;
+        conn.execute("BEGIN IMMEDIATE", [])?;
+        let result = (|| -> Result<usize> {
+            let mut statements = BookmarkInsertStatements::prepare(conn)?;
+            let mut enriched = 0;
+            for bookmark in bookmarks {
+                if self.merge_duplicate_bookmark(bookmark, &mut statements)? {
+                    enriched += 1;
+                }
+            }
+            self.ensure_author_stats_consistent()?;
+            self.refresh_stats_snapshot()?;
+            Ok(enriched)
+        })();
+        match result {
+            Ok(enriched) => {
+                conn.execute("COMMIT", [])?;
+                Ok(enriched)
+            }
+            Err(error) => {
+                let _ = conn.execute("ROLLBACK", []);
+                Err(error)
+            }
+        }
+    }
+
+    /// Posts that still have no media row, newest first. The repair pass feeds
+    /// these ids to the embed endpoint.
+    pub fn bookmarks_missing_media(&self, limit: usize) -> Result<Vec<(String, String)>> {
+        let mut statement = self.conn.prepare(
+            "SELECT id, tweet_url FROM bookmarks WHERE has_media = 0              ORDER BY tweeted_at DESC, id DESC LIMIT ?1",
+        )?;
+        let rows = statement
+            .query_map(params![limit as i64], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Number of posts the repair pass would consider.
+    pub fn count_bookmarks_missing_media(&self) -> Result<i64> {
+        Ok(self.conn.query_row(
+            "SELECT count(*) FROM bookmarks WHERE has_media = 0",
+            [],
+            |row| row.get(0),
+        )?)
     }
 
     /// Delete one bookmark and journal a delete event in one transaction.
