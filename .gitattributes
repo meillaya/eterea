@@ -1,0 +1,43 @@
+# Repository line-ending, diff and language policy.
+#
+# Text files are normalised to LF in the index. Binary assets are declared so
+# git never attempts a textual diff on them, and the UI goldens stay reviewable
+# as text even though they are generated.
+#
+# eterea ships Rust with a small amount of Nix. The Python and shell files are
+# developer/verification tooling, not shipped code, so they are kept out of
+# GitHub's language statistics. They are still normalised as text.
+* text=auto eol=lf
+
+*.rs text
+*.nix text
+*.toml text
+*.lock text
+*.md text
+*.json text
+*.yml text
+*.yaml text
+*.svg text
+*.csv text
+*.txt text
+.envrc text
+
+# Developer tooling is excluded from the GitHub language bar.
+*.py linguist-detectable=false
+*.sh linguist-detectable=false
+.envrc linguist-detectable=false
+
+# Binary assets.
+*.webp binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.ttf binary
+*.otf binary
+*.woff binary
+*.woff2 binary
+*.db binary
+*.mp4 binary
+*.webm binary
