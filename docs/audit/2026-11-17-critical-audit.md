@@ -301,8 +301,10 @@ Notes, the unread queue, tag management (rename/merge/prune/autocomplete/colour
 reset), graph scale/search/collision label handling and lightbox paging/zoom are
 in. Threads and video scrubbing now ship too: schema v6 conversation ids, a
 thread list in detail, and `,` / `.` seek with a position/duration readout.
-Canvas-batched graph hit-testing remains a documented follow-up (per-node hit
-targets are bounded by the 1,200-node cap and stay responsive).
+Canvas-batched graph hit-testing is now in: dots draw in one canvas batch and
+hover/click use the same projection for a spatial hit test, with only the
+budgeted labels as text elements. Video scrubbing now has a draggable timeline
+that previews the target and seeks on release.
 
 ### 2.17 Threads (approved follow-up)
 

@@ -142,7 +142,7 @@ Media: avatars, images and video posters load automatically by default, fading i
 
 Video: poster fills the media slot, centered 44px hairline play circle, 10.5px mono duration at bottom right. Playback resolves the best progressive MP4 variant, caches the file persistently, and uses `ffmpeg` for frames. Inline playback is muted and looping in the feed. Detail and lightbox carry sound; `m` toggles it, and `ffplay` supplies audio from the cached local file. Missing ffmpeg/ffplay is a status error, not silence.
 
-Images: click or Enter opens the lightbox. The lightbox is `scrim` with the image centered, close at top right, previous/next controls at the sides and in the bottom bar with a mono `n / m` count. `+`/`-`/wheel zoom (0.5–3×) and `0` resets to fit; mouse back/forward and the side zones page too; Esc closes. Videos show position / duration in the bottom bar and `,` / `.` scrub by restarting the decoder five seconds earlier/later, clamped to the file. No captions.
+Images: click or Enter opens the lightbox. The lightbox is `scrim` with the image centered, close at top right, previous/next controls at the sides and in the bottom bar with a mono `n / m` count. `+`/`-`/wheel zoom (0.5–3×) and `0` resets to fit; mouse back/forward and the side zones page too; Esc closes. Videos show a draggable timeline (200×3px, previewed while dragging and seeked on release), live position / duration, and `,` / `.` for ±5 s; seeking restarts the decoder at the offset, clamped to the file. No captions.
 
 Empty feed: one line `nothing here yet` in Newsreader 24, one action `import a bookmarks export`. No ASCII, no illustration.
 
@@ -174,7 +174,7 @@ A filter row at the top of the column: 720px wide, 36px tall, 1px `line` bottom 
 
 One of the two full-bleed screens (with the lightbox): the graph uses the whole content area after the 56px header and 24px footer, inset 24px, instead of the 720px reading column. Empty space is part of the instrument; nothing is cropped by a fixed square.
 
-Nodes are tags: colored dots sized by saved-post count, 12.5px labels; edges are hairline `line` strokes, thicker and accent-tinted around the focused node. The layout is deterministic force-directed on the unit disc (co-occurring tags attract, popular tags drift toward the centre, tag-name hash seeds the start), scaled to the field's aspect ratio, so a wide window fills its width. Wheel/pinch zoom around the pointer, Shift-wheel and drag pan, `+`/`-`/`0` (fit) and arrow keys; zoom and pan are clamped so the constellation can never be lost off-screen, and `0` returns to the fitted view. Double-press fits too.
+Nodes are tags: colored dots (drawn in one canvas batch, hit-tested against the same projection), labels as text; edges are hairline `line` strokes, thicker and accent-tinted around the focused node. The layout is deterministic force-directed on the unit disc (co-occurring tags attract, popular tags drift toward the centre, tag-name hash seeds the start), scaled to the field's aspect ratio, so a wide window fills its width. Wheel/pinch zoom around the pointer, Shift-wheel and drag pan, `+`/`-`/`0` (fit) and arrow keys; zoom and pan are clamped so the constellation can never be lost off-screen, and `0` returns to the fitted view. Double-press fits too.
 
 `/` opens a tag filter: the field dims every node whose tag does not contain the text live, enter commits it (esc clears), and hover/click still work on dimmed dots. Adjacent labels skip anchors that would overlap an already-labelled one.
 

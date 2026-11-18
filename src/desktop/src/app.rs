@@ -331,6 +331,8 @@ pub(crate) struct State {
     tag_suggestions: Vec<TagSuggestion>,
     /// Lightbox zoom (1.0 fits the window; keys/wheel adjust it).
     lightbox_zoom: f32,
+    /// Previewed timeline offset while dragging the video scrub bar.
+    video_scrub: Option<f64>,
     /// Thread of the post open in detail, when the source carried thread ids.
     thread: Vec<Post>,
     thread_anchor: Option<String>,
@@ -357,6 +359,9 @@ pub(crate) struct State {
     graph_zoom: f32,
     graph_pan: (f32, f32),
     graph_focus: Option<usize>,
+    graph_press: Option<usize>,
+    graph_hover: Option<usize>,
+    graph_dragged: bool,
     /// Laid-out size of the full-bleed graph field, updated on layout.
     graph_viewport: (f32, f32),
     graph_drag_pan: Option<(f32, f32)>,
@@ -461,6 +466,7 @@ impl State {
             tag_rename_buffer: TextEdit::new(""),
             tag_suggestions: Vec::new(),
             lightbox_zoom: 1.0,
+            video_scrub: None,
             thread: Vec::new(),
             thread_anchor: None,
             thread_request: None,
@@ -484,6 +490,9 @@ impl State {
             graph_zoom: 1.0,
             graph_pan: (0.0, 0.0),
             graph_focus: None,
+            graph_press: None,
+            graph_hover: None,
+            graph_dragged: false,
             graph_viewport: (720.0, 720.0),
             graph_drag_pan: None,
             tag_edit: None,
@@ -3154,19 +3163,27 @@ fn toggle_video(state: &mut State, tx: &mut Tx) {
 }
 
 /// Scrub the current video by restarting the decoder at the new offset (input
-/// seek). Coarse but predictable; the lightbox shows position and duration.
+/// seek). The timeline previews the target smoothly and seeks once on release.
 fn seek_video(state: &mut State, tx: &mut Tx, delta_seconds: f64) {
+    let Some(player) = state.video.as_ref() else {
+        return;
+    };
+    let target = player.position().as_secs_f64() + delta_seconds;
+    seek_video_to(state, tx, target);
+}
+
+fn seek_video_to(state: &mut State, tx: &mut Tx, target_seconds: f64) {
     let Some((post_index, media_index)) = state.video_target else {
         return;
     };
     let Some(player) = state.video.as_ref() else {
         return;
     };
-    let mut target = player.position().as_secs_f64() + delta_seconds;
-    target = target.max(0.0);
+    let mut target = target_seconds.max(0.0);
     if let Some(duration) = player.duration() {
         target = target.min((duration.as_secs_f64() - 0.5).max(0.0));
     }
+    state.video_scrub = None;
     stop_video(state);
     start_video_from(
         state,
@@ -4383,6 +4400,37 @@ fn graph_pan_limit(state: &State) -> (f32, f32) {
     )
 }
 
+/// Circle approximated as a polygon for the canvas `Shape` batcher.
+fn circle_points(cx: f32, cy: f32, radius: f32) -> Vec<[f32; 2]> {
+    const SEGMENTS: usize = 18;
+    (0..SEGMENTS)
+        .map(|index| {
+            let angle = std::f32::consts::TAU * index as f32 / SEGMENTS as f32;
+            [cx + angle.cos() * radius, cy + angle.sin() * radius]
+        })
+        .collect()
+}
+
+/// Nearest node within the pointer's grab radius, using the same projection as
+/// the view: one canvas target replaces a thousand per-node hit elements.
+fn graph_hit_test(state: &State, pointer_x: f32, pointer_y: f32) -> Option<usize> {
+    let graph = state.graph.as_ref()?;
+    let viewport = state.graph_viewport;
+    let center = (viewport.0 / 2.0, viewport.1 / 2.0);
+    let radius_x = 0.46 * viewport.0;
+    let radius_y = 0.46 * viewport.1;
+    let mut best: Option<(usize, f32)> = None;
+    for (index, node) in graph.nodes.iter().enumerate() {
+        let x = center.0 + state.graph_pan.0 + node.x * radius_x * state.graph_zoom;
+        let y = center.1 + state.graph_pan.1 + node.y * radius_y * state.graph_zoom;
+        let distance = (pointer_x - x).hypot(pointer_y - y);
+        if distance <= 11.0 && best.is_none_or(|(_, best_distance)| distance < best_distance) {
+            best = Some((index, distance));
+        }
+    }
+    best.map(|(index, _)| index)
+}
+
 fn graph_zoom_at(state: &mut State, pointer: (f32, f32), factor: f32) {
     let before = state.graph_zoom;
     let after = (before * factor).clamp(0.5, 5.0);
@@ -4472,12 +4520,61 @@ fn graph_view(state: &State, p: Palette, cx: &mut Cx<State>) -> El {
             if focused { p.accent.alpha(0.5) } else { p.line },
         );
     }
-    field = field
-        .child(
-            canvas(edges)
-                .key("graph-edges")
-                .size(viewport[0], viewport[1]),
+    let active_filter = if state.overlay == Overlay::GraphSearch {
+        state.graph_search_buffer.text.trim().to_lowercase()
+    } else {
+        state
+            .graph_filter
+            .as_deref()
+            .unwrap_or_default()
+            .to_lowercase()
+    };
+    // Canvas-batched dots: one draw call and one pointer target for the whole
+    // constellation instead of a thousand hit elements.
+    let mut shapes = edges;
+    for (index, node) in graph.nodes.iter().enumerate() {
+        let (x, y) = points[index];
+        let focused = state.graph_focus == Some(index);
+        let node_color = tag_color(state, &node.tag, p);
+        let weight = (node.bookmark_count.max(1) as f32).ln();
+        let side = (3.4 + weight * 0.7).clamp(4.0, 8.5);
+        let dimmed = !active_filter.is_empty() && !node.tag.to_lowercase().contains(&active_filter);
+        let color = if dimmed {
+            p.line.alpha(0.6)
+        } else if focused {
+            p.accent
+        } else {
+            node_color
+        };
+        let radius = if focused { 4.6 } else { side / 2.0 };
+        shapes = shapes.fill(circle_points(x, y, radius), color);
+    }
+    let dots = canvas(shapes)
+        .key("graph-edges")
+        .size(viewport[0], viewport[1])
+        .role("img")
+        .label("tag graph; tab cycles tags, enter filters")
+        .on_pointer_move_local(
+            |state: &mut State, event: rune::PointerEvent, _tx: &mut Tx| {
+                state.graph_hover = graph_hit_test(state, event.x, event.y);
+                if let Some(index) = state.graph_hover {
+                    state.graph_focus = Some(index);
+                }
+            },
         )
+        .on_press(|state: &mut State| {
+            if let Some(index) = state.graph_hover {
+                if let Some(graph) = state.graph.as_ref() {
+                    if let Some(node) = graph.nodes.get(index) {
+                        let tag = node.tag.clone();
+                        state.graph_focus = Some(index);
+                        state.filter_topic(&tag);
+                    }
+                }
+            }
+        });
+    field = field
+        .child(dots)
         .on_wheel(|state: &mut State, event: WheelEvent, _tx: &mut Tx| {
             if event.mods.shift {
                 graph_pan_by(state, event.dx, event.dy);
@@ -4493,8 +4590,15 @@ fn graph_view(state: &State, p: Palette, cx: &mut Cx<State>) -> El {
         })
         .on_drag(
             |state: &mut State, drag: &mut Drag, _tx: &mut Tx| match drag.phase {
-                Phase::Down => state.graph_drag_pan = Some(state.graph_pan),
+                Phase::Down => {
+                    state.graph_drag_pan = Some(state.graph_pan);
+                    state.graph_press = graph_hit_test(state, drag.start_x, drag.start_y);
+                    state.graph_dragged = false;
+                }
                 Phase::Move => {
+                    if drag.dx.abs() > 3.0 || drag.dy.abs() > 3.0 {
+                        state.graph_dragged = true;
+                    }
                     if let Some(start) = state.graph_drag_pan {
                         let (limit_x, limit_y) = graph_pan_limit(state);
                         state.graph_pan = (
@@ -4503,7 +4607,21 @@ fn graph_view(state: &State, p: Palette, cx: &mut Cx<State>) -> El {
                         );
                     }
                 }
-                Phase::Up => state.graph_drag_pan = None,
+                Phase::Up => {
+                    if !state.graph_dragged {
+                        if let Some(index) = state.graph_press.take() {
+                            if let Some(graph) = state.graph.as_ref() {
+                                if let Some(node) = graph.nodes.get(index) {
+                                    let tag = node.tag.clone();
+                                    state.graph_focus = Some(index);
+                                    state.filter_topic(&tag);
+                                }
+                            }
+                        }
+                    }
+                    state.graph_press = None;
+                    state.graph_drag_pan = None;
+                }
             },
         )
         .on_double_press(|state: &mut State| {
@@ -4530,49 +4648,30 @@ fn graph_view(state: &State, p: Palette, cx: &mut Cx<State>) -> El {
         let (x, y) = points[index];
         let tag = node.tag.clone();
         let focused = state.graph_focus == Some(index);
-        let node_color = tag_color(state, &node.tag, p);
-        let weight = (node.bookmark_count.max(1) as f32).ln();
-        let side = (3.4 + weight * 0.7).clamp(4.0, 8.5);
         let matches_filter = filter.is_empty() || node.tag.to_lowercase().contains(&filter);
         let dimmed = !filter.is_empty() && !matches_filter;
-        let dot = el()
-            .size(
-                if focused { 9.0 } else { side },
-                if focused { 9.0 } else { side },
-            )
-            .radius(4.5)
-            .fill(if dimmed {
-                p.line.alpha(0.6)
-            } else if focused {
-                p.accent
-            } else {
-                node_color
-            });
-        let mut row_view = row()
-            .absolute(x, y - 8.0)
-            .center_y()
-            .gap(5.0)
-            .on_hover(move |state: &mut State| state.graph_focus = Some(index))
-            .on_press(move |state: &mut State| {
-                state.graph_focus = Some(index);
-                state.filter_topic(&tag);
-            })
-            .child(dot);
         let wants_label = !dimmed && (focused || label_all || index < label_budget);
-        if wants_label {
-            let collides = label_anchors
-                .iter()
-                .any(|(ax, ay)| (x - ax).abs() < 88.0 && (y - ay).abs() < 15.0);
-            if focused || !collides {
-                label_anchors.push((x, y));
-                row_view = row_view.child(
-                    text(node.tag.clone())
-                        .font(theme::ui(12.5, 400.0))
-                        .color(if focused { p.accent } else { p.ink }),
-                );
-            }
+        if !wants_label {
+            continue;
         }
-        field = field.child(row_view);
+        let collides = label_anchors
+            .iter()
+            .any(|(ax, ay)| (x - ax).abs() < 88.0 && (y - ay).abs() < 15.0);
+        if !focused && collides {
+            continue;
+        }
+        label_anchors.push((x, y));
+        field = field.child(
+            text(node.tag.clone())
+                .absolute(x + 7.0, y - 8.0)
+                .font(theme::ui(12.5, 400.0))
+                .color(if focused { p.accent } else { p.ink })
+                .on_hover(move |state: &mut State| state.graph_focus = Some(index))
+                .on_press(move |state: &mut State| {
+                    state.graph_focus = Some(index);
+                    state.filter_topic(&tag);
+                }),
+        );
     }
     col().w_full().h_full().padding(24.0).child(field)
 }
@@ -5272,19 +5371,71 @@ fn overlay_view(state: &State, p: Palette) -> El {
                                 .video
                                 .as_ref()
                                 .filter(|_| state.video_target == state.lightbox);
-                            match playing {
-                                Some(player) => text(format!(
-                                    "{} / {}",
-                                    fmt_playback_time(player.position()),
-                                    player
-                                        .duration()
-                                        .map(fmt_playback_time)
-                                        .unwrap_or_else(|| "--:--".to_string())
-                                ))
+                            let (position, duration) = match playing {
+                                Some(player) => (
+                                    state
+                                        .video_scrub
+                                        .unwrap_or_else(|| player.position().as_secs_f64()),
+                                    player.duration().map(|d| d.as_secs_f64()).unwrap_or(0.0),
+                                ),
+                                None => (0.0, 0.0),
+                            };
+                            let fraction = if duration > 0.0 {
+                                (position / duration).clamp(0.0, 1.0) as f32
+                            } else {
+                                0.0
+                            };
+                            let mut track = row().w(200.0).h(14.0).center_y().on_drag(
+                                |state: &mut State, drag: &mut Drag, tx: &mut Tx| {
+                                    let fraction = (drag.x / drag.w.max(1.0)).clamp(0.0, 1.0);
+                                    let Some(duration) =
+                                        state.video.as_ref().and_then(|player| player.duration())
+                                    else {
+                                        return;
+                                    };
+                                    let target = f64::from(fraction) * duration.as_secs_f64();
+                                    match drag.phase {
+                                        Phase::Down | Phase::Move => {
+                                            state.video_scrub = Some(target);
+                                        }
+                                        Phase::Up => {
+                                            seek_video_to(state, tx, target);
+                                        }
+                                    }
+                                },
+                            );
+                            if duration > 0.0 {
+                                track = track.child(
+                                    row()
+                                        .w(200.0)
+                                        .h(3.0)
+                                        .radius(2.0)
+                                        .fill(Color::WHITE.alpha(0.25))
+                                        .child(
+                                            el().w(200.0 * fraction)
+                                                .h(3.0)
+                                                .radius(2.0)
+                                                .fill(Color::WHITE.alpha(0.85)),
+                                        ),
+                                );
+                            }
+                            row().center_y().gap(10.0).child(track).child(
+                                text(if duration > 0.0 {
+                                    format!(
+                                        "{} / {}",
+                                        fmt_playback_time(std::time::Duration::from_secs_f64(
+                                            position
+                                        )),
+                                        fmt_playback_time(std::time::Duration::from_secs_f64(
+                                            duration
+                                        ))
+                                    )
+                                } else {
+                                    String::new()
+                                })
                                 .font(theme::mono(11.0))
                                 .color(Color::WHITE.alpha(0.75)),
-                                None => text("").font(theme::mono(11.0)),
-                            }
+                            )
                         })
                         .child(
                             text("›")

@@ -10,6 +10,10 @@ has actually been captured.
   paging, and wheel/`+`/`-`/`0` zoom between fit and 3× (zoom resets when paging
   or closing), plus video scrubbing with `,`/`.` (±5 s, decoder restarts at the
   offset) and a live position/duration readout while a video plays.
+- Graph hit testing: dots are drawn in one canvas batch and hover/click use a
+  spatial hit test against the same projection, replacing per-node hit elements
+  (labels stay text). Video scrubbing gets a draggable timeline that previews the
+  target and seeks once on release, alongside the live position/duration.
 - Graph finish: the layout builds 1,200 tags through a co-occurrence query
   restricted to the selected node set (no archive-wide pair scan), labels skip
   anchors that would collide, and `/` opens a tag filter that dims non-matching
