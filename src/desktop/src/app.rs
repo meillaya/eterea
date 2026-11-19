@@ -341,6 +341,9 @@ pub(crate) struct State {
     authors_request: Option<RequestId>,
     topics_request: Option<RequestId>,
     graph: Option<GraphData>,
+    /// In-flight graph fetch, so a superseded response cannot overwrite the
+    /// snapshot rebuilt after a delete or tag edit.
+    graph_request: Option<RequestId>,
     calendar: Option<CalendarData>,
     /// Calendar browsing state: current month, month/year mode, selected week,
     /// focused month in the year view, cached months and year heatmap.
@@ -493,6 +496,7 @@ impl State {
             authors_request: None,
             topics_request: None,
             graph: None,
+            graph_request: None,
             calendar: None,
             calendar_month: String::new(),
             calendar_mode: CalendarMode::Month,
@@ -842,11 +846,8 @@ impl State {
                 self.request_topics(0);
             }
             Route::Graph => {
-                if self.graph.is_none() {
-                    if let Some(store) = self.store.as_ref() {
-                        store.graph(GraphRequest::new(800, 4_000));
-                        self.pending_views += 1;
-                    }
+                if self.graph.is_none() && self.graph_request.is_none() {
+                    self.request_graph();
                 }
                 if self.tag_colors.is_empty() {
                     if let Some(store) = self.store.as_ref() {
@@ -877,6 +878,49 @@ impl State {
                 self.request_calendar_month(month.clone());
                 self.ensure_calendar_year(month_year(&month));
             }
+            _ => {}
+        }
+    }
+
+    fn request_graph(&mut self) {
+        let Some(store) = self.store.as_ref() else {
+            return;
+        };
+        self.graph_request = Some(store.graph(GraphRequest::new(800, 4_000)));
+        self.pending_views += 1;
+    }
+
+    /// Drop the graph and calendar snapshots after bookmarks or their tag links
+    /// changed, and reload whichever of the two is on screen.
+    ///
+    /// Both screens aggregate the whole archive, so a cached snapshot keeps
+    /// rendering posts that were deleted and tags whose last post is gone until
+    /// the app restarts. Clearing here makes the next visit rebuild from
+    /// SQLite; the reload below covers a mutation answered while the screen is
+    /// already visible (undo and restore can arrive on either route).
+    fn invalidate_graph_and_calendar(&mut self) {
+        self.graph = None;
+        self.graph_request = None;
+        self.graph_focus = None;
+        self.graph_hover = None;
+        self.graph_press = None;
+        self.calendar = None;
+        self.calendar_cache.clear();
+        self.calendar_request = None;
+        self.calendar_year_data = None;
+        self.calendar_year_request = None;
+        match self.route {
+            Route::Graph => self.request_graph(),
+            Route::Calendar => match self.calendar_mode {
+                CalendarMode::Month => {
+                    let month = self.calendar_month.clone();
+                    if !month.is_empty() {
+                        self.request_calendar_month(month.clone());
+                        self.ensure_calendar_year(month_year(&month));
+                    }
+                }
+                CalendarMode::Year => self.ensure_calendar_year(self.calendar_year),
+            },
             _ => {}
         }
     }
@@ -1963,18 +2007,22 @@ fn handle_response(state: &mut State, response: Response, clock: f64) {
                 state.tag_colors.insert(color.tag, color.color);
             }
         }
-        Response::Graph { result, .. } => {
+        Response::Graph { id, result } => {
             state.pending_views = state.pending_views.saturating_sub(1);
+            if state.graph_request != Some(id) {
+                return;
+            }
+            state.graph_request = None;
             if let Ok(graph) = result {
                 state.graph = Some(graph);
             }
         }
         Response::Calendar { id, result } => {
+            state.pending_views = state.pending_views.saturating_sub(1);
             if state.calendar_request != Some(id) {
                 return;
             }
             state.calendar_request = None;
-            state.pending_views = state.pending_views.saturating_sub(1);
             match result {
                 Ok(calendar) => {
                     state
@@ -1996,11 +2044,11 @@ fn handle_response(state: &mut State, response: Response, clock: f64) {
             }
         }
         Response::CalendarYear { id, result } => {
+            state.pending_views = state.pending_views.saturating_sub(1);
             if state.calendar_year_request != Some(id) {
                 return;
             }
             state.calendar_year_request = None;
-            state.pending_views = state.pending_views.saturating_sub(1);
             match result {
                 Ok(data) => {
                     state.calendar_year = data.year;
@@ -2043,6 +2091,7 @@ fn handle_response(state: &mut State, response: Response, clock: f64) {
                         now,
                     );
                     state.refresh_feed();
+                    state.invalidate_graph_and_calendar();
                 }
                 Ok(None) => state.set_status("nothing to restore", now),
                 Err(error) => state.set_status(error.message, now),
@@ -2078,6 +2127,7 @@ fn handle_response(state: &mut State, response: Response, clock: f64) {
                 Ok(Some(bookmark)) => {
                     state.set_status(format!("restored post by @{}", bookmark.author_handle), now);
                     state.refresh_feed();
+                    state.invalidate_graph_and_calendar();
                     if state.overlay == Overlay::Trash {
                         if let Some(store) = state.store.as_ref() {
                             store.trash_list(0, 100);
@@ -2155,11 +2205,7 @@ fn handle_response(state: &mut State, response: Response, clock: f64) {
                         now,
                     );
                     // Everything the shell cached belongs to the old archive.
-                    state.calendar_cache.clear();
-                    state.calendar = None;
-                    state.calendar_request = None;
-                    state.calendar_year_data = None;
-                    state.calendar_year_request = None;
+                    state.invalidate_graph_and_calendar();
                     state.latest_month = None;
                     state.history = Vec::new();
                     state.history_total = 0;
@@ -2190,6 +2236,7 @@ fn handle_response(state: &mut State, response: Response, clock: f64) {
                 Ok(summary) => {
                     state.import = ImportState::Done { summary };
                     state.refresh_feed();
+                    state.invalidate_graph_and_calendar();
                 }
                 Err(error) => {
                     state.import = ImportState::Error {
@@ -2258,7 +2305,7 @@ fn handle_response(state: &mut State, response: Response, clock: f64) {
                     state.refresh_feed();
                     state.authors.clear();
                     state.topics.clear();
-                    state.graph = None;
+                    state.invalidate_graph_and_calendar();
                 }
                 Err(error) => {
                     let now = clock;
@@ -2293,6 +2340,7 @@ fn handle_response(state: &mut State, response: Response, clock: f64) {
                 state.set_status(format!("{} posts tagged", bulk.affected), now);
                 clear_selection(state);
                 state.refresh_feed();
+                state.invalidate_graph_and_calendar();
             }
             Err(error) => {
                 let now = clock;
@@ -2312,6 +2360,7 @@ fn handle_response(state: &mut State, response: Response, clock: f64) {
                 clear_selection(state);
                 state.route = Route::Feed;
                 state.refresh_feed();
+                state.invalidate_graph_and_calendar();
             }
             Err(error) => {
                 let now = clock;
@@ -2343,6 +2392,7 @@ fn handle_response(state: &mut State, response: Response, clock: f64) {
                     let now = clock;
                     state.set_status("post deleted, restore last deleted to recover", now);
                     state.refresh_feed();
+                    state.invalidate_graph_and_calendar();
                 }
                 Ok(false) => {}
                 Err(error) => {
@@ -2391,6 +2441,7 @@ fn handle_response(state: &mut State, response: Response, clock: f64) {
                         now,
                     );
                     state.refresh_feed();
+                    state.invalidate_graph_and_calendar();
                 }
                 Err(error) => state.set_status(error.message, now),
             }
@@ -2400,10 +2451,13 @@ fn handle_response(state: &mut State, response: Response, clock: f64) {
             let now = clock;
             match result {
                 Ok(0) => state.set_status("no unused tags", now),
-                Ok(count) => state.set_status(
-                    format!("removed {} unused tag{}", count, plural(count)),
-                    now,
-                ),
+                Ok(count) => {
+                    state.set_status(
+                        format!("removed {} unused tag{}", count, plural(count)),
+                        now,
+                    );
+                    state.invalidate_graph_and_calendar();
+                }
                 Err(error) => state.set_status(error.message, now),
             }
         }
@@ -2422,13 +2476,19 @@ fn handle_response(state: &mut State, response: Response, clock: f64) {
                 state.set_status(error.message, now);
             }
         }
-        Response::SetTags { result, .. } => {
-            if let Err(error) = result {
+        Response::SetTags { result, .. } => match result {
+            Ok(_) => state.invalidate_graph_and_calendar(),
+            Err(error) => {
                 let now = clock;
                 state.set_status(error.message, now);
             }
+        },
+        Response::ImportPreview { .. } => {}
+        Response::Import { result, .. } => {
+            if result.is_ok() {
+                state.invalidate_graph_and_calendar();
+            }
         }
-        Response::ImportPreview { .. } | Response::Import { .. } => {}
         Response::Detail { .. } => {}
     }
 }

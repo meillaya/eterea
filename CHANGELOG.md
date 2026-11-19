@@ -6,6 +6,17 @@ has actually been captured.
 
 ## Unreleased
 
+- Deleting posts now updates the graph and calendar immediately instead of
+  leaving the old snapshots on screen until the next launch. Every delete, bulk
+  delete, undo, import, trash restore and tag edit drops the cached tag-graph and
+  calendar month/year data and reloads whichever of the two screens is visible;
+  the graph only lists tags that still tag at least one saved post, so a tag
+  left unlinked by a delete no longer renders as a node. Superseded
+  graph/calendar responses also stop leaking the pending-view counter. A
+  service-level test deletes a fixture post and checks the fresh graph and
+  calendar aggregates; two scripted captures (delete-then-graph,
+  delete-then-calendar) prove the refresh. Harness: 130/130 strict (tree 129/130;
+  feed-return is pixel-only).
 - Lightbox: a mono `n / m` count, clickable side zones plus mouse back/forward
   paging, and wheel/`+`/`-`/`0` zoom between fit and 3× (zoom resets when paging
   or closing), plus video scrubbing with `,`/`.` (±5 s, decoder restarts at the

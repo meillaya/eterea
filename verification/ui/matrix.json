@@ -67,6 +67,46 @@
         "dark"
       ],
       "size": "1440x900"
+    },
+    "delete-graph": {
+      "fixture": "fixtures/x-api-v2-demo.json",
+      "routes": [],
+      "themes": [
+        "light"
+      ],
+      "size": "1440x900"
+    },
+    "delete-calendar": {
+      "fixture": "fixtures/x-api-v2-demo.json",
+      "routes": [],
+      "themes": [
+        "light"
+      ],
+      "size": "1440x900"
+    },
+    "click-post": {
+      "fixture": "fixtures/x-api-v2-demo.json",
+      "routes": [],
+      "themes": [
+        "light"
+      ],
+      "size": "1440x900"
+    },
+    "mouse-back": {
+      "fixture": "fixtures/x-api-v2-demo.json",
+      "routes": [],
+      "themes": [
+        "light"
+      ],
+      "size": "1440x900"
+    },
+    "feed-return": {
+      "fixture": "fixtures/x-api-v2-demo.json",
+      "routes": [],
+      "themes": [
+        "light"
+      ],
+      "size": "1440x900"
     }
   },
   "script_cases": [
@@ -236,7 +276,7 @@
     {
       "id": "mouse-back",
       "script": "scripts/mouse-back.json",
-      "dataset": "main",
+      "dataset": "mouse-back",
       "route": "feed",
       "size": "1440x900",
       "themes": [
@@ -279,7 +319,7 @@
     {
       "id": "click-post",
       "script": "scripts/click-post.json",
-      "dataset": "main",
+      "dataset": "click-post",
       "route": "feed",
       "size": "1440x900",
       "themes": [
@@ -301,7 +341,7 @@
     {
       "id": "feed-return",
       "script": "scripts/feed-return.json",
-      "dataset": "main",
+      "dataset": "feed-return",
       "route": "feed",
       "size": "1440x900",
       "themes": [
@@ -350,6 +390,53 @@
         "sun"
       ],
       "min_texts": 8
+    },
+    {
+      "id": "delete-graph",
+      "script": "scripts/delete-graph.json",
+      "dataset": "delete-graph",
+      "route": "feed",
+      "size": "1440x900",
+      "themes": [
+        "light"
+      ],
+      "at": 7.8,
+      "expect": [
+        "tag graph",
+        "books",
+        "concrete",
+        "architecture"
+      ],
+      "visible_expect": [
+        "books",
+        "concrete"
+      ],
+      "absent": [
+        "interfaces"
+      ],
+      "min_texts": 20,
+      "nav": true
+    },
+    {
+      "id": "delete-calendar",
+      "script": "scripts/delete-calendar.json",
+      "dataset": "delete-calendar",
+      "route": "calendar",
+      "size": "1440x900",
+      "themes": [
+        "light"
+      ],
+      "at": 9.2,
+      "expect": [
+        "august 2025",
+        "mon",
+        "tue"
+      ],
+      "absent": [
+        "open saved post 2 from this day"
+      ],
+      "min_texts": 60,
+      "nav": true
     }
   ],
   "limits": {

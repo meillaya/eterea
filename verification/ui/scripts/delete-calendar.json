@@ -1,0 +1,17 @@
+[
+  {"t":1.2,"type":"key","name":":"},
+  {"t":1.4,"type":"type","text":"calendar"},
+  {"t":1.9,"type":"key","name":"Enter"},
+  {"t":2.6,"type":"key","name":"Right"},
+  {"t":2.8,"type":"key","name":"Right"},
+  {"t":3.0,"type":"key","name":"Right"},
+  {"t":3.4,"type":"key","name":"Enter"},
+  {"t":4.9,"type":"key","name":"j"},
+  {"t":5.2,"type":"key","name":"j"},
+  {"t":5.6,"type":"key","name":"Enter"},
+  {"t":6.2,"type":"key","name":"d"},
+  {"t":6.6,"type":"key","name":"Enter"},
+  {"t":7.4,"type":"key","name":":"},
+  {"t":7.6,"type":"type","text":"calendar"},
+  {"t":8.0,"type":"key","name":"Enter"}
+]

@@ -944,6 +944,22 @@
       "tree_sha256": "593eb7ce04b33352cd88a74b1842fcbe48832af4f7aefe3dee19f3aedabdcf7f",
       "visible_texts": 27
     },
+    "script/delete-calendar/1440x900/light": {
+      "image_bytes": 31299,
+      "image_sha256": "6b5c4e7da29162ebb4311bca8eee919e4e37e6fbb92f6d60959d05ca8da6d79a",
+      "texts": 100,
+      "tree_nodes": 105,
+      "tree_sha256": "994ae89351b86b9a9146431942218013af27aaba89470f5f20ea15b2b1724a72",
+      "visible_texts": 57
+    },
+    "script/delete-graph/1440x900/light": {
+      "image_bytes": 26842,
+      "image_sha256": "36da7e0de2c7554e079608b87dc82236076754723fe085954cac1bbf7728163c",
+      "texts": 22,
+      "tree_nodes": 28,
+      "tree_sha256": "6d8c4fca29ecd7a7d14915c4788ea32e2e80dc3202880c8934da1502c375323e",
+      "visible_texts": 20
+    },
     "script/export-sheet/1440x900/dark": {
       "image_bytes": 64719,
       "image_sha256": "0d69640de044756a3db63176122a02fccb3eb6f7541ae8ded3ed74ee632ea884",
@@ -965,7 +981,7 @@
       "image_sha256": "ca60178841be092015077b945315ac5720d28156b3971f1e1205c4d1bcfa6b1d",
       "texts": 105,
       "tree_nodes": 111,
-      "tree_sha256": "e72fb61ad15416679f7e36fa890936fd3bba065cbef0afad3f39b67f1b7424c8",
+      "tree_sha256": "79ec4ee3abd8f4abc915fbb06f87fe62eb46edb71488e630ba80cc36900674d9",
       "visible_texts": 82
     },
     "script/keys-sheet/1440x900/dark": {
@@ -1031,7 +1047,7 @@
       "fixtures/eterea-export-carousel.json": "62c2a32a0cc757ecd3c5afe2eb0b68633d396b3b3fa1597de7114976d11a9767",
       "fixtures/x-api-v2-demo.json": "1e1382c40b87d909caff7cf230b08e03e750c94c98c62350684c9dddce8c2612"
     },
-    "matrix_sha256": "92d54a5c7ea37dcc02fc81abc501754ea4fc8ea4cd5c64f261853260d6a2de7a",
+    "matrix_sha256": "9e42fdce19814800c4c54ca34bcfdca14a43b7fbf722b9ed214656a38a41f850",
     "scripts": {
       "scripts/authors-filter.json": "02435b0b928eac584118cdbbbbdd151b1f1377e43dbe4ecf9862e13971187d44",
       "scripts/calendar-week.json": "79fa5adf46d915e3b750b424adbea6bf12cdc47217bb5a0b3ea4cdc74a094cae",
@@ -1039,6 +1055,8 @@
       "scripts/carousel-page-1.json": "bf37268fd6d8b46a69ab7e5faf06ca66afc0fd1cb1b895dc7ad357e1d0bb2f51",
       "scripts/carousel-page-2.json": "eb803aae70db12e783d70ea641b6a2c37bfcb8d3430d08fa1278b29c4feee39d",
       "scripts/click-post.json": "9392ac7c39875f1b7db12fb7237c3c3ceeedd516c353a1f81946830e0ef77fad",
+      "scripts/delete-calendar.json": "4917c1764e7c062591ef9e03a1958b22292532fc89d6c98dd0c338b7a4981636",
+      "scripts/delete-graph.json": "b4504c44205cd0eb114c2f3f3f5b122945fe76afb3cb01bbda7108b9d94d7b5f",
       "scripts/export-sheet.json": "80d27ab963050d56cb651efe6f654afea8c5fa21fc3866ead4d33e3ff9a390de",
       "scripts/feed-return.json": "e29fac638ffec7e1e1dacbb526ed3b1ed3ba7c91f6470a87a7ad1fc79a5107a5",
       "scripts/keys.json": "65a7261262ff530622c08b2ebe8090f9a516418633ad21dac1cc89d93a35b5e1",

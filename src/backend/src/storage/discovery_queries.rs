@@ -19,11 +19,15 @@ pub struct TagCooccurrence {
 
 impl Database {
     /// Tags ordered by bookmark count (descending) then name, for graph nodes.
+    ///
+    /// Only tags that still tag at least one saved post are returned: deleting
+    /// a post leaves its `tags` rows behind for the explicit prune action, but
+    /// an unlinked tag must never render as a graph node.
     pub fn get_top_tags(&self, limit: usize) -> Result<Vec<(String, i64)>> {
         let mut stmt = self.conn.prepare(
             r#"SELECT t.name, COUNT(bt.bookmark_id) AS bookmark_count
                FROM tags t
-               LEFT JOIN bookmark_tags bt ON bt.tag_id = t.id
+               INNER JOIN bookmark_tags bt ON bt.tag_id = t.id
                GROUP BY t.id
                ORDER BY bookmark_count DESC, t.name ASC
                LIMIT ?1"#,
@@ -246,6 +250,48 @@ mod tests {
                 bookmark_count: 1,
             }
         );
+    }
+
+    #[test]
+    fn unlinked_tags_are_not_graph_nodes() {
+        let db = Database::open_memory().unwrap();
+        let date = Utc.with_ymd_and_hms(2024, 5, 1, 12, 0, 0).unwrap();
+        let shared = bookmark("1", &["rust", "systems"], date);
+        let second_rust = bookmark("2", &["rust"], date);
+        let design = bookmark("3", &["design"], date);
+        db.insert_bookmarks(&[shared.clone(), second_rust.clone(), design.clone()])
+            .unwrap();
+        assert_eq!(
+            db.get_top_tags(10).unwrap(),
+            vec![
+                ("rust".to_string(), 2),
+                ("design".to_string(), 1),
+                ("systems".to_string(), 1),
+            ]
+        );
+
+        // The design tag has no other carrier, so deleting post 3 leaves an
+        // unlinked `tags` row (pruning is an explicit action) that the graph
+        // query must skip.
+        assert!(db.delete_bookmark(&design.id).unwrap());
+        assert_eq!(
+            db.get_top_tags(10).unwrap(),
+            vec![("rust".to_string(), 2), ("systems".to_string(), 1)]
+        );
+
+        // Counts shrink with the links, and an emptied tag drops out entirely.
+        assert!(db.delete_bookmark(&second_rust.id).unwrap());
+        assert_eq!(
+            db.get_top_tags(10).unwrap(),
+            vec![("rust".to_string(), 1), ("systems".to_string(), 1)]
+        );
+        assert!(db
+            .get_top_tags(10)
+            .unwrap()
+            .iter()
+            .all(|(tag, _)| tag != "design"));
+        // The LIMIT still caps the ranked node list.
+        assert_eq!(db.get_top_tags(1).unwrap(), vec![("rust".to_string(), 1)],);
     }
 
     #[test]

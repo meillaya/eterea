@@ -1,0 +1,14 @@
+[
+  {"t":1.4,"type":"key","name":":"},
+  {"t":1.6,"type":"type","text":"graph"},
+  {"t":2.0,"type":"key","name":"Enter"},
+  {"t":2.8,"type":"key","name":":"},
+  {"t":3.0,"type":"type","text":"feed"},
+  {"t":3.3,"type":"key","name":"Enter"},
+  {"t":4.2,"type":"key","name":"Enter"},
+  {"t":4.8,"type":"key","name":"d"},
+  {"t":5.3,"type":"key","name":"Enter"},
+  {"t":6.2,"type":"key","name":":"},
+  {"t":6.4,"type":"type","text":"graph"},
+  {"t":6.8,"type":"key","name":"Enter"}
+]

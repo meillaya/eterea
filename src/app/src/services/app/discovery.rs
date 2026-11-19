@@ -463,6 +463,78 @@ mod tests {
     }
 
     #[test]
+    fn deleting_a_post_removes_its_tags_and_calendar_marks() {
+        let services = imported_services();
+
+        let may = services
+            .calendar_data(&CalendarRequest::new("2026-05"))
+            .unwrap();
+        let first_day = may
+            .days
+            .iter()
+            .find(|day| day.date == "2026-05-01")
+            .expect("fixture should mark 2026-05-01");
+        assert_eq!(first_day.bookmark_count, 1);
+        let bookmark_id = first_day.bookmark_ids[0].clone();
+
+        // Only fixture post 1001 carries rust + architecture.
+        assert!(
+            services.delete_bookmark(&bookmark_id).unwrap(),
+            "fixture bookmark should be deleted"
+        );
+
+        // A fresh graph must not list the deleted post's now-unlinked tags.
+        let graph = services.graph_data(&GraphRequest::default()).unwrap();
+        let node_tags: Vec<&str> = graph.nodes.iter().map(|node| node.tag.as_str()).collect();
+        assert!(!node_tags.contains(&"rust"), "rust is no longer linked");
+        assert!(
+            !node_tags.contains(&"architecture"),
+            "architecture is no longer linked"
+        );
+        assert!(node_tags.contains(&"design"));
+        assert!(node_tags.contains(&"ops"));
+        assert!(
+            graph.edges.is_empty(),
+            "design and ops share no post, so there are no edges: {:?}",
+            graph.edges
+        );
+
+        // A fresh month grid drops the emptied day's mark and keeps the rest.
+        let may = services
+            .calendar_data(&CalendarRequest::new("2026-05"))
+            .unwrap();
+        let day = |date: &str| {
+            may.days
+                .iter()
+                .find(|day| day.date == date)
+                .unwrap_or_else(|| panic!("grid should contain {date}"))
+        };
+        let deleted_day = day("2026-05-01");
+        assert_eq!(deleted_day.bookmark_count, 0);
+        assert!(deleted_day.bookmark_ids.is_empty());
+        assert_eq!(day("2026-05-02").bookmark_count, 1);
+        assert_eq!(day("2026-05-03").bookmark_count, 1);
+
+        // The year overview no longer lists the emptied day.
+        let year = services
+            .calendar_year_data(&CalendarYearRequest::new(2026))
+            .unwrap();
+        assert_eq!(
+            year.days,
+            vec![
+                CalendarDayCount {
+                    date: "2026-05-02".to_string(),
+                    bookmark_count: 1,
+                },
+                CalendarDayCount {
+                    date: "2026-05-03".to_string(),
+                    bookmark_count: 1,
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn calendar_rejects_malformed_months() {
         let services = imported_services();
         for month in ["", "2026", "2026-5", "2026-13", "abcd-ef"] {

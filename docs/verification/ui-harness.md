@@ -74,16 +74,17 @@ Exit codes: `0` pass, `1` verification failure, `2` usage or environment error.
 
 ## Matrix
 
-128 captures. Scenes run at all three sizes and both themes; routes, datasets and
-scripts run at `1440x900` in both themes. Everything uses `--scale 1`, so PNG
-pixels equal the requested point size.
+130 captures. Scenes run at all three sizes and both themes; routes, datasets and
+scripts run at `1440x900` (scripts in both themes or light only, as the table
+notes). Everything uses `--scale 1`, so PNG pixels equal the requested point
+size.
 
 | Group | Cases | How |
 | --- | --- | --- |
-| Scenes: `detail`, `selected`, `quote`, `video`, `hidden`, `palette`, `keys`, `searching`, `lightbox` | 9 x 3 sizes x 2 themes = **54** | `ETEREA_DEMO=1`, bundled demo deck, no database, no network |
+| Scenes: `detail`, `selected`, `quote`, `video`, `hidden`, `palette`, `keys`, `searching`, `lightbox`, `repair`, `note`, `filters`, `saved`, `unavailable`, `trash` | 15 x 3 sizes x 2 themes = **90** | `ETEREA_DEMO=1`, bundled demo deck, no database, no network |
 | Routes: `feed`, `authors`, `topics`, `graph`, `calendar`, `import`, `settings`, `detail` | 8 x 1 size x 2 themes = **16** | main temp archive + `ETEREA_ROUTE` |
 | Route sets: `data/empty/history` (empty archive) and `data/carousel/feed` (twenty-media archive) | 2 x 2 themes = **4** | secondary temp archives + `ETEREA_ROUTE` |
-| Scripts: `export-sheet` (`e`), `selection-bar` (`x`, `shift+j`), `carousel-page-1` (`m`), `carousel-page-2` (`m`, `Right`) | 4 x 2 themes = **8** | main/carousel archives + Rune `--script` |
+| Scripts: 14 `--script` interactions (export sheet, selection bar, carousel pages 1-2, keys sheet, search field, mouse back, authors filter, click-to-open, feed return, calendar year/week, delete-then-graph, delete-then-calendar) | 6 x 2 themes + 8 x 1 theme = **20** | main/carousel/script-only archives + Rune `--script` |
 
 Sizes: `1440x900`, `1280x820`, `960x640` (the app's default, its `size`, and its
 `min_size`). Themes: `light`, `dark`, passed as `--theme`; the tree's
@@ -93,9 +94,14 @@ Archives are built fresh per run and never touch the user's data:
 `eterea-cli ingest` writes `fixtures/x-api-v2-demo.json` into
 `.work/ui-harness/datasets/main`, the carousel fixture into
 `.work/ui-harness/datasets/carousel`, and `eterea-cli stats` creates an empty
-schema for `.work/ui-harness/datasets/empty`. Captures read them through
-`ETEREA_DB`. Scene captures use `ETEREA_DEMO=1` and bundled
-`src/desktop/assets/demo` media.
+schema for `.work/ui-harness/datasets/empty`. The two destructive scripts get
+their own copy of the main fixture (`.work/ui-harness/datasets/delete-graph` and
+`.work/ui-harness/datasets/delete-calendar`) so a scripted delete cannot race
+another capture, and the same goes for the reader-state scripts
+(`.work/ui-harness/datasets/click-post`, `mouse-back`, `feed-return`) whose
+opened posts write `set_read`, leaving the shared main archive read-only for the
+rest of the matrix. Captures read them through `ETEREA_DB`. Scene captures use
+`ETEREA_DEMO=1` and bundled `src/desktop/assets/demo` media.
 
 ## What each case checks
 
@@ -209,10 +215,14 @@ corrupt, if a hash/signature does not match, or if an input file changed.
   surface is captured instead by the database routes and the carousel dataset
   (which run with `ETEREA_HIDE_MEDIA=1`). The matrix still sets the env for the
   `hidden` scene as requested; report any behavior change here.
-- **No free-form interaction coverage.** The scripts cover export, selection and
-  carousel paging only. No import flow, favorites/read toggles, tag editing,
-  delete confirmation, drag/drop, search typing, or video playback
-  (`ETEREA_PLAY`) is captured; `ETEREA_IMPORT` is not exercised.
+- **No free-form interaction coverage.** The scripts cover a fixed list of
+  interactions (export sheet, selection bar, carousel paging, keys sheet, search
+  typing, mouse back, directory filter, click-to-open, feed return, calendar
+  year/week browsing, and the delete-then-graph/delete-then-calendar refresh
+  flows in the Matrix table). The import flow, favorites/read toggles, tag
+  editing, drag/drop and video playback (`ETEREA_PLAY`) are not captured;
+  `ETEREA_IMPORT` is not exercised, and the delete confirmation overlay is driven
+  but not itself goldened.
 - **No network.** All archives are local; remote avatars/media are disabled for
   database captures. Media alt labels and carousel pages are exercised without
   fetching image bytes.
@@ -230,7 +240,7 @@ corrupt, if a hash/signature does not match, or if an input file changed.
   code, not a silent pass.
 - **Cost.** Each capture is a full offscreen app launch (debug build, GPU init,
   virtual frames): roughly 17-18 s for a demo scene and 2-5 s for a
-  database/script route; the full 98-case matrix took ~85-105 s on this host
+  database/script route; the full 130-case matrix takes ~135-140 s on this host
   with the default 8 workers (plus the cargo build). The debug `eterea` binary
   is ~650 MB.
 - **copy-lint scope.** It lints the aggregate of accessibility and paint text
