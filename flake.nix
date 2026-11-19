@@ -9,7 +9,11 @@
   };
 
   outputs = { self, nixpkgs, flake-utils, rust-overlay }:
-    flake-utils.lib.eachDefaultSystem (system:
+    # Linux only: the package links the Wayland/XKB/Vulkan libraries Rune needs
+    # and is verified on x86_64-linux. (x86_64-darwin is no longer supported by
+    # current nixpkgs, and the macOS build needs frameworks this flake does not
+    # provide.)
+    flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" ] (system:
       let
         pkgs = import nixpkgs {
           inherit system;
@@ -28,33 +32,49 @@
           fontconfig
           freetype
         ];
+        # Libraries Rune/winit/fontconfig dlopen by soname at runtime. The
+        # wrapper adds them to LD_LIBRARY_PATH because a Nix binary has no
+        # system library search path (the release packager bundles them).
+        runtimeLibraries = with pkgs; [
+          wayland
+          libxkbcommon
+          fontconfig
+          freetype
+          expat
+          zlib
+          vulkan-loader
+          libx11
+          libxcursor
+          libxrandr
+          libxi
+          libxext
+          libxcb
+        ];
       in
       {
         packages.default = rustPlatform.buildRustPackage {
           pname = "eterea";
           version = "0.1.0";
           src = ./.;
-          cargoLock = {
-            lockFile = ./Cargo.lock;
-            outputHashes = {
-              "accesskit_macos-0.27.2" = "sha256-tzLB3Hf4qR4VYsdP3hPF+NolGfygFMMhNcraCdmHtiM=";
-              "accesskit_windows-0.35.2" = "sha256-tzLB3Hf4qR4VYsdP3hPF+NolGfygFMMhNcraCdmHtiM=";
-              "parley_engine-0.12.0" = "sha256-tzLB3Hf4qR4VYsdP3hPF+NolGfygFMMhNcraCdmHtiM=";
-              "rune-0.0.1" = "sha256-tzLB3Hf4qR4VYsdP3hPF+NolGfygFMMhNcraCdmHtiM=";
-              "rune-motion-0.1.0" = "sha256-tzLB3Hf4qR4VYsdP3hPF+NolGfygFMMhNcraCdmHtiM=";
-              "rune-staging-0.0.1" = "sha256-tzLB3Hf4qR4VYsdP3hPF+NolGfygFMMhNcraCdmHtiM=";
-              "rune-taffy-0.0.1" = "sha256-tzLB3Hf4qR4VYsdP3hPF+NolGfygFMMhNcraCdmHtiM=";
-              "tiny-skia-path-0.11.4" = "sha256-tzLB3Hf4qR4VYsdP3hPF+NolGfygFMMhNcraCdmHtiM=";
-              "wgpu-hal-30.0.1" = "sha256-tzLB3Hf4qR4VYsdP3hPF+NolGfygFMMhNcraCdmHtiM=";
-              "winit-0.30.13" = "sha256-tzLB3Hf4qR4VYsdP3hPF+NolGfygFMMhNcraCdmHtiM=";
-            };
-          };
-          nativeBuildInputs = with pkgs; [ pkg-config makeWrapper ];
+          # Dependencies are vendored by `cargo vendor` in a fixed-output
+          # derivation. The modern `cargoHash` path is used instead of the
+          # legacy `cargoLock.outputHashes` one: that layout cannot represent a
+          # crate that appears both on crates.io and from a git source
+          # (`tiny-skia-path` 0.11.4 comes from the Rune patch), so building its
+          # vendored-deps derivation fails with a symlink permission error.
+          cargoHash = "sha256-XyVv8iJo72macB+n4dvMFJDTN0LWhf0CjijfS928Yws=";
+          nativeBuildInputs = with pkgs; [ pkg-config makeWrapper autoAddDriverRunpath ];
           buildInputs = with pkgs; [ sqlite ffmpeg ]
-            ++ pkgs.lib.optionals pkgs.stdenv.isLinux linuxBuildInputs;
+            ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux linuxBuildInputs;
           postInstall = ''
+            # Rune/winit/fontconfig dlopen their runtime libraries by soname
+            # (Wayland, X11, XKB, fontconfig, Vulkan); a Nix binary has no
+            # system library path, so the wrapper supplies them the same way
+            # scripts/package-linux-release.sh supplies the release bundle.
+            # The driver link holds the host's GPU drivers on NixOS.
             wrapProgram $out/bin/eterea \
-              --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.ffmpeg ]}
+              --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.ffmpeg ]} \
+              --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath runtimeLibraries}:${pkgs.addDriverRunpath.driverLink}/lib
 
             # Desktop entry and hicolor icons for the Nix package output. The
             # release tarball produced by scripts/package-linux-release.sh gets
@@ -73,6 +93,7 @@
           meta = with pkgs.lib; {
             description = "Local reading app for saved X posts";
             license = licenses.mit;
+            platforms = platforms.linux;
             mainProgram = "eterea";
           };
         };

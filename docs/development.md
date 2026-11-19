@@ -15,6 +15,17 @@ The host in this workspace also has a workspace-local Rust cache at
 `.work/cargo-home` and a target directory at `.work/rune-spike/target`; they are
 not part of the repository.
 
+A Nix flake also runs and builds the packaged binary:
+
+```bash
+nix run .#             # launch the app without installing it
+nix build .#default    # ./result/bin/eterea, eterea-cli, desktop entry and icons
+```
+
+The flake vendors the locked Cargo dependencies in a fixed-output derivation, so
+the first build needs network access; it targets Linux and does not provide a
+development shell (use devenv for that).
+
 ## Commands
 
 ```bash

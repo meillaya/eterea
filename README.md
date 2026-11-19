@@ -106,6 +106,24 @@ shared compiler cache:
 mbx build -p eterea-desktop --release
 ```
 
+The repository also carries a Nix flake. To try the app without installing
+anything (the first run needs network to vendor the pinned Cargo dependencies):
+
+```bash
+nix run .#
+```
+
+To build the packaged binary instead (Linux):
+
+```bash
+nix build .#default
+./result/bin/eterea
+```
+
+The output installs `eterea`, `eterea-cli`, a desktop entry and hicolor icons,
+and points the binary at the host's driver libraries. The flake only builds the
+package; the development shell stays with devenv above.
+
 Build-space and headless render measurements are in
 [`docs/performance.md`](docs/performance.md).
 
