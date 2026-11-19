@@ -35,7 +35,7 @@ Imported archives are untrusted: post text, handles, tags, URLs, alt text, quote
 
 ## Persistence
 
-The default database is `<platform data dir>/eterea/bookmarks.db`. SQLite runs in WAL mode. Schema version is `PRAGMA user_version = 7`; migrations are idempotent, reject newer versions, and only touch the database after the version check. Migration v3 renames the FTS content table from `bookmarks_fts_content` to `bookmarks_search_docs` and rebuilds the external-content index, because the old name was an FTS5 shadow-table name: SQLite newer than the bundled 3.46 refused to parse the whole schema ("cannot create triggers on shadow tables"). Media bytes and settings are not stored in the database. Appearance and media preferences live in `settings.json` under the platform config directory.
+The default database is `<platform data dir>/eterea/bookmarks.db`. SQLite runs in WAL mode. Schema version is `PRAGMA user_version = 8`; migrations are idempotent, reject newer versions, and only touch the database after the version check. Migration v3 renames the FTS content table from `bookmarks_fts_content` to `bookmarks_search_docs` and rebuilds the external-content index, because the old name was an FTS5 shadow-table name: SQLite newer than the bundled 3.46 refused to parse the whole schema ("cannot create triggers on shadow tables"). Migration v8 adds `bookmarks.metadata_checked` so the opt-in metadata repair only queues posts it has not checked yet; a post known to be gone counts as checked, and a later availability pass that sees it again clears the flag. Media bytes and settings are not stored in the database. Appearance and media preferences live in `settings.json` under the platform config directory.
 
 ## Deferred
 

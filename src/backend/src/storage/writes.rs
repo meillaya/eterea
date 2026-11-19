@@ -96,10 +96,42 @@ impl<'conn> BookmarkInsertStatements<'conn> {
 
 impl Database {
     /// Mark (or clear) a bookmark's availability after a network check.
+    ///
+    /// A post reported gone has nothing left to repair, so marking it
+    /// unavailable also records `metadata_checked = 1` and the media repair pass
+    /// stops queueing it. Clearing the flag only happens for a row that was
+    /// actually unavailable: that resurrection resets `metadata_checked` to 0
+    /// because the post may have media the archive is still missing.
     pub fn set_bookmark_unavailable(&self, bookmark_id: &str, unavailable: bool) -> Result<bool> {
+        let changed = if unavailable {
+            self.conn.execute(
+                "UPDATE bookmarks SET unavailable = 1, metadata_checked = 1 WHERE id = ?1",
+                params![bookmark_id],
+            )?
+        } else {
+            // SQLite evaluates every SET expression against the pre-update row,
+            // so the CASE still sees the old `unavailable` value.
+            self.conn.execute(
+                r#"UPDATE bookmarks
+                   SET metadata_checked = CASE WHEN unavailable = 1 THEN 0 ELSE metadata_checked END,
+                       unavailable = 0
+                   WHERE id = ?1"#,
+                params![bookmark_id],
+            )?
+        };
+        Ok(changed > 0)
+    }
+
+    /// Record whether the opt-in metadata repair has a definitive answer for one
+    /// post.
+    ///
+    /// Set it once the embed payload was fetched and merged (whether or not it
+    /// carried media) or the post is known to be gone. Transient transport,
+    /// mapping and database failures leave it 0 so the next pass retries.
+    pub fn set_bookmark_metadata_checked(&self, bookmark_id: &str, checked: bool) -> Result<bool> {
         Ok(self.conn.execute(
-            "UPDATE bookmarks SET unavailable = ?2 WHERE id = ?1",
-            params![bookmark_id, unavailable as i32],
+            "UPDATE bookmarks SET metadata_checked = ?2 WHERE id = ?1",
+            params![bookmark_id, checked as i32],
         )? > 0)
     }
 
@@ -615,11 +647,16 @@ impl Database {
         }
     }
 
-    /// Posts that still have no media row, newest first. The repair pass feeds
-    /// these ids to the embed endpoint.
+    /// `(id, tweet_url)` of posts the metadata repair pass has not checked yet,
+    /// newest first.
+    ///
+    /// A post is a target only when it still has no media row, the opt-in
+    /// metadata repair has not recorded a definitive answer for it, and X has
+    /// not reported it gone. Checked and unavailable posts therefore drop out of
+    /// the queue, so a completed pass cannot present the same posts again.
     pub fn bookmarks_missing_media(&self, limit: usize) -> Result<Vec<(String, String)>> {
         let mut statement = self.conn.prepare(
-            "SELECT id, tweet_url FROM bookmarks WHERE has_media = 0              ORDER BY tweeted_at DESC, id DESC LIMIT ?1",
+            "SELECT id, tweet_url FROM bookmarks WHERE has_media = 0 AND metadata_checked = 0 AND unavailable = 0              ORDER BY tweeted_at DESC, id DESC LIMIT ?1",
         )?;
         let rows = statement
             .query_map(params![limit as i64], |row| {
@@ -629,10 +666,13 @@ impl Database {
         Ok(rows)
     }
 
-    /// Number of posts the repair pass would consider.
+    /// Number of posts the metadata repair pass would consider.
+    ///
+    /// Mirrors [`Self::bookmarks_missing_media`]: already-checked and
+    /// known-unavailable posts are not counted.
     pub fn count_bookmarks_missing_media(&self) -> Result<i64> {
         Ok(self.conn.query_row(
-            "SELECT count(*) FROM bookmarks WHERE has_media = 0",
+            "SELECT count(*) FROM bookmarks WHERE has_media = 0 AND metadata_checked = 0 AND unavailable = 0",
             [],
             |row| row.get(0),
         )?)
@@ -1148,5 +1188,49 @@ mod availability_tests {
 
         assert!(db.set_bookmark_unavailable(&first.id, false).unwrap());
         assert!(!db.get_bookmark(&first.id).unwrap().unwrap().unavailable);
+    }
+
+    #[test]
+    fn media_repair_targets_skip_checked_and_unavailable_posts() {
+        let db = Database::open_memory().unwrap();
+        let untouched = bookmark("1");
+        let checked = bookmark("2");
+        let gone = bookmark("3");
+        db.insert_bookmarks(&[untouched.clone(), checked.clone(), gone.clone()])
+            .unwrap();
+        assert_eq!(db.count_bookmarks_missing_media().unwrap(), 3);
+
+        assert!(db.set_bookmark_metadata_checked(&checked.id, true).unwrap());
+        assert!(db.set_bookmark_unavailable(&gone.id, true).unwrap());
+        assert!(db.get_bookmark(&gone.id).unwrap().unwrap().unavailable);
+
+        let targets = db.bookmarks_missing_media(10).unwrap();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].0, untouched.id);
+        assert_eq!(
+            targets[0].1, untouched.tweet_url,
+            "the target pair carries the tweet URL"
+        );
+        assert_eq!(db.count_bookmarks_missing_media().unwrap(), 1);
+
+        // Clearing the checked flag reactivates a post the pass had answered.
+        assert!(db
+            .set_bookmark_metadata_checked(&checked.id, false)
+            .unwrap());
+        assert_eq!(db.count_bookmarks_missing_media().unwrap(), 2);
+
+        // A successful availability check that resurrects a post clears the
+        // known-gone shortcut so the media repair visits it again.
+        assert!(db.set_bookmark_unavailable(&gone.id, false).unwrap());
+        assert_eq!(db.count_bookmarks_missing_media().unwrap(), 3);
+        let ids: Vec<String> = db
+            .bookmarks_missing_media(10)
+            .unwrap()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert!(ids.contains(&gone.id));
+        assert!(ids.contains(&untouched.id));
+        assert!(ids.contains(&checked.id));
     }
 }

@@ -19,7 +19,8 @@ CREATE TABLE IF NOT EXISTS bookmarks (
     is_read INTEGER NOT NULL DEFAULT 0,  -- Reader state: 1 once the post is read
     links_json TEXT NOT NULL DEFAULT '[]', -- URL entities from the export, sorted JSON
     conversation_id TEXT,          -- Thread/conversation id when the source carried one
-    unavailable INTEGER NOT NULL DEFAULT 0 -- 1 when X reports the post/author gone
+    unavailable INTEGER NOT NULL DEFAULT 0, -- 1 when X reports the post/author gone
+    metadata_checked INTEGER NOT NULL DEFAULT 0 -- 1 once the opt-in metadata repair has checked this post
 );
 
 -- Materialized author directory. The Authors screen must not GROUP BY the

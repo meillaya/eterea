@@ -23,6 +23,7 @@ fn initializes_empty_database_with_current_schema() -> crate::Result<()> {
     assert_column_exists(&db.conn, "has_media")?;
     assert_column_exists(&db.conn, "is_read")?;
     assert_column_exists(&db.conn, "links_json")?;
+    assert_column_exists(&db.conn, "metadata_checked")?;
     assert_media_metadata_columns_exist(&db.conn)?;
     assert_index_exists(&db.conn, "idx_quoted_tweets_tweet_url")?;
     assert_index_exists(&db.conn, "idx_quoted_tweets_author_handle")?;
@@ -66,6 +67,68 @@ fn reopens_existing_current_schema_idempotently() -> crate::Result<()> {
     assert_eq!(
         current_user_version(&reopened.conn)?,
         CURRENT_SCHEMA_USER_VERSION
+    );
+    Ok(())
+}
+
+#[test]
+fn migrates_v7_archive_and_backfills_known_gone_posts() -> crate::Result<()> {
+    // A database stamped at v7 has `unavailable` but no `metadata_checked`.
+    // Upgrading must add the flag and pre-check rows already known to be gone,
+    // so the next media repair pass does not fetch them again.
+    let temp_dir = TempDir::new()?;
+    let db_path = temp_dir.path().join("v7-metadata-checked.db");
+    let db = Database::open(&db_path)?;
+    db.conn.execute(
+        r#"INSERT INTO bookmarks
+           (id, tweet_url, content, tweeted_at, imported_at, author_handle, author_name)
+           VALUES ('v7-normal', 'https://x.com/v7/status/1', 'normal row',
+                   1717243200, 1717243200, 'v7', 'V7 Author')"#,
+        [],
+    )?;
+    db.conn.execute(
+        r#"INSERT INTO bookmarks
+           (id, tweet_url, content, tweeted_at, imported_at, author_handle, author_name)
+           VALUES ('v7-gone', 'https://x.com/v7/status/2', 'gone row',
+                   1717243200, 1717243200, 'v7', 'V7 Author')"#,
+        [],
+    )?;
+    db.conn.execute(
+        "UPDATE bookmarks SET unavailable = 1 WHERE id = 'v7-gone'",
+        [],
+    )?;
+    // Simulate the v7 shape: the flag did not exist yet.
+    db.conn
+        .execute("ALTER TABLE bookmarks DROP COLUMN metadata_checked", [])?;
+    db.conn.execute_batch("PRAGMA user_version = 7;")?;
+    drop(db);
+
+    let reopened = Database::open(&db_path)?;
+
+    assert_eq!(
+        current_user_version(&reopened.conn)?,
+        CURRENT_SCHEMA_USER_VERSION
+    );
+    assert_column_exists(&reopened.conn, "metadata_checked")?;
+    let normal: i64 = reopened.conn.query_row(
+        "SELECT metadata_checked FROM bookmarks WHERE id = 'v7-normal'",
+        [],
+        |row| row.get(0),
+    )?;
+    let gone: i64 = reopened.conn.query_row(
+        "SELECT metadata_checked FROM bookmarks WHERE id = 'v7-gone'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(normal, 0, "an unchecked post stays in the repair queue");
+    assert_eq!(
+        gone, 1,
+        "a known-gone post starts checked and must not be fetched again"
+    );
+    assert_eq!(
+        reopened.count_bookmarks_missing_media()?,
+        1,
+        "only the unchecked, available row is a repair target"
     );
     Ok(())
 }

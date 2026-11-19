@@ -1056,6 +1056,7 @@ impl State {
             return;
         };
         self.note_navigation(Route::Feed);
+        stop_video(self);
         self.route = Route::Feed;
         self.request_feed(Some(Filter::Day(
             format!("{}Z", start.format("%Y-%m-%dT%H:%M:%S")),
@@ -1065,12 +1066,14 @@ impl State {
 
     fn filter_author(&mut self, handle: &str) {
         self.note_navigation(Route::Feed);
+        stop_video(self);
         self.route = Route::Feed;
         self.request_feed(Some(Filter::Author(handle.to_string())));
     }
 
     fn filter_topic(&mut self, tag: &str) {
         self.note_navigation(Route::Feed);
+        stop_video(self);
         self.route = Route::Feed;
         self.request_feed(Some(Filter::Topic(tag.to_string())));
     }
@@ -1128,6 +1131,7 @@ impl State {
     }
 
     fn drop_import_paths(&mut self, paths: &[PathBuf]) {
+        stop_video(self);
         self.route = Route::Import;
         self.preview_import_paths(paths.to_vec());
     }
@@ -1168,10 +1172,14 @@ impl State {
         match item {
             CommandItem::Feed => self.open_route(Route::Feed),
             CommandItem::Favorites => {
+                // These filter commands replace the feed content the video is
+                // attached to, so the player cannot survive the route change.
+                stop_video(self);
                 self.route = Route::Feed;
                 self.request_feed(Some(Filter::Favorites));
             }
             CommandItem::Unread => {
+                stop_video(self);
                 self.route = Route::Feed;
                 self.request_feed(Some(Filter::Unread));
             }
@@ -1308,6 +1316,16 @@ impl State {
 /// confirmation used to leave `bulk_delete` behind, so a later single delete
 /// ran the bulk path and silently deleted nothing.
 fn dismiss_overlay(state: &mut State) {
+    // Closing the video lightbox leaves the video surface: stop both picture and
+    // sound so neither can keep running invisibly behind the feed. Other
+    // overlays (palette, keys, tag editor, ...) never own the video, so they do
+    // not stop unrelated playback.
+    let closes_video_lightbox = state.overlay == Overlay::Lightbox
+        && state.video_target.is_some()
+        && state.video_target == state.lightbox;
+    if closes_video_lightbox {
+        stop_video(state);
+    }
     state.overlay = Overlay::None;
     state.palette.clear();
     state.palette_index = 0;
@@ -1318,6 +1336,30 @@ fn dismiss_overlay(state: &mut State) {
     state.graph_color_tag = None;
     state.bulk_delete = false;
     state.bulk_tag_remove = false;
+}
+
+/// Show `target` as the lightbox image. Opening the lightbox on, or paging it
+/// to, a media item other than the one that owns the video leaves the video's
+/// surface, so stop playback first: sound must never continue behind a
+/// different image.
+fn show_lightbox_media(state: &mut State, target: (usize, usize)) {
+    if state.video_target.is_some() && state.video_target != Some(target) {
+        stop_video(state);
+    }
+    state.lightbox = Some(target);
+}
+
+/// Page the lightbox to `target`, resetting the zoom like the keys and buttons
+/// always have.
+fn page_lightbox(state: &mut State, target: (usize, usize)) {
+    show_lightbox_media(state, target);
+    state.lightbox_zoom = 1.0;
+}
+
+/// Open the lightbox over a media tile.
+fn open_lightbox(state: &mut State, target: (usize, usize)) {
+    show_lightbox_media(state, target);
+    state.overlay = Overlay::Lightbox;
 }
 
 fn setup(state: &mut State, waker: Waker) {
@@ -1784,6 +1826,10 @@ fn poll(state: &mut State, clock: f64, tx: &mut Tx) -> bool {
             let error = player.error().map(str::to_string);
             state.video = None;
             state.video_target = None;
+            // Drop the last decoded frame with the player: a target that no
+            // longer exists must not leave a stale frame behind either.
+            state.video_image = None;
+            state.video_pending = None;
             if let Some(error) = error {
                 let now = tx.clock();
                 state.set_status(error, now);
@@ -2897,8 +2943,7 @@ fn overlay_key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
             Key::Left => {
                 if let Some((post, index)) = state.lightbox {
                     if index > 0 {
-                        state.lightbox = Some((post, index - 1));
-                        state.lightbox_zoom = 1.0;
+                        page_lightbox(state, (post, index - 1));
                     }
                 }
             }
@@ -2906,8 +2951,7 @@ fn overlay_key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
                 if let Some((post, index)) = state.lightbox {
                     if let Some(count) = state.posts.get(post).map(|post| post.media.len()) {
                         if index + 1 < count {
-                            state.lightbox = Some((post, index + 1));
-                            state.lightbox_zoom = 1.0;
+                            page_lightbox(state, (post, index + 1));
                         }
                     }
                 }
@@ -3126,7 +3170,11 @@ fn navigate_back(state: &mut State, tx: &mut Tx) {
     state.forward_stack.push(state.route);
     if previous == Route::Feed && state.route == Route::Detail {
         // Returning to the feed that is still in memory: keep the page and
-        // restore the reader's spot instead of re-querying from the top.
+        // restore the reader's spot instead of re-querying from the top. This
+        // leaves the video surface, so stop the player exactly like the keyboard
+        // Esc path does: a paused or playing player, its sound and its stale
+        // frame must never survive invisibly on the feed.
+        stop_video(state);
         state.thread.clear();
         state.thread_anchor = None;
         state.thread_request = None;
@@ -3374,6 +3422,14 @@ fn poll_media_repair(state: &mut State, clock: f64) -> bool {
                     "availability check failed".to_string()
                 } else {
                     "repair failed".to_string()
+                }
+            } else if event.total == 0 {
+                // Every queued post was already checked on an earlier pass; a
+                // second repair run says so instead of a full progress bar.
+                if checking {
+                    "no posts to check".to_string()
+                } else {
+                    "nothing to repair".to_string()
                 }
             } else if checking {
                 format!(
@@ -3696,6 +3752,9 @@ fn begin_bulk_delete(state: &mut State) {
     if state.selection.ids.is_empty() && state.selection.predicate.is_none() {
         return;
     }
+    // A bulk delete navigates back to the feed once it lands, so stop the video
+    // here like the single-delete path does: no player may outlive its surface.
+    stop_video(state);
     state.bulk_delete = true;
     state.delete_target = None;
     state.overlay = Overlay::ConfirmDelete;
@@ -3967,6 +4026,9 @@ fn next_unread(state: &mut State) {
         .find(|(_, post)| !post.is_read)
         .map(|(index, _)| index)
     {
+        // Opening another post leaves this post's video surface: stop it (no
+        // background sound, no stale frame on the next post).
+        stop_video(state);
         state.selected = index;
         begin_detail(state, index);
         return;
@@ -5912,8 +5974,7 @@ fn overlay_view(state: &State, p: Palette) -> El {
                     PointerButton::Back => {
                         if let Some((post, index)) = state.lightbox {
                             if index > 0 {
-                                state.lightbox = Some((post, index - 1));
-                                state.lightbox_zoom = 1.0;
+                                page_lightbox(state, (post, index - 1));
                             }
                         }
                     }
@@ -5925,8 +5986,7 @@ fn overlay_view(state: &State, p: Palette) -> El {
                                 .map(|post| post.media.len())
                                 .unwrap_or(0);
                             if index + 1 < count {
-                                state.lightbox = Some((post, index + 1));
-                                state.lightbox_zoom = 1.0;
+                                page_lightbox(state, (post, index + 1));
                             }
                         }
                     }
@@ -5951,8 +6011,7 @@ fn overlay_view(state: &State, p: Palette) -> El {
                         .on_press(|state: &mut State| {
                             if let Some((post, index)) = state.lightbox {
                                 if index > 0 {
-                                    state.lightbox = Some((post, index - 1));
-                                    state.lightbox_zoom = 1.0;
+                                    page_lightbox(state, (post, index - 1));
                                 }
                             }
                         }),
@@ -5972,8 +6031,7 @@ fn overlay_view(state: &State, p: Palette) -> El {
                                     .map(|post| post.media.len())
                                     .unwrap_or(0);
                                 if index + 1 < count {
-                                    state.lightbox = Some((post, index + 1));
-                                    state.lightbox_zoom = 1.0;
+                                    page_lightbox(state, (post, index + 1));
                                 }
                             }
                         }),
@@ -5992,8 +6050,7 @@ fn overlay_view(state: &State, p: Palette) -> El {
                                 .on_press(|state: &mut State| {
                                     if let Some((post, index)) = state.lightbox {
                                         if index > 0 {
-                                            state.lightbox = Some((post, index - 1));
-                                            state.lightbox_zoom = 1.0;
+                                            page_lightbox(state, (post, index - 1));
                                         }
                                     }
                                 }),
@@ -6092,8 +6149,7 @@ fn overlay_view(state: &State, p: Palette) -> El {
                                             .map(|post| post.media.len())
                                             .unwrap_or(0);
                                         if index + 1 < count {
-                                            state.lightbox = Some((post, index + 1));
-                                            state.lightbox_zoom = 1.0;
+                                            page_lightbox(state, (post, index + 1));
                                         }
                                     }
                                 }),
@@ -6104,10 +6160,7 @@ fn overlay_view(state: &State, p: Palette) -> El {
                         .font(theme::ui(12.5, 400.0))
                         .color(Color::WHITE)
                         .pin(None, Some(28.0), Some(52.0), None)
-                        .on_press(|state: &mut State| {
-                            state.lightbox = None;
-                            state.overlay = Overlay::None;
-                        }),
+                        .on_press(|state: &mut State| dismiss_overlay(state)),
                 )
         }
         Overlay::GraphColor => {
@@ -9040,8 +9093,7 @@ fn media_tile(
             if is_video && state.route == Route::Detail {
                 start_video_at(state, tx, post_index, media_index);
             } else {
-                state.lightbox = Some((post_index, media_index));
-                state.overlay = Overlay::Lightbox;
+                open_lightbox(state, (post_index, media_index));
             }
         });
     let playing = if state.video_target == Some((post_index, media_index)) {
@@ -9222,5 +9274,70 @@ mod highlight_tests {
         let ranges = query_highlight_ranges(body, "film");
         assert_eq!(ranges.len(), 1);
         assert_eq!(&body[ranges[0].0..ranges[0].1], "film");
+    }
+}
+
+/// The shell owns the "stop playback when leaving the video surface" rule; the
+/// media player only guarantees that sound and picture share one timeline.
+#[cfg(test)]
+mod video_surface_tests {
+    use super::{dismiss_overlay, open_lightbox, page_lightbox, Overlay, State};
+
+    fn playing_lightbox(state: &mut State) {
+        state.overlay = Overlay::Lightbox;
+        state.lightbox = Some((2, 1));
+        state.video_target = Some((2, 1));
+    }
+
+    #[test]
+    fn closing_the_video_lightbox_stops_playback() {
+        let mut state = State::new();
+        playing_lightbox(&mut state);
+        dismiss_overlay(&mut state);
+        assert!(state.overlay == Overlay::None, "lightbox must close");
+        assert_eq!(state.lightbox, None);
+        assert_eq!(
+            state.video_target, None,
+            "closing the video lightbox must stop its playback"
+        );
+    }
+
+    #[test]
+    fn closing_an_unrelated_overlay_keeps_video_playback() {
+        let mut state = State::new();
+        state.overlay = Overlay::Palette;
+        state.video_target = Some((2, 1));
+        dismiss_overlay(&mut state);
+        assert_eq!(
+            state.video_target,
+            Some((2, 1)),
+            "palette/keys/tag-editor overlays do not own the video"
+        );
+    }
+
+    #[test]
+    fn paging_the_lightbox_away_from_the_video_stops_playback() {
+        let mut state = State::new();
+        playing_lightbox(&mut state);
+        page_lightbox(&mut state, (2, 0));
+        assert_eq!(state.lightbox, Some((2, 0)));
+        assert_eq!(
+            state.video_target, None,
+            "sound must not continue behind another lightbox image"
+        );
+    }
+
+    #[test]
+    fn opening_the_lightbox_on_the_video_media_keeps_playback() {
+        let mut state = State::new();
+        state.video_target = Some((2, 1));
+        open_lightbox(&mut state, (2, 1));
+        assert!(state.overlay == Overlay::Lightbox, "lightbox must open");
+        assert_eq!(state.lightbox, Some((2, 1)));
+        assert_eq!(
+            state.video_target,
+            Some((2, 1)),
+            "opening the lightbox on the playing video keeps its player"
+        );
     }
 }

@@ -26,9 +26,24 @@ use chrono::{DateTime, Utc};
 use eterea_core::{Bookmark, Database, LinkEntity, Media, MediaType, QuotedTweet};
 use eterea_logic::VideoVariant;
 use eterea_media::{
-    tweet_id_from_url, SyndicatedMedia, SyndicatedMediaKind, SyndicatedQuote, SyndicatedTweet,
-    SyndicationClient, SyndicationOutcome,
+    tweet_id_from_url, MediaError, SyndicatedMedia, SyndicatedMediaKind, SyndicatedQuote,
+    SyndicatedTweet, SyndicationClient, SyndicationOutcome,
 };
+
+/// One embed-payload fetch.
+///
+/// The repair loop talks to this trait instead of the HTTP client so the pass can
+/// be exercised offline in tests; [`SyndicationClient`] is the production
+/// implementation.
+trait SyndicationFetch {
+    fn fetch(&self, tweet_id: &str, cancel: &AtomicBool) -> Result<SyndicationOutcome, MediaError>;
+}
+
+impl SyndicationFetch for SyndicationClient {
+    fn fetch(&self, tweet_id: &str, cancel: &AtomicBool) -> Result<SyndicationOutcome, MediaError> {
+        SyndicationClient::fetch(self, tweet_id, cancel)
+    }
+}
 
 /// How much to repair and how fast.
 #[derive(Debug, Clone, Copy)]
@@ -92,15 +107,26 @@ pub fn repair_missing_media(
     db_path: &Path,
     options: RepairOptions,
     cancel: Arc<AtomicBool>,
-    mut on_event: impl FnMut(RepairEvent),
+    on_event: impl FnMut(RepairEvent),
 ) -> Result<RepairSummary> {
     let db = Database::open(db_path)
         .with_context(|| format!("failed to open database at {}", db_path.display()))?;
+    let client = SyndicationClient::new()?;
+    repair_missing_media_with(&db, &client, options, cancel, on_event)
+}
+
+/// The repair loop itself, independent of the database file and HTTP client.
+fn repair_missing_media_with(
+    db: &Database,
+    fetcher: &impl SyndicationFetch,
+    options: RepairOptions,
+    cancel: Arc<AtomicBool>,
+    mut on_event: impl FnMut(RepairEvent),
+) -> Result<RepairSummary> {
     let targets = db
         .bookmarks_missing_media(options.limit)
         .context("failed to list posts without media")?;
     let total = targets.len();
-    let client = SyndicationClient::new()?;
     let mut summary = RepairSummary {
         total,
         ..RepairSummary::default()
@@ -129,7 +155,7 @@ pub fn repair_missing_media(
             sleep_unless_cancelled(options.delay, &cancel);
             continue;
         };
-        match fetch_with_retry(&client, &tweet_id, &cancel) {
+        match fetch_with_retry(fetcher, &tweet_id, &cancel) {
             Ok(SyndicationOutcome::Unavailable) => {
                 summary.unavailable += 1;
                 if db.set_bookmark_unavailable(bookmark_id, true).is_err() {
@@ -139,12 +165,28 @@ pub fn repair_missing_media(
             Ok(SyndicationOutcome::Tweet(payload)) => {
                 match bookmark_from_payload(bookmark_id, tweet_url, payload.as_ref()) {
                     Some(bookmark) => {
-                        match db.enrich_bookmarks(&[bookmark]) {
-                            Ok(1) => summary.repaired += 1,
-                            Ok(_) => {}
+                        let enriched = db.enrich_bookmarks(&[bookmark]);
+                        // Clear a previous tombstone first: a resurrection resets
+                        // the checked flag, and this payload is the definitive
+                        // answer for the post either way.
+                        let _ = db.set_bookmark_unavailable(bookmark_id, false);
+                        match enriched {
+                            Ok(merged) => {
+                                if merged == 1 {
+                                    summary.repaired += 1;
+                                }
+                                // The post is checked even when the payload
+                                // carried no media: there is nothing left to
+                                // fetch for it, so a second pass must not queue
+                                // it again.
+                                if db.set_bookmark_metadata_checked(bookmark_id, true).is_err() {
+                                    summary.failed += 1;
+                                }
+                            }
+                            // A database error leaves the post unchecked so the
+                            // next pass retries it.
                             Err(_) => summary.failed += 1,
                         }
-                        let _ = db.set_bookmark_unavailable(bookmark_id, false);
                     }
                     None => summary.failed += 1,
                 }
@@ -160,24 +202,24 @@ pub fn repair_missing_media(
 }
 
 fn fetch_with_retry(
-    client: &SyndicationClient,
+    fetcher: &impl SyndicationFetch,
     tweet_id: &str,
     cancel: &AtomicBool,
-) -> Result<SyndicationOutcome, eterea_media::MediaError> {
+) -> Result<SyndicationOutcome, MediaError> {
     let mut attempt = 0;
     loop {
-        match client.fetch(tweet_id, cancel) {
+        match fetcher.fetch(tweet_id, cancel) {
             Ok(outcome) => return Ok(outcome),
             Err(error) => {
                 let retryable = matches!(
                     error,
-                    eterea_media::MediaError::HttpStatus(429)
-                        | eterea_media::MediaError::HttpStatus(500)
-                        | eterea_media::MediaError::HttpStatus(502)
-                        | eterea_media::MediaError::HttpStatus(503)
-                        | eterea_media::MediaError::HttpStatus(504)
-                        | eterea_media::MediaError::Timeout
-                        | eterea_media::MediaError::Connection
+                    MediaError::HttpStatus(429)
+                        | MediaError::HttpStatus(500)
+                        | MediaError::HttpStatus(502)
+                        | MediaError::HttpStatus(503)
+                        | MediaError::HttpStatus(504)
+                        | MediaError::Timeout
+                        | MediaError::Connection
                 );
                 attempt += 1;
                 if !retryable || attempt >= 3 || cancel.load(Ordering::Relaxed) {
@@ -185,7 +227,7 @@ fn fetch_with_retry(
                 }
                 sleep_unless_cancelled(Duration::from_secs(2 * attempt as u64), cancel);
                 if cancel.load(Ordering::Relaxed) {
-                    return Err(eterea_media::MediaError::Cancelled);
+                    return Err(MediaError::Cancelled);
                 }
             }
         }
@@ -544,5 +586,157 @@ mod tests {
         let mut payload = payload();
         payload.created_at = None;
         assert!(bookmark_from_payload("id", "https://x.com/w/status/1", &payload).is_none());
+    }
+
+    /// One sparse bookmark with no media; `/status/` ids must be 5+ digits so
+    /// `tweet_id_from_url` accepts them.
+    fn repair_bookmark(tweet_id: u32) -> Bookmark {
+        use chrono::TimeZone;
+        eterea_core::BookmarkBuilder::new()
+            .tweet_url(format!("https://x.com/repair/status/{tweet_id}"))
+            .content(format!("repair fixture {tweet_id}"))
+            .tweeted_at(Utc.with_ymd_and_hms(2026, 11, 16, 12, 0, 1).unwrap())
+            .author_handle("repair")
+            .author_name("Repair")
+            .build()
+            .unwrap()
+    }
+
+    /// Reuse the full payload builder for one fake embed response.
+    fn fake_tweet(tweet_id: &str, with_media: bool) -> SyndicationOutcome {
+        let mut payload = payload();
+        payload.id = tweet_id.to_string();
+        payload.quoted = None;
+        payload.links.clear();
+        if with_media {
+            payload.media.truncate(1);
+        } else {
+            payload.media.clear();
+        }
+        SyndicationOutcome::Tweet(Box::new(payload))
+    }
+
+    /// Offline [`SyndicationFetch`] keyed by tweet id, editable between runs.
+    struct FakeFetcher {
+        responses: std::sync::Mutex<
+            std::collections::HashMap<String, Result<SyndicationOutcome, MediaError>>,
+        >,
+    }
+
+    impl FakeFetcher {
+        fn new() -> Self {
+            Self {
+                responses: std::sync::Mutex::new(std::collections::HashMap::new()),
+            }
+        }
+
+        fn set(&self, tweet_id: &str, response: Result<SyndicationOutcome, MediaError>) {
+            self.responses
+                .lock()
+                .unwrap()
+                .insert(tweet_id.to_string(), response);
+        }
+    }
+
+    impl SyndicationFetch for FakeFetcher {
+        fn fetch(
+            &self,
+            tweet_id: &str,
+            _cancel: &AtomicBool,
+        ) -> Result<SyndicationOutcome, MediaError> {
+            match self.responses.lock().unwrap().get(tweet_id) {
+                Some(Ok(outcome)) => Ok(outcome.clone()),
+                Some(Err(error)) => Err(*error),
+                None => Err(MediaError::SyndicationResponse),
+            }
+        }
+    }
+
+    fn missing_media_ids(db: &Database) -> Vec<String> {
+        db.bookmarks_missing_media(usize::MAX)
+            .unwrap()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect()
+    }
+
+    #[test]
+    fn a_completed_repair_pass_does_not_requeue_checked_posts() {
+        let db = Database::open_memory().unwrap();
+        let bookmarks: Vec<Bookmark> = (10001..=10004).map(repair_bookmark).collect();
+        let ids: Vec<String> = bookmarks
+            .iter()
+            .map(|bookmark| bookmark.id.clone())
+            .collect();
+        db.insert_bookmarks(&bookmarks).unwrap();
+
+        let fetcher = FakeFetcher::new();
+        fetcher.set("10001", Ok(fake_tweet("10001", true)));
+        fetcher.set("10002", Ok(fake_tweet("10002", false)));
+        fetcher.set("10003", Ok(SyndicationOutcome::Unavailable));
+        // A non-retryable status keeps the offline test instant; any fetch
+        // error leaves the post unchecked and queued for the next pass, which
+        // is what this run asserts.
+        fetcher.set("10004", Err(MediaError::HttpStatus(404)));
+        let options = RepairOptions {
+            limit: usize::MAX,
+            delay: Duration::ZERO,
+        };
+        let cancel = Arc::new(AtomicBool::new(false));
+
+        let first = repair_missing_media_with(&db, &fetcher, options, cancel.clone(), |_| {})
+            .expect("repair pass should run");
+        assert_eq!(
+            (first.total, first.repaired, first.unavailable, first.failed),
+            (4, 2, 1, 1)
+        );
+        // The enriched post gained its media; the text-only payload never does.
+        assert_eq!(db.get_bookmark(&ids[0]).unwrap().unwrap().media.len(), 1);
+        // Only the fetch failure is still queued: the text-only payload and the
+        // tombstone both recorded a definitive answer.
+        assert_eq!(missing_media_ids(&db), vec![ids[3].clone()]);
+
+        let second = repair_missing_media_with(&db, &fetcher, options, cancel.clone(), |_| {})
+            .expect("second pass should run");
+        assert_eq!(
+            (
+                second.total,
+                second.repaired,
+                second.unavailable,
+                second.failed
+            ),
+            (1, 0, 0, 1)
+        );
+        assert_eq!(
+            missing_media_ids(&db),
+            vec![ids[3].clone()],
+            "a failed fetch stays queued for retry"
+        );
+
+        // The failed post now gets a text-only payload: definitive, checked.
+        fetcher.set("10004", Ok(fake_tweet("10004", false)));
+        let third = repair_missing_media_with(&db, &fetcher, options, cancel.clone(), |_| {})
+            .expect("third pass should run");
+        assert_eq!(
+            (third.total, third.repaired, third.unavailable, third.failed),
+            (1, 1, 0, 0)
+        );
+        assert!(missing_media_ids(&db).is_empty());
+        assert_eq!(db.count_bookmarks_missing_media().unwrap(), 0);
+
+        // The reported bug: once a pass completes, the same posts are not
+        // queued (or counted) again on the next run.
+        let fourth = repair_missing_media_with(&db, &fetcher, options, cancel, |_| {})
+            .expect("fourth pass should run");
+        assert_eq!(
+            (
+                fourth.total,
+                fourth.repaired,
+                fourth.unavailable,
+                fourth.failed
+            ),
+            (0, 0, 0, 0)
+        );
+        assert!(db.bookmarks_missing_media(usize::MAX).unwrap().is_empty());
     }
 }

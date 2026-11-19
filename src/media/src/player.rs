@@ -13,6 +13,15 @@
 //! local file in parallel. Pause, mute, loop, stop and volume changes are
 //! handled without ever letting a child process outlive the player.
 //!
+//! Sound and picture always share one media timeline. The offset handed to
+//! every new `ffplay` process is [`VideoPlayer::position`], and a loop restarts
+//! the decoder at the beginning of the file and resets that position together
+//! with the delivered-frame counter, so resuming or unmuting after a loop (or
+//! after a paused player was left alone) restarts sound at the same offset as
+//! the picture instead of the stale scrub origin. Leaving the video surface is
+//! the shell's responsibility: it stops the player so no background sound or
+//! stale frame can survive a navigation.
+//!
 //! A decoder that exits non-zero or produces no frames is a failure, not an
 //! end of stream: the player reports [`MediaError::DecodeFailed`] with a short
 //! diagnostic and stops. It never respawns a failed decoder, even when looping
@@ -485,7 +494,18 @@ impl VideoPlayer {
         self.control.looping.store(looping, Ordering::SeqCst);
     }
 
-    /// Approximate position within the file, derived from delivered frames.
+    /// Position within the file, derived from delivered frames.
+    ///
+    /// `seek_origin` is the media offset the current decoder run was started at
+    /// and [`Self::frames_delivered`] counts the frames delivered since then, so
+    /// this is the offset of the next frame and the media timeline of the
+    /// picture on screen (within one frame). Every audio restart — [`Self::play`],
+    /// [`Self::set_muted`], [`Self::set_volume`], the start of sound and loop
+    /// restarts — uses this value, which keeps sound and picture on the same
+    /// media offset. A loop restarts the decoder at the beginning of the file
+    /// and resets both counters (see the `Looped` event handling), so the
+    /// position is loop-relative afterwards instead of carrying the old seek
+    /// offset.
     pub fn position(&self) -> Duration {
         self.seek_origin + Duration::from_secs_f64(self.frames as f64 / PLAYBACK_FPS as f64)
     }
@@ -582,10 +602,20 @@ impl VideoPlayer {
                 }
                 Ok(PlaybackEvent::Looped { count }) => {
                     self.loop_count = count;
+                    // The worker restarts the decoder from the beginning of the
+                    // file on every loop (`seek = None`), so the timeline of the
+                    // frames it will deliver restarts at zero too. Reset the
+                    // seek origin together with the frame counter: `position()`
+                    // is the single source of truth for the picture offset and
+                    // for every audio restart (`play`, unmute, volume, loop). A
+                    // stale scrub origin here used to start sound ahead of the
+                    // picture by the original seek offset after the next
+                    // pause/resume or unmute.
+                    self.seek_origin = Duration::ZERO;
                     self.frames = 0;
                     if !self.muted {
                         self.audio.stop();
-                        if let Err(error) = self.audio.start(Duration::ZERO, self.volume) {
+                        if let Err(error) = self.audio.start(self.position(), self.volume) {
                             self.audio.set_error(&error);
                         }
                     }
@@ -1074,7 +1104,8 @@ pub(crate) fn parse_ffmpeg_duration(text: &str) -> Option<Duration> {
 #[cfg(test)]
 mod playback_tests {
     use super::{
-        parse_ffmpeg_duration, VideoPlayer, VideoPlayerOptions, PLAYBACK_HEIGHT, PLAYBACK_WIDTH,
+        parse_ffmpeg_duration, VideoPlayer, VideoPlayerOptions, PLAYBACK_FPS, PLAYBACK_HEIGHT,
+        PLAYBACK_WIDTH,
     };
     use crate::error::MediaError;
     use crate::test_support::{write_script, ScratchDir};
@@ -1116,6 +1147,92 @@ mod playback_tests {
     #[cfg(unix)]
     fn fake_sound_script(scratch: &ScratchDir) -> std::path::PathBuf {
         write_script(scratch.path(), "fake-ffplay", "#!/bin/sh\nexec sleep 30\n")
+    }
+
+    /// A fake `ffplay` that appends its argv (one invocation per line) to `log`
+    /// and then stays alive until the player kills it.
+    #[cfg(unix)]
+    fn logging_sound_script(scratch: &ScratchDir, log: &std::path::Path) -> std::path::PathBuf {
+        write_script(
+            scratch.path(),
+            "fake-ffplay-logging",
+            &format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"{}\"\nexec sleep 30\n",
+                log.display()
+            ),
+        )
+    }
+
+    /// Every fake-`ffplay` invocation logged so far, oldest first.
+    #[cfg(unix)]
+    fn audio_spawns(log: &std::path::Path) -> Vec<String> {
+        std::fs::read_to_string(log)
+            .map(|text| text.lines().map(str::to_owned).collect())
+            .unwrap_or_default()
+    }
+
+    /// The `-ss` offset passed to `ffplay`, `None` when sound starts at zero.
+    #[cfg(unix)]
+    fn audio_seek_offset(argv: &str) -> Option<f64> {
+        let parts: Vec<&str> = argv.split_whitespace().collect();
+        let index = parts.iter().position(|part| *part == "-ss")?;
+        parts.get(index + 1)?.parse().ok()
+    }
+
+    /// Poll until the player delivered at least `frames` frames.
+    #[cfg(unix)]
+    fn wait_for_frames(player: &mut VideoPlayer, frames: u64) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while player.frames_delivered() < frames && Instant::now() < deadline {
+            let _ = player.poll();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            player.frames_delivered() >= frames,
+            "decoder delivered {} frames, expected at least {frames} (error={:?})",
+            player.frames_delivered(),
+            player.error()
+        );
+    }
+
+    /// Poll until the player completed at least `loops` loops.
+    #[cfg(unix)]
+    fn wait_for_loops(player: &mut VideoPlayer, loops: u32) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while player.loop_count() < loops && Instant::now() < deadline {
+            let _ = player.poll();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            player.loop_count() >= loops,
+            "player looped {} times, expected at least {loops} (error={:?})",
+            player.loop_count(),
+            player.error()
+        );
+    }
+
+    /// Poll until the fake `ffplay` log has at least `spawns` invocations.
+    #[cfg(unix)]
+    fn wait_for_audio_spawns(
+        player: &mut VideoPlayer,
+        log: &std::path::Path,
+        spawns: usize,
+    ) -> Vec<String> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let logged = audio_spawns(log);
+            if logged.len() >= spawns || Instant::now() >= deadline {
+                assert!(
+                    logged.len() >= spawns,
+                    "expected {spawns} ffplay spawns, got {}: {logged:?} (error={:?})",
+                    logged.len(),
+                    player.error()
+                );
+                return logged;
+            }
+            let _ = player.poll();
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 
     #[cfg(unix)]
@@ -1567,6 +1684,153 @@ mod playback_tests {
         assert!(player.is_audio_active(), "sound restarts after a loop");
         player.stop();
         assert!(!player.is_audio_active());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resuming_paused_playback_restarts_sound_at_the_delivered_position() {
+        let _process = crate::test_support::process_test_lock();
+        let scratch = ScratchDir::new("player-audio-resume-offset");
+        let decoder = fake_decoder_script(&scratch, 120);
+        let log = scratch.path().join("ffplay-argv.log");
+        let sound = logging_sound_script(&scratch, &log);
+        let file = local_video(&scratch);
+        let options = VideoPlayerOptions::new()
+            .with_tools(MediaTools::from_paths(decoder, Some(sound)))
+            .with_probe_duration(false)
+            .with_muted(false);
+        let mut player = VideoPlayer::start_local_file(&file, options).expect("start");
+        wait_for_frames(&mut player, 30);
+        wait_for_audio_spawns(&mut player, &log, 1);
+
+        player.pause();
+        assert!(player.is_paused());
+        let paused_at = player.position();
+        assert!(
+            paused_at >= Duration::from_millis(900),
+            "pause must happen at a known non-zero position, got {paused_at:?}"
+        );
+        // Pausing stops draining events, so a player left paused must not drift:
+        // the position used for the resume is still the delivered position.
+        let frames = player.frames_delivered();
+        std::thread::sleep(Duration::from_millis(150));
+        let _ = player.poll();
+        assert_eq!(player.frames_delivered(), frames);
+        assert_eq!(player.position(), paused_at);
+
+        player.play().expect("resume");
+        let spawns = wait_for_audio_spawns(&mut player, &log, 2);
+        let seek = audio_seek_offset(&spawns[1]).unwrap_or(0.0);
+        let expected = paused_at.as_secs_f64();
+        assert!(
+            (seek - expected).abs() <= 0.1,
+            "resume must restart sound at the delivered position {expected:.3}s, \
+             but ffplay got -ss {seek:.3}: {:?}",
+            spawns[1]
+        );
+        player.stop();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn looping_keeps_audio_and_picture_on_one_loop_relative_timeline() {
+        let _process = crate::test_support::process_test_lock();
+        let scratch = ScratchDir::new("player-loop-seek-origin");
+        // 45 frames = 1.5 s per loop, so the whole test stays quick.
+        let decoder = fake_decoder_script(&scratch, 45);
+        let log = scratch.path().join("ffplay-argv.log");
+        let sound = logging_sound_script(&scratch, &log);
+        let file = local_video(&scratch);
+        let options = VideoPlayerOptions {
+            tools: Some(MediaTools::from_paths(decoder, Some(sound))),
+            probe_duration: false,
+            looping: true,
+            muted: false,
+            // Scrub into the file before a loop: this is the seek origin that
+            // used to be carried over the loop boundary.
+            start_at: Some(Duration::from_secs(2)),
+            ..VideoPlayerOptions::default()
+        };
+        let mut player = VideoPlayer::start_local_file(&file, options).expect("start");
+
+        // The first sound starts at the requested seek offset.
+        let spawns = wait_for_audio_spawns(&mut player, &log, 1);
+        let start_seek = audio_seek_offset(&spawns[0]).expect("seeked start passes -ss");
+        assert!(
+            (start_seek - 2.0).abs() <= 0.1,
+            "sound must start at the requested 2.000s offset, got -ss {start_seek:.3}"
+        );
+
+        // A loop restarts decoder and sound at the beginning of the file.
+        wait_for_loops(&mut player, 1);
+        let spawns = wait_for_audio_spawns(&mut player, &log, 2);
+        assert_eq!(
+            audio_seek_offset(&spawns[1]),
+            None,
+            "a loop restarts picture and sound at zero: {:?}",
+            spawns[1]
+        );
+
+        // The position after a loop must describe the new decoder run, not the
+        // stale scrub offset: audio and picture share one loop-relative
+        // timeline.
+        wait_for_frames(&mut player, 15);
+        player.pause();
+        let looped_at = player.position();
+        let expected =
+            Duration::from_secs_f64(player.frames_delivered() as f64 / f64::from(PLAYBACK_FPS));
+        assert!(
+            (looped_at.as_secs_f64() - expected.as_secs_f64()).abs() <= 0.05,
+            "after a loop the position must be loop-relative ({expected:?}), \
+             got {looped_at:?} (was the 2 s scrub offset carried over?)"
+        );
+
+        player.play().expect("resume");
+        let spawns = wait_for_audio_spawns(&mut player, &log, 3);
+        let seek = audio_seek_offset(&spawns[2]).unwrap_or(0.0);
+        assert!(
+            (seek - looped_at.as_secs_f64()).abs() <= 0.1,
+            "resuming after a loop must restart sound at the loop-relative \
+             {:.3}s, got -ss {seek:.3}: {:?}",
+            looped_at.as_secs_f64(),
+            spawns[2]
+        );
+        player.stop();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unmuting_after_a_loop_uses_the_loop_relative_position() {
+        let _process = crate::test_support::process_test_lock();
+        let scratch = ScratchDir::new("player-loop-unmute-offset");
+        let decoder = fake_decoder_script(&scratch, 45);
+        let log = scratch.path().join("ffplay-argv.log");
+        let sound = logging_sound_script(&scratch, &log);
+        let file = local_video(&scratch);
+        let options = VideoPlayerOptions {
+            tools: Some(MediaTools::from_paths(decoder, Some(sound))),
+            probe_duration: false,
+            looping: true,
+            muted: true,
+            start_at: Some(Duration::from_secs(2)),
+            ..VideoPlayerOptions::default()
+        };
+        let mut player = VideoPlayer::start_local_file(&file, options).expect("start");
+        wait_for_loops(&mut player, 1);
+        wait_for_frames(&mut player, 15);
+        let frames_in_loop = player.frames_delivered();
+
+        player.set_muted(false).expect("unmute");
+        let spawns = wait_for_audio_spawns(&mut player, &log, 1);
+        let seek = audio_seek_offset(&spawns[0]).unwrap_or(0.0);
+        let expected = frames_in_loop as f64 / f64::from(PLAYBACK_FPS);
+        assert!(
+            (seek - expected).abs() <= 0.1,
+            "unmuting after a loop must start sound at the loop-relative \
+             {expected:.3}s, got -ss {seek:.3}: {:?}",
+            spawns[0]
+        );
+        player.stop();
     }
 
     #[test]

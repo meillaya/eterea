@@ -147,7 +147,9 @@ The archive lives at `<platform data dir>/eterea/bookmarks.db`. On Linux that is
   Tweet and quote URLs are removed from the reading surface; external links keep
   their display URL and quotes show as cards.
 - Plays progressive MP4 video from the persistent cache with `ffmpeg`, with
-  `ffplay` audio when unmuted. Sound starts off; `m` toggles it.
+  `ffplay` audio when unmuted. Sound starts off; `m` toggles it. Sound and
+  picture stay on one timeline across pause, resume and loops, and leaving the
+  video (back to the feed, closing the lightbox, another post) stops both.
 - Edits tags and deletes posts from the viewer. Marks read or unread, selects a
   page or the whole matching archive, and applies tags, deletion, read or unread
   to the selection.
@@ -159,7 +161,9 @@ The archive lives at `<platform data dir>/eterea/bookmarks.db`. On Linux that is
   name/avatar). Opt-in via the `repair media` palette command; the footer shows
   a slim progress bar, `cancel` (or the palette's `cancel repair`) stops it, and
   `esc` keeps doing normal navigation. Deleted and protected posts are skipped,
-  and media bytes still fill the normal cache when shown.
+  media bytes still fill the normal cache when shown, and the pass remembers the
+  posts it has checked (schema v8): running it again visits only unchecked posts
+  and reports "nothing to repair" when there are none.
 - Exports the archive, the current filter or the selection as CSV or JSON, with
   round-trippable nested data.
 - Keeps quotes, favorites, media metadata, an interactive tag graph with persisted

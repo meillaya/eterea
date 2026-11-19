@@ -6,7 +6,7 @@ use crate::{Error, Result};
 use rusqlite::types::ValueRef;
 use tracing::debug;
 
-pub const CURRENT_SCHEMA_USER_VERSION: i64 = 7;
+pub const CURRENT_SCHEMA_USER_VERSION: i64 = 8;
 
 /// Pre-v3 FTS external-content document table. The name ended with `_content`,
 /// which is an FTS5 shadow-table suffix for the `bookmarks_fts` virtual table;
@@ -25,6 +25,10 @@ const BOOKMARK_V6_COLUMNS: &[(&str, &str)] = &[("conversation_id", "TEXT")];
 
 /// Schema v7: availability flag for deleted posts/deactivated accounts.
 const BOOKMARK_V7_COLUMNS: &[(&str, &str)] = &[("unavailable", "INTEGER NOT NULL DEFAULT 0")];
+
+/// Schema v8: durable "the opt-in metadata repair already checked this post"
+/// flag, so a completed pass does not queue the same posts again.
+const BOOKMARK_V8_COLUMNS: &[(&str, &str)] = &[("metadata_checked", "INTEGER NOT NULL DEFAULT 0")];
 
 const MEDIA_METADATA_COLUMNS: &[(&str, &str)] = &[
     ("alt_text", "TEXT"),
@@ -58,6 +62,7 @@ impl Database {
             self.ensure_bookmark_v2_columns()?;
             self.ensure_bookmark_v6_columns()?;
             self.ensure_bookmark_v7_columns()?;
+            self.ensure_bookmark_v8_columns()?;
 
             // Repair any earlier development quote-table shape before `SCHEMA`
             // creates the quote indexes that reference those columns.
@@ -267,6 +272,34 @@ impl Database {
                     format!("ALTER TABLE bookmarks ADD COLUMN {column_name} {column_definition}");
                 self.conn.execute(&statement, [])?;
             }
+        }
+        Ok(())
+    }
+
+    /// Add the schema-v8 metadata-checked flag to an existing database.
+    ///
+    /// Posts already known to be gone have nothing left to repair, so when the
+    /// column is newly added the known-tombstoned rows start checked and are not
+    /// re-fetched by the next media repair pass. A fresh database gets the
+    /// column from `SCHEMA` instead, and reopening a stamped database is a no-op.
+    fn ensure_bookmark_v8_columns(&self) -> Result<()> {
+        if !self.table_exists("bookmarks")? {
+            return Ok(());
+        }
+        let mut added = false;
+        for (column_name, column_definition) in BOOKMARK_V8_COLUMNS {
+            if !self.bookmarks_column_exists(column_name)? {
+                let statement =
+                    format!("ALTER TABLE bookmarks ADD COLUMN {column_name} {column_definition}");
+                self.conn.execute(&statement, [])?;
+                added = true;
+            }
+        }
+        if added {
+            self.conn.execute(
+                "UPDATE bookmarks SET metadata_checked = 1 WHERE unavailable = 1",
+                [],
+            )?;
         }
         Ok(())
     }

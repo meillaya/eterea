@@ -6,6 +6,24 @@ has actually been captured.
 
 ## Unreleased
 
+- Video playback now stops cleanly when the video's surface is left: mouse back
+  or Esc out of detail, closing or paging the lightbox, switching posts, filters
+  or routes no longer leaves a paused player, its sound and a stale frame behind
+  on the feed. Audio restarts at the same offset as the picture after
+  pause/resume, unmute and loops: a loop resets the player timeline, so the old
+  scrub offset no longer pushes sound ahead of the picture. Deterministic
+  fake-`ffplay` tests cover the resume and loop offsets, and shell state tests
+  cover the stop-on-leave paths. Harness: 130/130 strict (tree 129/130;
+  feed-return is pixel-only), goldens unchanged; `cargo test --workspace` green.
+- Metadata repair now remembers what it has already checked: schema v8 adds a
+  per-post `metadata_checked` flag that the opt-in `repair media` pass sets once
+  it has fetched a post's payload (including text-only posts the embed payload
+  has no media for) or learned the post is gone, and only unchecked posts with no
+  media are queued next time. Transient transport or mapping failures leave the
+  flag clear so they are retried, known-gone posts are not re-fetched until an
+  availability success clears them, and an empty queue now reports "nothing to
+  repair" instead of showing a full progress bar again. Existing archives get one
+  catch-up pass after the migration.
 - Deleting posts now updates the graph and calendar immediately instead of
   leaving the old snapshots on screen until the next launch. Every delete, bulk
   delete, undo, import, trash restore and tag edit drops the cached tag-graph and
