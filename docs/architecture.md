@@ -56,8 +56,12 @@ preserved, and the migration is a no-op on reopen.
 
 The media crate resolves best progressive MP4 variants, stores played videos in
 a bounded content-addressed cache, and spawns external `ffmpeg`/`ffplay` for
-frames and audio. Image workers use the same cache directory for image bytes.
-The desktop never stores media bytes in SQLite and never sends a remote URL to
+frames and audio. Image workers use the same cache directory for raw image
+bytes. The desktop shell decodes photos at their on-screen size (static
+JPEG/PNG/WebP; animated GIF/WebP/APNG stay encoded for Rune), keeps the decoded
+pixels under a byte budget that evicts least-recently-used off-screen images,
+and requests only what the mounted rows and the lightbox actually show. The
+desktop never stores media bytes in SQLite and never sends a remote URL to
 ffmpeg/ffplay. URL entities are imported with the bookmark so the reader can
 suppress own/quote tweet links, render external display URLs and show honest
 quote cards.

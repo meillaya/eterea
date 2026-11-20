@@ -16,7 +16,11 @@ same actions.
   rather than a demo cap. Author and topic lists filter and page the same way,
   with an inline filter field (`/` while the list is open).
 - Loads avatars and media automatically for the visible archive, at the best
-  rendition, through a bounded disk cache. Portraits resolve per account: the
+  rendition, and decodes photos at their on-screen size instead of full
+  resolution. A byte budget keeps the decoded working set bounded while
+  scrolling (the lightbox asks for original pixels only when zoomed in), so a
+  long session stays flat instead of pinning every image it has ever shown.
+  Portraits resolve per account: the
   newest known avatar is shown everywhere, with older renditions as fallbacks
   when X has deleted the current one. Images and video files are cached
   outside SQLite; the cache can be measured and cleared in settings. The media

@@ -6,6 +6,23 @@ has actually been captured.
 
 ## Unreleased
 
+- Media and long-list memory is now bounded without changing the reading
+  surface. Decoded images live in a byte-budgeted LRU cache (default 192 MiB,
+  evicting off-screen images and dropping their request bookkeeping), are
+  requested only for the rows and lightbox the view actually shows, and static
+  JPEG/PNG/WebP photos are decoded at their drawn size (aspect-aware for
+  crop-to-fill tiles; the lightbox asks for original pixels only when zoomed
+  past fit). Animated GIF/WebP/APNG stay encoded for Rune's decoder. The feed,
+  authors and topics lists are virtualised, so a deep scroll lays out mounted
+  rows only, and detail→back keeps its anchored position. Release-build
+  measurements on the reference host (`docs/performance.md`): archive
+  auto-media first screen RSS 436 → 271 MiB, decoded-image cache capped at
+  191.8 MiB with 987 evictions under the stress rows, a 5,000-row demo feed
+  within 1.3% of the 8-row demo RSS, the decoded-image cache clears to zero (265 MiB process RSS on the measured stress row), headless
+  frame p50 11.12 → 9.43 ms and deep-scroll layout nodes 1887 → 284.
+  The 130-case UI harness keeps 130/130 identical images; tree goldens were
+  refreshed because virtualised lists expose mounted rows (not off-screen
+  rows) to the accessibility tree.
 - Video playback now stops cleanly when the video's surface is left: mouse back
   or Esc out of detail, closing or paging the lightbox, switching posts, filters
   or routes no longer leaves a paused player, its sound and a stale frame behind

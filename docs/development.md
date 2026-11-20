@@ -78,8 +78,12 @@ user settings:
 | `ETEREA_DEMO=1` | Use the local eight-post deck and bundle assets; no database or network. |
 | `ETEREA_ROUTE=feed\|authors\|topics\|graph\|calendar\|import\|settings\|detail` | Start on a route. |
 | `ETEREA_SELECTED=N` | Select a feed index after the first page loads. |
-| `ETEREA_LOAD_MEDIA=1` | Load every post's media after the feed arrives. |
 | `ETEREA_PLAY=1` | Start the selected post's video after the feed arrives. |
+| `ETEREA_MEMORY_LOG=1` | Print `eterea: memory image_cache_bytes=… image_cache_slots=… image_cache_pending=… image_cache_evictions=…` to stderr about once a second. |
+| `ETEREA_IMAGE_BUDGET_MB=N` | Override the decoded-image budget (default 192 MiB, clamped 16–1024). |
+| `ETEREA_DEMO_STRESS_ROWS=N` | With `ETEREA_DEMO=1`, repeat the demo deck N times; `ETEREA_DEMO_STRESS_MEDIA=1` also gives every row unique media/avatar keys mapped to the same bundled assets. Test-only memory-harness switches. |
+| `ETEREA_STRESS_SCROLL_TO=N` | Walk the feed selection to row N one step per 100 ms, loading pages, so a windowed memory run has a deterministic deep scroll. |
+| `ETEREA_TEST_CLEAR_CACHE_AT=SECONDS` | Run the Settings "clear cache" action once at that app-clock time, so the memory harness can measure recovery. |
 | `ETEREA_IMPORT=PATH` | Preview a file without opening the picker. |
 | `ETEREA_DB=PATH` | Open a specific SQLite database instead of the platform default. |
 | `ETEREA_CONFIG_DIR=PATH` | Keep `settings.json` in a test directory. |
