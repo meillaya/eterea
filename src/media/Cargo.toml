@@ -13,5 +13,6 @@ path = "src/lib.rs"
 anyhow = "1.0"
 crossbeam-channel = "0.5"
 eterea-logic = { path = "../logic" }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 serde_json = "1"
 ureq = { version = "3", default-features = false, features = ["rustls"] }

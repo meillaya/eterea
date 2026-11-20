@@ -62,7 +62,7 @@
           # crate that appears both on crates.io and from a git source
           # (`tiny-skia-path` 0.11.4 comes from the Rune patch), so building its
           # vendored-deps derivation fails with a symlink permission error.
-          cargoHash = "sha256-XyVv8iJo72macB+n4dvMFJDTN0LWhf0CjijfS928Yws=";
+          cargoHash = "sha256-NznMiWl6p/ciulVKxejkxrEsBqhX42pdtuMPCqLlisA=";
           nativeBuildInputs = with pkgs; [ pkg-config makeWrapper autoAddDriverRunpath ];
           buildInputs = with pkgs; [ sqlite ffmpeg ]
             ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux linuxBuildInputs;

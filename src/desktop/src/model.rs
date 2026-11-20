@@ -248,13 +248,17 @@ pub fn demo_posts() -> Vec<Post> {
 }
 
 pub fn demo_asset(key: &str) -> Option<String> {
-    key.strip_prefix("demo:").map(|name| {
+    let name = key.strip_prefix("demo:")?;
+    // Stress runs append a fragment to make image keys unique while mapping
+    // back to the same bundled asset.
+    let name = name.split('#').next().unwrap_or(name);
+    Some(
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("assets/demo")
             .join(name)
             .to_string_lossy()
-            .into_owned()
-    })
+            .into_owned(),
+    )
 }
 
 fn demo_specs() -> Vec<DemoSpec> {

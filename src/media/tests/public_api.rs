@@ -138,6 +138,57 @@ fn image_event_debug_is_compact() {
     assert_eq!(request.id, RequestId(1));
 }
 
+#[test]
+fn display_target_and_payload_are_part_of_the_public_surface() {
+    let request = eterea_media::ImageRequest::new(
+        1_u64,
+        "https://pbs.twimg.com/media/a.jpg",
+        ImageKind::Image,
+    )
+    .with_target(720);
+    assert_eq!(request.target, Some(720));
+    let full_size = request.clone().with_optional_target(None);
+    assert_eq!(full_size.target, None);
+
+    let rgba = eterea_media::ImagePayload::Rgba {
+        width: 4,
+        height: 2,
+        bytes: vec![7; 32],
+    };
+    assert_eq!(rgba.bytes().len(), 32);
+    assert_eq!(rgba.estimated_decoded_bytes(), 32);
+    assert!(!rgba.is_encoded());
+    let debug = format!("{rgba:?}");
+    assert!(debug.contains("bytes_len: 32"));
+    assert!(!debug.contains("[7, 7, 7]"));
+
+    let encoded = eterea_media::ImagePayload::Encoded {
+        bytes: vec![1, 2, 3],
+        estimated_decoded_bytes: 4096,
+    };
+    assert!(encoded.is_encoded());
+    assert_eq!(encoded.bytes(), &[1, 2, 3]);
+    assert_eq!(encoded.estimated_decoded_bytes(), 4096);
+}
+
+#[test]
+fn manager_rejects_unsafe_full_requests_without_network() {
+    let manager = MediaManager::new(MediaManagerConfig {
+        worker_count: 1,
+        ..MediaManagerConfig::default()
+    })
+    .expect("manager");
+    let request = eterea_media::ImageRequest::new(
+        RequestId::new(9),
+        "https://127.0.0.1/a.jpg",
+        ImageKind::Poster,
+    )
+    .with_target(64);
+    assert_eq!(manager.enqueue_image(request), Err(MediaError::UnsafeUrl));
+    assert_eq!(manager.pending(), 0);
+    assert_eq!(manager.try_recv(), None);
+}
+
 // ---------------------------------------------------------------------------
 // Media v2 public surface: tools discovery, persistent video cache, playback.
 // Everything here is network-free: policy failures and cancellation happen

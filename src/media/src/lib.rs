@@ -15,6 +15,15 @@
 //! cancelled by id; once [`MediaManager::cancel`] returns `true`, no event for
 //! that request is emitted.
 //!
+//! An image is delivered as an [`ImagePayload`]. When the request carries a
+//! display target ([`ImageRequest::target`]), a static JPEG/PNG/WebP that is
+//! larger than the target is decoded and resized in the worker and delivered as
+//! straight-alpha RGBA pixels, so the shell does not hold full-resolution
+//! decoded images. Animated images (GIF, APNG, animated WebP), unsupported
+//! formats, missing targets and payloads that cannot be resized stay encoded;
+//! those carry a conservative decoded-footprint estimate so the caller can
+//! budget its own decoder. The disk cache always keeps the raw encoded bytes.
+//!
 //! HTTP goes through `ureq` with rustls, no cookie jar (the crate is compiled
 //! without the `cookies` feature), no `Referer` header, a stable user agent, a
 //! 20 second timeout, a 32 MiB image response cap, and at most four validated
@@ -66,6 +75,7 @@ mod cache;
 mod digest;
 mod error;
 mod http;
+mod image_decode;
 mod manager;
 mod player;
 mod request;
@@ -85,7 +95,7 @@ pub use player::{
     PlaybackState, VideoFrame, VideoPlayer, VideoPlayerOptions, PLAYBACK_FPS, PLAYBACK_HEIGHT,
     PLAYBACK_WIDTH,
 };
-pub use request::{ImageKind, ImageRequest, ImageSource, MediaEvent, RequestId};
+pub use request::{ImageKind, ImagePayload, ImageRequest, ImageSource, MediaEvent, RequestId};
 pub use syndication::{
     embed_token, endpoint_url, parse_tweet_payload, tweet_id_from_url, SyndicatedAuthor,
     SyndicatedLink, SyndicatedMedia, SyndicatedMediaKind, SyndicatedQuote, SyndicatedTweet,

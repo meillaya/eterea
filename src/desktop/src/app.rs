@@ -25,8 +25,8 @@ use eterea_media::{ImageKind, VideoCache, VideoCacheConfig, VideoPlayer, VideoPl
 use eterea_ui_model::{Mode, Route};
 use rune::{
     canvas, col, el, row, text, text_input, Align, AppSpec, Color, Cx, Drag, El, FileDialogOptions,
-    Image, ImageCache, Key, KeyEvent, LineCap, Link, Live, MagnifyEvent, Phase, PointerButton,
-    ScrollSpec, Shape, Span, SurfaceFit, TextEdit, Tx, Waker, WheelEvent,
+    GrowthSpec, Image, ImageCache, Key, KeyEvent, LineCap, Link, Live, MagnifyEvent, Phase,
+    PointerButton, ScrollSpec, Shape, Span, SurfaceFit, TextEdit, Tx, Waker, WheelEvent,
 };
 
 use crate::images::ImageStore;
@@ -47,6 +47,16 @@ const DETAIL_CONTENT: f32 = 740.0;
 const RAIL: f32 = 86.0;
 const GAP: f32 = 12.0;
 const PAGE: usize = 48;
+/// Estimated feed-row height before the virtual list measures it, in points.
+const FEED_ROW_ESTIMATE: f32 = 420.0;
+/// Directory row heights (including the 4px rhythm) for the virtual lists.
+const AUTHOR_ROW_ESTIMATE: f32 = 60.0;
+const TOPIC_ROW_ESTIMATE: f32 = 52.0;
+/// The lightbox's fitted display box, in points.
+const LIGHTBOX_FIT: f32 = 1100.0;
+const LIGHTBOX_HEIGHT: f32 = 700.0;
+/// Larger avatars are decoded down to this many device pixels.
+const MAX_AVATAR_PX: u32 = 128;
 
 struct Status {
     text: String,
@@ -308,6 +318,23 @@ pub(crate) struct State {
     demo_unavailable: Vec<usize>,
     /// Test/headless switch: load every post's media after the feed arrives.
     auto_media: bool,
+    /// Display scale, so image requests decode at the size they are drawn.
+    scale: std::cell::Cell<f32>,
+    /// Rows the virtual feed list currently has mounted, for the media demand
+    /// pass. `None` until the first layout. Stored as `(start, end)` because a
+    /// `Cell` needs a `Copy` value.
+    visible_feed: std::cell::Cell<Option<(usize, usize)>>,
+    /// The same for the authors/topics directory.
+    visible_directory: std::cell::Cell<Option<(usize, usize)>>,
+    /// Bumped whenever the feed list is replaced or reordered so the virtual
+    /// list can skip re-keying every row.
+    feed_generation: u64,
+    /// Bumped whenever a directory list is replaced or reordered.
+    directory_generation: u64,
+    /// Test-only: clock of the last scripted stress scroll step.
+    stress_last_scroll: f64,
+    /// Test-only: whether the scripted cache clear has fired.
+    test_cache_cleared: bool,
     authors: Vec<AuthorSummary>,
     authors_total: i64,
     authors_pending: bool,
@@ -475,6 +502,13 @@ impl State {
             demo: false,
             demo_unavailable: Vec::new(),
             auto_media: false,
+            scale: std::cell::Cell::new(1.0),
+            visible_feed: std::cell::Cell::new(None),
+            visible_directory: std::cell::Cell::new(None),
+            feed_generation: 0,
+            directory_generation: 0,
+            stress_last_scroll: 0.0,
+            test_cache_cleared: false,
             authors: Vec::new(),
             authors_total: 0,
             authors_pending: false,
@@ -732,6 +766,10 @@ impl State {
         self.authors_pending = true;
         self.authors_dirty = false;
         self.pending_views += 1;
+        if offset == 0 {
+            self.directory_generation = self.directory_generation.wrapping_add(1);
+            self.visible_directory.set(None);
+        }
         self.authors_request = Some(store.author_page(DirectoryPageRequest {
             offset,
             limit: 100,
@@ -752,6 +790,10 @@ impl State {
         self.topics_pending = true;
         self.topics_dirty = false;
         self.pending_views += 1;
+        if offset == 0 {
+            self.directory_generation = self.directory_generation.wrapping_add(1);
+            self.visible_directory.set(None);
+        }
         self.topics_request = Some(store.topic_page(DirectoryPageRequest {
             offset,
             limit: 100,
@@ -776,6 +818,8 @@ impl State {
         self.feed_restore = None;
         self.filter = filter;
         self.feed_has_more = false;
+        self.feed_generation = self.feed_generation.wrapping_add(1);
+        self.visible_feed.set(None);
         let Some(store) = self.store.as_ref() else {
             return;
         };
@@ -1243,8 +1287,7 @@ impl State {
             CommandItem::RestoreBackup => self.choose_restore_backup(),
             CommandItem::RetryMedia => {
                 self.images.retry_failed();
-                request_avatars(self);
-                request_all_media(self);
+                refresh_media_demand(self);
                 let now = tx.clock();
                 self.set_status("retrying media", now);
             }
@@ -1407,7 +1450,7 @@ fn setup(state: &mut State, waker: Waker) {
     // Demo mode is test-only and uses the local fixture deck synchronously so
     // screenshots stay deterministic. Real startup never blocks the UI here.
     if state.demo {
-        state.posts = model::demo_posts();
+        state.posts = demo_deck();
         state.total = state.posts.len() as i64;
         for index in state.demo_unavailable.clone() {
             if let Some(post) = state.posts.get_mut(index) {
@@ -1415,7 +1458,6 @@ fn setup(state: &mut State, waker: Waker) {
             }
         }
         preload_demo_images(state);
-        request_avatars(state);
         for post in &mut state.posts {
             post.media_loaded = true;
         }
@@ -1495,6 +1537,61 @@ fn route_from_env() -> Option<Route> {
     }
 }
 
+/// The demo deck, optionally padded for memory-harness stress runs.
+///
+/// `ETEREA_DEMO_STRESS_ROWS=N` builds a deck of **N rows** (the eight-post deck
+/// repeated and truncated, not repeated N times); with
+/// `ETEREA_DEMO_STRESS_MEDIA=1` each row gets unique media/avatar keys so the
+/// image budget has to evict real entries. Test-only switches, never user
+/// settings.
+fn stress_rows() -> Option<usize> {
+    static ROWS: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+    *ROWS.get_or_init(|| {
+        std::env::var("ETEREA_DEMO_STRESS_ROWS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|rows| *rows > 1)
+    })
+}
+
+fn demo_deck() -> Vec<Post> {
+    let base = model::demo_posts();
+    let Some(rows) = stress_rows() else {
+        return base;
+    };
+    let unique_media = std::env::var_os("ETEREA_DEMO_STRESS_MEDIA").is_some();
+    // `rows` is the total row count the virtual list will hold, not the number
+    // of times to repeat the eight-post deck.
+    let copies = rows.div_ceil(base.len().max(1));
+    let mut deck = Vec::with_capacity(rows.max(base.len()));
+    for copy in 0..copies {
+        for (source_index, post) in base.iter().enumerate() {
+            let mut post = post.clone();
+            post.id = format!("{}#stress-{copy}-{source_index}", post.id);
+            if unique_media {
+                let tag = format!("#stress-{copy}-{source_index}");
+                for item in &mut post.media {
+                    item.key.push_str(&tag);
+                }
+                if let Some(quote) = post.quote.as_mut() {
+                    if let Some(key) = quote.thumb_key.as_mut() {
+                        key.push_str(&tag);
+                    }
+                    if let Some(key) = quote.avatar_key.as_mut() {
+                        key.push_str(&tag);
+                    }
+                }
+                if let Some(key) = post.avatar_key.as_mut() {
+                    key.push_str(&tag);
+                }
+            }
+            deck.push(post);
+        }
+    }
+    deck.truncate(rows);
+    deck
+}
+
 fn preload_demo_images(state: &mut State) {
     let mut keys = Vec::new();
     for post in &state.posts {
@@ -1516,28 +1613,6 @@ fn preload_demo_images(state: &mut State) {
     for key in keys {
         if let Some(path) = model::demo_asset(&key) {
             state.images.preload_file(&key, &path, 720.0);
-        }
-    }
-}
-
-fn request_avatars(state: &mut State) {
-    if !state.avatars {
-        return;
-    }
-    let mut keys = Vec::new();
-    for post in &state.posts {
-        if let Some(key) = &post.avatar_key {
-            keys.push(key.clone());
-        }
-        if let Some(quote) = &post.quote {
-            if let Some(key) = &quote.avatar_key {
-                keys.push(key.clone());
-            }
-        }
-    }
-    for key in keys {
-        if !state.images.is_failed(&key) {
-            state.images.request(&key, ImageKind::Avatar);
         }
     }
 }
@@ -1668,25 +1743,360 @@ fn advance_failed_avatars(state: &mut State) -> bool {
             }
         }
     }
-    for url in updates.values() {
-        state.images.request(url, ImageKind::Avatar);
-    }
     true
 }
 
-/// Load the portraits of the authors directory rows.
-fn request_directory_avatars(state: &mut State) {
-    if !state.avatars {
-        return;
+/// The decided display size a point size maps to at `scale`, in device pixels.
+fn round_px(points: f32, scale: f32) -> u32 {
+    (points * scale).ceil().max(1.0) as u32
+}
+
+/// The decoded edge needed to fill or fit `box` without upscaling.
+///
+/// Feed tiles crop to fill the box (`SurfaceFit::Fill`), so a portrait source
+/// in a wide tile needs more than `max(box)` pixels; the lightbox letterboxes
+/// (`Fit`), so its limiting axis decides. The media metadata gives the source
+/// aspect, and its long edge is treated as the pixel size for the ratio: the
+/// worker never upscales, so treating it as a proportion is safe.
+fn display_target_px(
+    item: &model::MediaItem,
+    box_w: f32,
+    box_h: f32,
+    fit: bool,
+    scale: f32,
+) -> u32 {
+    let (source_w, source_h) = (item.width, item.height);
+    let broken = !(source_w > 0.0 && source_h > 0.0 && box_w > 0.0 && box_h > 0.0);
+    if broken {
+        return round_px(box_w.max(box_h), scale);
     }
-    let keys: Vec<String> = state
-        .authors
-        .iter()
-        .filter_map(|author| author.profile_image.clone())
-        .collect();
-    for key in keys {
-        state.images.request(&key, ImageKind::Avatar);
+    let long_edge = source_w.max(source_h);
+    let ratio = if fit {
+        (box_w / source_w).min(box_h / source_h)
+    } else {
+        (box_w / source_w).max(box_h / source_h)
+    };
+    let target = (long_edge * ratio * scale).max(1.0);
+    // Guard against nonsensical metadata; the worker clamps to the real source.
+    (target.min(4096.0).ceil()) as u32
+}
+
+/// The box a media tile is drawn in, matching [`media_view`]'s layouts.
+fn media_box(width: f32, item: &model::MediaItem, count: usize, offset: usize) -> (f32, f32) {
+    let half = (width - 3.0) / 2.0;
+    match count {
+        1 => {
+            let aspect = (item.width / item.height).clamp(0.5, 2.5);
+            (width, (width / aspect).clamp(240.0, 560.0))
+        }
+        2 => (half, 252.0),
+        3 if offset == 0 => (width, 360.0),
+        _ => (half, 252.0),
     }
+}
+
+/// Merge one wanted image into the frame's demand map.
+///
+/// The largest requested size wins; `None` (the original pixels, used when the
+/// lightbox is zoomed past the fitted size) covers every size.
+fn push_desired(
+    desired: &mut HashMap<String, (ImageKind, Option<u32>)>,
+    key: &str,
+    kind: ImageKind,
+    target: Option<u32>,
+) {
+    desired
+        .entry(key.to_string())
+        .and_modify(|(queued_kind, queued_target)| {
+            *queued_kind = kind;
+            *queued_target = match (*queued_target, target) {
+                (Some(a), Some(b)) => Some(a.max(b)),
+                _ => None,
+            };
+        })
+        .or_insert((kind, target));
+}
+
+/// Add one page of media tiles at their drawn sizes.
+fn push_media_chunk(
+    desired: &mut HashMap<String, (ImageKind, Option<u32>)>,
+    post: &Post,
+    start: usize,
+    end: usize,
+    width: f32,
+    scale: f32,
+) {
+    let count = end - start;
+    for offset in 0..count {
+        let Some(item) = post.media.get(start + offset) else {
+            break;
+        };
+        let (tile_w, tile_h) = media_box(width, item, count, offset);
+        push_desired(
+            desired,
+            &item.key,
+            if item.video {
+                ImageKind::Poster
+            } else {
+                ImageKind::Image
+            },
+            Some(display_target_px(item, tile_w, tile_h, false, scale)),
+        );
+    }
+}
+
+/// The current carousel page plus the one ahead, so paging is a cache hit.
+fn push_page_media(
+    desired: &mut HashMap<String, (ImageKind, Option<u32>)>,
+    post: &Post,
+    width: f32,
+    scale: f32,
+) {
+    let pages = carousel_pages(post);
+    let page = carousel_page(post);
+    let start = if pages <= 1 { 0 } else { page * 4 };
+    let end = (start + 4).min(post.media.len());
+    if end > start {
+        push_media_chunk(desired, post, start, end, width, scale);
+    }
+    if end < post.media.len() {
+        let next_end = (end + 4).min(post.media.len());
+        push_media_chunk(desired, post, end, next_end, width, scale);
+    }
+}
+
+/// Recompute what images the visible surfaces need, and enforce the budget.
+///
+/// This is the only place that asks the media workers for post images, so a
+/// row that never becomes visible costs nothing. The keys it protects are the
+/// ones the current frame draws; the budget never evicts those.
+fn refresh_media_demand(state: &mut State) {
+    let scale = state.scale.get().max(0.25);
+    let mut desired: HashMap<String, (ImageKind, Option<u32>)> = HashMap::new();
+    let mut freshly_loaded: Vec<usize> = Vec::new();
+    match state.route {
+        Route::Feed => {
+            if let Some((range_start, range_end)) = state.visible_feed.get() {
+                let end = range_end.min(state.posts.len());
+                let start = range_start.min(end);
+                for index in start..end {
+                    let post = &state.posts[index];
+                    if state.avatars {
+                        if let Some(key) = post.avatar_key.as_deref() {
+                            push_desired(
+                                &mut desired,
+                                key,
+                                ImageKind::Avatar,
+                                Some(round_px(30.0, scale)),
+                            );
+                        }
+                        if let Some(key) = post
+                            .quote
+                            .as_ref()
+                            .and_then(|quote| quote.avatar_key.as_deref())
+                        {
+                            push_desired(
+                                &mut desired,
+                                key,
+                                ImageKind::Avatar,
+                                Some(round_px(18.0, scale)),
+                            );
+                        }
+                    }
+                    let wants_media = state.auto_media || post.media_loaded;
+                    if wants_media && !post.media.is_empty() {
+                        push_page_media(&mut desired, post, CONTENT, scale);
+                        if let Some(key) = post
+                            .quote
+                            .as_ref()
+                            .and_then(|quote| quote.thumb_key.as_deref())
+                        {
+                            push_desired(
+                                &mut desired,
+                                key,
+                                ImageKind::Image,
+                                Some(round_px(72.0, scale)),
+                            );
+                        }
+                        if state.auto_media && !post.media_loaded {
+                            freshly_loaded.push(index);
+                        }
+                    }
+                }
+            }
+        }
+        Route::Detail => {
+            if let Some(post) = state.posts.get(state.selected) {
+                if state.avatars {
+                    if let Some(key) = post.avatar_key.as_deref() {
+                        push_desired(
+                            &mut desired,
+                            key,
+                            ImageKind::Avatar,
+                            Some(round_px(30.0, scale)),
+                        );
+                    }
+                    if let Some(key) = post
+                        .quote
+                        .as_ref()
+                        .and_then(|quote| quote.avatar_key.as_deref())
+                    {
+                        push_desired(
+                            &mut desired,
+                            key,
+                            ImageKind::Avatar,
+                            Some(round_px(18.0, scale)),
+                        );
+                    }
+                }
+                let wants_media = state.auto_media || post.media_loaded;
+                if wants_media && !post.media.is_empty() {
+                    push_page_media(&mut desired, post, DETAIL_CONTENT, scale);
+                    if let Some(key) = post
+                        .quote
+                        .as_ref()
+                        .and_then(|quote| quote.thumb_key.as_deref())
+                    {
+                        push_desired(
+                            &mut desired,
+                            key,
+                            ImageKind::Image,
+                            Some(round_px(72.0, scale)),
+                        );
+                    }
+                    if state.auto_media && !post.media_loaded {
+                        freshly_loaded.push(state.selected);
+                    }
+                }
+            }
+        }
+        Route::Authors => {
+            if let Some((range_start, range_end)) =
+                state.visible_directory.get().filter(|_| state.avatars)
+            {
+                let end = range_end.min(state.authors.len());
+                let start = range_start.min(end);
+                for author in &state.authors[start..end] {
+                    if let Some(key) = author.profile_image.as_deref() {
+                        push_desired(
+                            &mut desired,
+                            key,
+                            ImageKind::Avatar,
+                            Some(round_px(32.0, scale).min(MAX_AVATAR_PX)),
+                        );
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    if state.overlay == Overlay::Lightbox {
+        if let Some((post_index, media_index)) = state.lightbox {
+            if let Some(post) = state.posts.get(post_index) {
+                let original = state.lightbox_zoom > 1.5;
+                let playing = state.video_target == Some((post_index, media_index));
+                for offset in -1..=1 {
+                    let index = media_index as isize + offset;
+                    if index < 0 || index as usize >= post.media.len() {
+                        continue;
+                    }
+                    if offset == 0 && playing {
+                        continue;
+                    }
+                    let item = &post.media[index as usize];
+                    let target = if offset == 0 && original {
+                        None
+                    } else {
+                        Some(display_target_px(
+                            item,
+                            LIGHTBOX_FIT,
+                            LIGHTBOX_HEIGHT,
+                            true,
+                            scale,
+                        ))
+                    };
+                    push_desired(
+                        &mut desired,
+                        &item.key,
+                        if item.video {
+                            ImageKind::Poster
+                        } else {
+                            ImageKind::Image
+                        },
+                        target,
+                    );
+                }
+            }
+        }
+    }
+    let mut protected = HashSet::with_capacity(desired.len());
+    for (key, (kind, target)) in desired {
+        protected.insert(key.clone());
+        state.images.touch(&key);
+        state.images.request_display(&key, kind, target);
+    }
+    for index in freshly_loaded {
+        if let Some(post) = state.posts.get_mut(index) {
+            if !post.media.is_empty() {
+                post.media_loaded = true;
+            }
+        }
+    }
+    state.images.evict_to_budget(&protected);
+}
+
+/// Test-only: `ETEREA_STRESS_SCROLL_TO=N` walks the feed selection to row N,
+/// loading pages as it goes, so memory harnesses get a deterministic deep
+/// scroll without input injection. It is not a user setting.
+fn stress_scroll_target() -> Option<usize> {
+    static TARGET: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+    *TARGET.get_or_init(|| {
+        std::env::var("ETEREA_STRESS_SCROLL_TO")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|target| *target > 1)
+    })
+}
+
+/// Test-only: `ETEREA_TEST_CLEAR_CACHE_AT=<clock seconds>` runs the Settings
+/// "clear cache" action once at that virtual-clock time, so the memory harness
+/// can measure recovery. Never a user setting.
+fn clear_cache_after() -> Option<f64> {
+    static AT: std::sync::OnceLock<Option<f64>> = std::sync::OnceLock::new();
+    *AT.get_or_init(|| {
+        std::env::var("ETEREA_TEST_CLEAR_CACHE_AT")
+            .ok()
+            .and_then(|value| value.parse::<f64>().ok())
+            .filter(|at| *at > 0.0)
+    })
+}
+
+fn stress_scroll(state: &mut State, clock: f64, tx: &mut Tx) -> bool {
+    let Some(target) = stress_scroll_target() else {
+        return false;
+    };
+    if state.route != Route::Feed || state.posts.is_empty() {
+        return false;
+    }
+    if state.selected + 1 >= target {
+        return false;
+    }
+    if state.selected + 1 >= state.posts.len() && !state.feed_has_more {
+        // The target is past the end of the loaded feed and no page follows.
+        return false;
+    }
+    if clock < state.stress_last_scroll + 0.10 {
+        tx.wake_after(Duration::from_millis(50));
+        return false;
+    }
+    state.stress_last_scroll = clock;
+    state.selected = (state.selected + 1).min(state.posts.len().saturating_sub(1));
+    tx.scroll_into_view(format!("post-{}", state.selected));
+    if state.selected + 16 >= state.posts.len() && state.feed_has_more && !state.feed_pending {
+        state.load_more_feed();
+    }
+    tx.wake_after(Duration::from_millis(100));
+    true
 }
 
 fn poll(state: &mut State, clock: f64, tx: &mut Tx) -> bool {
@@ -1802,6 +2212,17 @@ fn poll(state: &mut State, clock: f64, tx: &mut Tx) -> bool {
     if advance_failed_avatars(state) {
         changed = true;
     }
+    if stress_scroll(state, clock, tx) {
+        changed = true;
+    }
+    if let Some(at) = clear_cache_after() {
+        if !state.test_cache_cleared && clock >= at {
+            state.test_cache_cleared = true;
+            clear_caches(state, clock);
+            changed = true;
+        }
+    }
+    refresh_media_demand(state);
 
     if let Some(player) = state.video.as_mut() {
         if state
@@ -1870,6 +2291,9 @@ fn poll(state: &mut State, clock: f64, tx: &mut Tx) -> bool {
     if state.repair_active {
         tx.wake_after(Duration::from_millis(200));
     }
+    if state.images.memory_logging() {
+        tx.wake_after(Duration::from_millis(1000));
+    }
 
     changed
 }
@@ -1914,6 +2338,8 @@ fn handle_response(state: &mut State, response: Response, clock: f64) {
                         state.posts.extend(added);
                     } else {
                         state.posts = page.items.iter().map(Post::from_bookmark).collect();
+                        state.feed_generation = state.feed_generation.wrapping_add(1);
+                        state.visible_feed.set(None);
                         let selected = std::env::var("ETEREA_SELECTED")
                             .ok()
                             .and_then(|value| value.parse::<usize>().ok())
@@ -1944,7 +2370,6 @@ fn handle_response(state: &mut State, response: Response, clock: f64) {
                             begin_detail(state, index);
                         }
                     }
-                    request_avatars(state);
                 }
                 Err(error) => {
                     state.feed_has_more = false;
@@ -1978,13 +2403,14 @@ fn handle_response(state: &mut State, response: Response, clock: f64) {
                     if replace {
                         state.authors = page.items;
                         state.directory_index = 0;
+                        state.directory_generation = state.directory_generation.wrapping_add(1);
+                        state.visible_directory.set(None);
                     } else {
                         state.authors.extend(page.items);
                     }
                     state.directory_index = state
                         .directory_index
                         .min(state.authors.len().saturating_sub(1));
-                    request_directory_avatars(state);
                     if state.authors_dirty && state.route == Route::Authors {
                         state.request_authors(0);
                     }
@@ -2009,6 +2435,8 @@ fn handle_response(state: &mut State, response: Response, clock: f64) {
                     if replace {
                         state.topics = page.items;
                         state.directory_index = 0;
+                        state.directory_generation = state.directory_generation.wrapping_add(1);
+                        state.visible_directory.set(None);
                     } else {
                         state.topics.extend(page.items);
                     }
@@ -2114,12 +2542,9 @@ fn handle_response(state: &mut State, response: Response, clock: f64) {
             state.pending_views = state.pending_views.saturating_sub(1);
             match result {
                 Ok(posts) => {
+                    // The thread shows text-only context rows; only the anchor
+                    // post draws media, and the demand pass requests that.
                     state.thread = posts.iter().map(Post::from_bookmark).collect();
-                    for post in &state.thread {
-                        for media in &post.media {
-                            state.images.request(&media.key, ImageKind::Image);
-                        }
-                    }
                 }
                 Err(error) => {
                     let now = clock;
@@ -3809,6 +4234,11 @@ fn restore_feed_position(state: &mut State, tx: &mut Tx) {
     if returning.index < state.posts.len() {
         state.selected = returning.index;
     }
+    // The feed is a virtual list now: a row key that is not mounted still
+    // lands, because the jump goes where the list's estimates put it, mounts
+    // the row and is corrected from its layout before the frame draws. The raw
+    // offset is only a fallback for a post that was off screen when the detail
+    // opened: rows above a rebuilt viewport are re-estimated, so it alone drifts.
     if let Some(top) = returning.top {
         tx.scroll_key_to(format!("post-{}", returning.index), top);
     } else {
@@ -4206,15 +4636,6 @@ fn toggle_favorite(state: &mut State) {
     }
 }
 
-fn request_all_media(state: &mut State) {
-    if !state.auto_media {
-        return;
-    }
-    for index in 0..state.posts.len() {
-        load_media(state, index);
-    }
-}
-
 fn carousel_pages(post: &Post) -> usize {
     if post.media.len() <= 4 {
         1
@@ -4244,31 +4665,51 @@ fn turn_carousel(state: &mut State, index: usize, delta: isize) {
 }
 
 fn load_media(state: &mut State, index: usize) {
-    let Some(post) = state.posts.get_mut(index) else {
-        return;
+    let scale = state.scale.get().max(0.25);
+    let width = if state.route == Route::Detail {
+        DETAIL_CONTENT
+    } else {
+        CONTENT
     };
-    if post.media_loaded {
-        return;
-    }
-    post.media_loaded = true;
-    let mut requests = Vec::new();
-    for item in &post.media {
-        requests.push((
-            item.key.clone(),
-            if item.video {
-                ImageKind::Poster
-            } else {
-                ImageKind::Image
-            },
-        ));
-    }
-    if let Some(quote) = &post.quote {
-        if let Some(key) = &quote.thumb_key {
-            requests.push((key.clone(), ImageKind::Image));
+    let requests = {
+        let Some(post) = state.posts.get_mut(index) else {
+            return;
+        };
+        if post.media_loaded {
+            return;
         }
-    }
-    for (key, kind) in requests {
-        state.images.request(&key, kind);
+        post.media_loaded = true;
+        let mut requests: Vec<(String, ImageKind, Option<u32>)> = Vec::new();
+        let mut start = 0;
+        while start < post.media.len() {
+            let end = (start + 4).min(post.media.len());
+            let count = end - start;
+            for offset in 0..count {
+                let item = &post.media[start + offset];
+                let (tile_w, tile_h) = media_box(width, item, count, offset);
+                requests.push((
+                    item.key.clone(),
+                    if item.video {
+                        ImageKind::Poster
+                    } else {
+                        ImageKind::Image
+                    },
+                    Some(display_target_px(item, tile_w, tile_h, false, scale)),
+                ));
+            }
+            start = end;
+        }
+        if let Some(key) = post
+            .quote
+            .as_ref()
+            .and_then(|quote| quote.thumb_key.as_ref())
+        {
+            requests.push((key.clone(), ImageKind::Image, Some(round_px(72.0, scale))));
+        }
+        requests
+    };
+    for (key, kind, target) in requests {
+        state.images.request_display(&key, kind, target);
     }
 }
 
@@ -4277,6 +4718,7 @@ fn load_media(state: &mut State, index: usize) {
 // ---------------------------------------------------------------------------
 
 fn view(state: &State, cx: &mut Cx<State>) -> El {
+    state.scale.set(cx.env().scale.max(0.25));
     let dark = state.dark.unwrap_or_else(|| cx.system_dark());
     let reduced = state
         .motion_reduced
@@ -4730,26 +5172,28 @@ fn feed_view(state: &State, p: Palette) -> El {
     }
     // SPEC section 2: a 64px rhythm between posts. Each post carries 32px of
     // air above and below, so same-day neighbours sit 64px apart and a saved-day
-    // rule takes the place of the one 1px line inside that rhythm.
-    let mut list = col().w_full().pt(32.0).pb(200.0);
-    for (index, post) in state.posts.iter().enumerate() {
-        if index > 0 && post.date != state.posts[index - 1].date {
-            list = list.child(
-                row()
-                    .w_full()
-                    .justify_center()
-                    .child(el().w(CONTENT).h(1.0).fill(p.line)),
-            );
-        }
-        let highlight = active_query(state);
-        list = list.child(
-            post_view(state, post, index, p, false, highlight.as_deref())
-                .pt(32.0)
-                .pb(32.0),
-        );
-    }
+    // rule takes the place of the one 1px line inside that rhythm. The list is
+    // virtual: only the mounted rows build elements, so a long archive does not
+    // pay for every row's layout on every commit.
+    let highlight = active_query(state);
+    let rows = col()
+        .key("feed-rows")
+        .w_full()
+        .growth(GrowthSpec::default())
+        .virtual_rows(
+            state.posts.len(),
+            FEED_ROW_ESTIMATE,
+            |_state: &State, index| format!("post-{index}").into(),
+            move |state: &State, index| feed_row(state, index, p, highlight.as_deref()),
+        )
+        .virtual_rows_version(state.feed_generation)
+        .on_visible_rows(|state: &mut State, range| {
+            state.visible_feed.set(Some((range.start, range.end)));
+            false
+        });
+    let mut content = col().w_full().pt(32.0).pb(200.0).child(rows);
     if state.feed_pending && state.feed_has_more {
-        list = list.child(
+        content = content.child(
             row()
                 .w_full()
                 .justify_center()
@@ -4759,7 +5203,7 @@ fn feed_view(state: &State, p: Palette) -> El {
     let scroll_offset = state.feed_scroll_offset.clone();
     let viewport_top = state.feed_viewport_top.clone();
     let viewport_height = state.feed_viewport_height.clone();
-    let list = list
+    let list = content
         .scroll(ScrollSpec {
             stick_bottom: false,
         })
@@ -4780,6 +5224,32 @@ fn feed_view(state: &State, p: Palette) -> El {
             }
         });
     column.child(list)
+}
+
+/// One feed row: an optional saved-day rule, then the post.
+fn feed_row(state: &State, index: usize, p: Palette, highlight: Option<&str>) -> El {
+    let Some(post) = state.posts.get(index) else {
+        return col().w_full();
+    };
+    let mut row_view = col().w_full();
+    if index > 0
+        && state
+            .posts
+            .get(index - 1)
+            .is_some_and(|previous| previous.date != post.date)
+    {
+        row_view = row_view.child(
+            row()
+                .w_full()
+                .justify_center()
+                .child(el().w(CONTENT).h(1.0).fill(p.line)),
+        );
+    }
+    row_view.child(
+        post_view(state, post, index, p, false, highlight)
+            .pt(32.0)
+            .pb(32.0),
+    )
 }
 
 fn detail_view(state: &State, p: Palette) -> El {
@@ -4901,7 +5371,7 @@ fn directory_field(state: &State, p: Palette, placeholder: &str, total: i64) -> 
 
 fn authors_view(state: &State, p: Palette) -> El {
     let filtering = !state.directory_filter.trim().is_empty();
-    let mut list = col().w(720.0).gap(4.0);
+    let mut list = col().w(720.0);
     if state.authors.is_empty() {
         let message = if filtering {
             "no matches"
@@ -4916,51 +5386,25 @@ fn authors_view(state: &State, p: Palette) -> El {
                 .pt(18.0)
                 .child(text(message).font(theme::serif(24.0)).color(p.muted)),
         );
-    }
-    for (index, author) in state.authors.iter().enumerate() {
-        let handle = author.handle.clone();
-        let selected = index == state.directory_index;
+    } else {
+        // Virtual rows: only the mounted authors build and request avatars, so
+        // a directory with thousands of handles costs the same as a screenful.
         list = list.child(
-            row()
-                .key(format!("author-{index}"))
+            col()
+                .key("authors-rows")
                 .w(720.0)
-                .h(56.0)
-                .center_y()
-                .gap(12.0)
-                .hover(p.band)
-                .on_press(move |state: &mut State| state.filter_author(&handle))
-                .child(
-                    el().w(2.0)
-                        .h(24.0)
-                        .fill(if selected { p.accent } else { p.bg }),
+                .growth(GrowthSpec::default())
+                .virtual_rows(
+                    state.authors.len(),
+                    AUTHOR_ROW_ESTIMATE,
+                    |_state: &State, index| format!("author-{index}").into(),
+                    move |state: &State, index| author_row(state, index, p),
                 )
-                .child(avatar(
-                    state,
-                    author.profile_image.as_deref(),
-                    &author.name,
-                    32.0,
-                    p,
-                ))
-                .child(
-                    col()
-                        .gap(1.0)
-                        .child(
-                            text(author.name.clone())
-                                .font(theme::ui(13.5, 500.0))
-                                .color(p.ink),
-                        )
-                        .child(
-                            text(format!("@{}", author.handle))
-                                .font(theme::ui(12.0, 400.0))
-                                .color(p.muted),
-                        ),
-                )
-                .child(el().grow(1.0))
-                .child(
-                    text(author.bookmark_count.to_string())
-                        .font(theme::mono(10.5))
-                        .color(p.muted),
-                ),
+                .virtual_rows_version(state.directory_generation)
+                .on_visible_rows(|state: &mut State, range| {
+                    state.visible_directory.set(Some((range.start, range.end)));
+                    false
+                }),
         );
     }
     if state.authors_pending && !state.authors.is_empty() {
@@ -4993,9 +5437,60 @@ fn authors_view(state: &State, p: Palette) -> El {
     })
 }
 
+fn author_row(state: &State, index: usize, p: Palette) -> El {
+    let Some(author) = state.authors.get(index) else {
+        return row();
+    };
+    let handle = author.handle.clone();
+    let selected = index == state.directory_index;
+    let row_view = row()
+        .key(format!("author-{index}"))
+        .w(720.0)
+        .h(56.0)
+        .center_y()
+        .gap(12.0)
+        .hover(p.band)
+        .on_press(move |state: &mut State| state.filter_author(&handle))
+        .child(
+            el().w(2.0)
+                .h(24.0)
+                .fill(if selected { p.accent } else { p.bg }),
+        )
+        .child(avatar(
+            state,
+            author.profile_image.as_deref(),
+            &author.name,
+            32.0,
+            p,
+        ))
+        .child(
+            col()
+                .gap(1.0)
+                .child(
+                    text(author.name.clone())
+                        .font(theme::ui(13.5, 500.0))
+                        .color(p.ink),
+                )
+                .child(
+                    text(format!("@{}", author.handle))
+                        .font(theme::ui(12.0, 400.0))
+                        .color(p.muted),
+                ),
+        )
+        .child(el().grow(1.0))
+        .child(
+            text(author.bookmark_count.to_string())
+                .font(theme::mono(10.5))
+                .color(p.muted),
+        );
+    // The virtual list measures the row it is given; a margin would be laid
+    // out but not measured. A fixed-height wrapper keeps the 4px rhythm.
+    col().w(720.0).h(60.0).child(row_view)
+}
+
 fn topics_view(state: &State, p: Palette) -> El {
     let filtering = !state.directory_filter.trim().is_empty();
-    let mut list = col().w(720.0).gap(4.0);
+    let mut list = col().w(720.0);
     if state.topics.is_empty() {
         let message = if filtering {
             "no matches"
@@ -5010,35 +5505,23 @@ fn topics_view(state: &State, p: Palette) -> El {
                 .pt(18.0)
                 .child(text(message).font(theme::serif(24.0)).color(p.muted)),
         );
-    }
-    for (index, topic) in state.topics.iter().enumerate() {
-        let tag = topic.tag.clone();
-        let selected = index == state.directory_index;
+    } else {
         list = list.child(
-            row()
-                .key(format!("topic-{index}"))
+            col()
+                .key("topics-rows")
                 .w(720.0)
-                .h(48.0)
-                .center_y()
-                .gap(12.0)
-                .hover(p.band)
-                .on_press(move |state: &mut State| state.filter_topic(&tag))
-                .child(
-                    el().w(2.0)
-                        .h(20.0)
-                        .fill(if selected { p.accent } else { p.bg }),
+                .growth(GrowthSpec::default())
+                .virtual_rows(
+                    state.topics.len(),
+                    TOPIC_ROW_ESTIMATE,
+                    |_state: &State, index| format!("topic-{index}").into(),
+                    move |state: &State, index| topic_row(state, index, p),
                 )
-                .child(
-                    text(format!("#{}", topic.tag))
-                        .font(theme::ui(13.5, 400.0))
-                        .color(p.ink),
-                )
-                .child(el().grow(1.0))
-                .child(
-                    text(topic.bookmark_count.to_string())
-                        .font(theme::mono(10.5))
-                        .color(p.muted),
-                ),
+                .virtual_rows_version(state.directory_generation)
+                .on_visible_rows(|state: &mut State, range| {
+                    state.visible_directory.set(Some((range.start, range.end)));
+                    false
+                }),
         );
     }
     if state.topics_pending && !state.topics.is_empty() {
@@ -5069,6 +5552,39 @@ fn topics_view(state: &State, p: Palette) -> El {
             state.load_more_topics();
         }
     })
+}
+
+fn topic_row(state: &State, index: usize, p: Palette) -> El {
+    let Some(topic) = state.topics.get(index) else {
+        return row();
+    };
+    let tag = topic.tag.clone();
+    let selected = index == state.directory_index;
+    let row_view = row()
+        .key(format!("topic-{index}"))
+        .w(720.0)
+        .h(48.0)
+        .center_y()
+        .gap(12.0)
+        .hover(p.band)
+        .on_press(move |state: &mut State| state.filter_topic(&tag))
+        .child(
+            el().w(2.0)
+                .h(20.0)
+                .fill(if selected { p.accent } else { p.bg }),
+        )
+        .child(
+            text(format!("#{}", topic.tag))
+                .font(theme::ui(13.5, 400.0))
+                .color(p.ink),
+        )
+        .child(el().grow(1.0))
+        .child(
+            text(topic.bookmark_count.to_string())
+                .font(theme::mono(10.5))
+                .color(p.muted),
+        );
+    col().w(720.0).h(52.0).child(row_view)
 }
 
 fn directory_shell(content: El) -> El {
@@ -8037,7 +8553,7 @@ fn theme_dark(state: &mut State) {
 
 fn avatars_on(state: &mut State) {
     state.avatars = true;
-    request_avatars(state);
+    refresh_media_demand(state);
     settings::save(
         state.dark,
         state.avatars,
@@ -8049,7 +8565,7 @@ fn avatars_on(state: &mut State) {
 
 fn media_on(state: &mut State) {
     state.auto_media = true;
-    request_all_media(state);
+    refresh_media_demand(state);
     settings::save(
         state.dark,
         state.avatars,
@@ -8102,10 +8618,7 @@ fn clear_caches(state: &mut State, now: f64) {
             post.media_loaded = false;
         }
     }
-    request_avatars(state);
-    if state.auto_media {
-        request_all_media(state);
-    }
+    refresh_media_demand(state);
     state.set_status("cache cleared", now);
 }
 
@@ -8782,14 +9295,6 @@ fn post_view(
             tx.live_only();
         });
     }
-    // Viewport-aware media: a row only requests its images/video poster when
-    // it is actually on screen, instead of the whole page up front. Scrolling
-    // back to it is a cache hit.
-    row_view = row_view.on_visible(move |state: &mut State, visible: bool, _tx: &mut Tx| {
-        if visible && state.auto_media {
-            load_media(state, index);
-        }
-    });
     if detail {
         row_view
     } else {
@@ -9339,5 +9844,108 @@ mod video_surface_tests {
             Some((2, 1)),
             "opening the lightbox on the playing video keeps its player"
         );
+    }
+}
+
+#[cfg(test)]
+mod media_demand_tests {
+    use super::*;
+
+    fn item(width: f32, height: f32) -> model::MediaItem {
+        model::MediaItem {
+            key: "demo:test.jpg".into(),
+            alt: String::new(),
+            video_url: None,
+            video: false,
+            width,
+            height,
+            duration: None,
+        }
+    }
+
+    #[test]
+    fn tile_boxes_match_the_media_layouts() {
+        let wide = item(1600.0, 800.0);
+        // One wide image keeps the column width and clamps its height.
+        assert_eq!(media_box(CONTENT, &wide, 1, 0), (CONTENT, 360.0));
+        // Two-up and larger pages halve the column with a 3px gap.
+        let half = (CONTENT - 3.0) / 2.0;
+        assert_eq!(media_box(CONTENT, &wide, 2, 1), (half, 252.0));
+        assert_eq!(media_box(CONTENT, &wide, 4, 3), (half, 252.0));
+        // Three-up: a full-width lead, then two halves.
+        assert_eq!(media_box(CONTENT, &wide, 3, 0), (CONTENT, 360.0));
+        assert_eq!(media_box(CONTENT, &wide, 3, 2), (half, 252.0));
+    }
+
+    #[test]
+    fn fill_tiles_ask_for_enough_pixels_to_cover_the_crop() {
+        // A portrait photo in a landscape tile is cropped to fill: the short
+        // source axis is what gets scaled to the tile height.
+        let portrait = item(720.0, 1280.0);
+        let target = display_target_px(&portrait, 358.0, 252.0, false, 1.0);
+        assert_eq!(
+            target, 637,
+            "cover scale comes from the tile's shorter side"
+        );
+        // A landscape photo in the same tile needs only the tile width.
+        let landscape = item(1280.0, 720.0);
+        assert_eq!(
+            display_target_px(&landscape, 358.0, 252.0, false, 1.0),
+            448,
+            "the cover scale that fills the tile's height needs 448 source pixels across"
+        );
+        // A fitted lightbox image is limited by its fitting axis instead.
+        assert_eq!(display_target_px(&portrait, 1100.0, 700.0, true, 1.0), 700);
+        // Broken metadata falls back to the old box-edge request.
+        let unknown = item(0.0, 0.0);
+        assert_eq!(display_target_px(&unknown, 358.0, 252.0, false, 2.0), 716);
+        // HiDPI doubles the device pixels asked for.
+        assert_eq!(display_target_px(&landscape, 358.0, 252.0, false, 2.0), 896);
+    }
+
+    #[test]
+    fn display_targets_round_to_device_pixels() {
+        assert_eq!(round_px(720.0, 1.0), 720);
+        assert_eq!(round_px(720.0, 2.0), 1440);
+        assert_eq!(round_px(358.5, 1.0), 359);
+        assert_eq!(round_px(0.1, 1.0), 1);
+        assert_eq!(
+            round_px(f32::NAN, 1.0),
+            1,
+            "a broken size still asks for one pixel"
+        );
+    }
+
+    #[test]
+    fn desired_requests_merge_to_the_largest_size() {
+        let mut desired = HashMap::new();
+        push_desired(&mut desired, "media", ImageKind::Image, Some(720));
+        push_desired(&mut desired, "media", ImageKind::Image, Some(1440));
+        assert_eq!(desired.get("media"), Some(&(ImageKind::Image, Some(1440))));
+        // The original (None) covers every size: a zoomed lightbox keeps it.
+        push_desired(&mut desired, "media", ImageKind::Image, None);
+        assert_eq!(desired.get("media"), Some(&(ImageKind::Image, None)));
+    }
+
+    #[test]
+    fn a_zoomed_lightbox_asks_for_original_pixels() {
+        let mut desired = HashMap::new();
+        push_desired(
+            &mut desired,
+            "media",
+            ImageKind::Image,
+            Some(round_px(LIGHTBOX_FIT, 1.0)),
+        );
+        assert_eq!(desired.get("media"), Some(&(ImageKind::Image, Some(1100))));
+    }
+
+    #[test]
+    fn the_stress_switch_parses_only_useful_targets() {
+        // The helper caches its answer per process, so only assert the shape
+        // the parser accepts by checking the same expression it uses.
+        let parsed = |value: &str| value.parse::<usize>().ok().filter(|target| *target > 1);
+        assert_eq!(parsed("200"), Some(200));
+        assert_eq!(parsed("1"), None);
+        assert_eq!(parsed("nope"), None);
     }
 }

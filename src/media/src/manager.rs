@@ -11,7 +11,8 @@ use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
 use crate::cache::{CacheKey, CacheStats, DiskCache, DiskCacheConfig};
 use crate::error::MediaError;
 use crate::http::HttpClient;
-use crate::request::{ImageKind, ImageRequest, ImageSource, MediaEvent, RequestId};
+use crate::image_decode;
+use crate::request::{ImageKind, ImagePayload, ImageRequest, ImageSource, MediaEvent, RequestId};
 use crate::url::is_allowed_media_url;
 use crate::{
     DEFAULT_EVENT_BOUND, DEFAULT_QUEUE_BOUND, DEFAULT_WORKERS, HTTP_TIMEOUT, MAX_RESPONSE_BYTES,
@@ -166,7 +167,7 @@ impl MediaManager {
         })
     }
 
-    /// Enqueue an image request by id, URL and kind.
+    /// Enqueue an image request by id, URL and kind, keeping the encoded bytes.
     ///
     /// The URL is checked with [`crate::is_allowed_media_url`] before the
     /// request is queued. Returns [`MediaError::UnsafeUrl`] for a rejected URL,
@@ -174,18 +175,24 @@ impl MediaManager {
     /// [`MediaError::QueueFull`] when the bounded queue is full, and
     /// [`MediaError::Closed`] when the manager is shutting down.
     ///
-    /// This call never blocks on the network.
+    /// This call never blocks on the network. Pass a prepared
+    /// [`ImageRequest`] to [`Self::enqueue_image`] to request a display-size
+    /// decode instead.
     pub fn enqueue(
         &self,
         id: impl Into<RequestId>,
         url: impl Into<String>,
         kind: ImageKind,
     ) -> Result<(), MediaError> {
-        self.enqueue_request(ImageRequest::new(id, url, kind))
+        self.enqueue_image(ImageRequest::new(id, url, kind))
     }
 
-    /// Enqueue a prepared [`ImageRequest`]; the same as [`Self::enqueue`].
-    pub fn enqueue_request(&self, request: ImageRequest) -> Result<(), MediaError> {
+    /// Enqueue a prepared [`ImageRequest`], including its display target.
+    ///
+    /// The request owns the target size, so the worker can decode static
+    /// JPEG/PNG/WebP payloads at display size. Validation and error cases are
+    /// the same as [`Self::enqueue`].
+    pub fn enqueue_image(&self, request: ImageRequest) -> Result<(), MediaError> {
         if !is_allowed_media_url(&request.url) {
             return Err(MediaError::UnsafeUrl);
         }
@@ -206,6 +213,11 @@ impl MediaManager {
                 Err(MediaError::Closed)
             }
         }
+    }
+
+    /// Enqueue a prepared [`ImageRequest`]; alias of [`Self::enqueue_image`].
+    pub fn enqueue_request(&self, request: ImageRequest) -> Result<(), MediaError> {
+        self.enqueue_image(request)
     }
 
     /// Cancel an outstanding request.
@@ -398,11 +410,11 @@ fn worker_loop(
             continue;
         }
         let event = match outcome {
-            Ok((bytes, source)) => MediaEvent::ImageReady {
+            Ok((payload, source)) => MediaEvent::ImageReady {
                 id,
                 kind,
                 source,
-                bytes,
+                payload,
             },
             Err(MediaError::Cancelled) => continue,
             Err(error) => MediaEvent::ImageFailed { id, kind, error },
@@ -418,35 +430,46 @@ fn load(
     fetcher: &dyn Fetcher,
     cache: Option<&DiskCache>,
     max_response_bytes: usize,
-) -> Result<(Vec<u8>, ImageSource), MediaError> {
+) -> Result<(ImagePayload, ImageSource), MediaError> {
     // Defense in depth: the URL was validated at enqueue, but the policy is
     // cheap and the worker is the last place before a socket is opened.
     if !is_allowed_media_url(&job.request.url) {
         return Err(MediaError::UnsafeUrl);
     }
+    // The cache identity is the kind and URL only: it stores the raw encoded
+    // response, and the display target is applied per request below.
     let key = CacheKey::for_request(job.request.kind, &job.request.url);
-    if let Some(cache) = cache {
-        if let Some(bytes) = cache.get(&key) {
-            return Ok((bytes, ImageSource::DiskCache));
+    let (bytes, source) = if let Some(bytes) = cache.and_then(|cache| cache.get(&key)) {
+        (bytes, ImageSource::DiskCache)
+    } else {
+        let bytes = fetcher.fetch(&job.request, &job.cancel, max_response_bytes)?;
+        if bytes.is_empty() {
+            return Err(MediaError::EmptyResponse);
         }
+        if let Some(cache) = cache {
+            // Best effort: a cache write failure never fails a fetch.
+            cache.insert(&key, &bytes);
+        }
+        (bytes, ImageSource::Network)
+    };
+    // Decoding is the expensive part: skip it when the request was cancelled
+    // while fetching, and let the resized-or-encoded decision never fail the
+    // request.
+    if job.cancel.load(Ordering::SeqCst) {
+        return Err(MediaError::Cancelled);
     }
-    let bytes = fetcher.fetch(&job.request, &job.cancel, max_response_bytes)?;
-    if bytes.is_empty() {
-        return Err(MediaError::EmptyResponse);
-    }
-    if let Some(cache) = cache {
-        // Best effort: a cache write failure never fails a fetch.
-        cache.insert(&key, &bytes);
-    }
-    Ok((bytes, ImageSource::Network))
+    let payload = image_decode::payload_for_display(bytes, job.request.target);
+    Ok((payload, source))
 }
 
 #[cfg(test)]
 mod tests {
     use super::{Fetcher, MediaManager, MediaManagerConfig};
     use crate::cache::{CacheKey, DiskCache, DiskCacheConfig};
-    use crate::request::{ImageKind, ImageRequest, ImageSource, MediaEvent, RequestId};
-    use crate::test_support::ScratchDir;
+    use crate::request::{
+        ImageKind, ImagePayload, ImageRequest, ImageSource, MediaEvent, RequestId,
+    };
+    use crate::test_support::{png_bytes, ScratchDir};
     use crate::{MediaError, MAX_WORKERS};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc::{channel, Receiver, Sender};
@@ -547,7 +570,7 @@ mod tests {
         id: RequestId,
         kind: ImageKind,
         source: ImageSource,
-        bytes: Vec<u8>,
+        payload: ImagePayload,
     }
 
     fn expect_ready(event: MediaEvent) -> Ready {
@@ -556,14 +579,42 @@ mod tests {
                 id,
                 kind,
                 source,
-                bytes,
+                payload,
             } => Ready {
                 id,
                 kind,
                 source,
-                bytes,
+                payload,
             },
             other => panic!("expected image ready, got {other:?}"),
+        }
+    }
+
+    fn encoded_bytes(payload: &ImagePayload) -> Vec<u8> {
+        match payload {
+            ImagePayload::Encoded { bytes, .. } => bytes.clone(),
+            other => panic!("expected encoded payload, got {other:?}"),
+        }
+    }
+
+    fn encoded_estimate(payload: &ImagePayload) -> u64 {
+        match payload {
+            ImagePayload::Encoded {
+                estimated_decoded_bytes,
+                ..
+            } => *estimated_decoded_bytes,
+            other => panic!("expected encoded payload, got {other:?}"),
+        }
+    }
+
+    fn rgba_payload(payload: &ImagePayload) -> (u32, u32, Vec<u8>) {
+        match payload {
+            ImagePayload::Rgba {
+                width,
+                height,
+                bytes,
+            } => (*width, *height, bytes.clone()),
+            other => panic!("expected decoded rgba payload, got {other:?}"),
         }
     }
 
@@ -589,7 +640,10 @@ mod tests {
         assert_eq!(ready.id, RequestId(1));
         assert_eq!(ready.kind, ImageKind::Avatar);
         assert_eq!(ready.source, ImageSource::Network);
-        assert_eq!(ready.bytes, b"https://pbs.twimg.com/media/a.jpg");
+        assert_eq!(
+            encoded_bytes(&ready.payload),
+            b"https://pbs.twimg.com/media/a.jpg"
+        );
         assert_eq!(fetcher.calls(), 1);
         assert_eq!(manager.pending(), 0);
         assert_eq!(manager.try_recv(), None);
@@ -742,10 +796,16 @@ mod tests {
         release.send(()).expect("release c");
         let first = expect_ready(next_event(&manager));
         assert_eq!(first.id, RequestId(1));
-        assert_eq!(first.bytes, b"https://pbs.twimg.com/media/a.jpg");
+        assert_eq!(
+            encoded_bytes(&first.payload),
+            b"https://pbs.twimg.com/media/a.jpg"
+        );
         let second = expect_ready(next_event(&manager));
         assert_eq!(second.id, RequestId(2));
-        assert_eq!(second.bytes, b"https://pbs.twimg.com/media/c.jpg");
+        assert_eq!(
+            encoded_bytes(&second.payload),
+            b"https://pbs.twimg.com/media/c.jpg"
+        );
         assert_eq!(manager.try_recv(), None);
         assert_eq!(
             fetcher.calls(),
@@ -821,7 +881,7 @@ mod tests {
             .expect("enqueue");
         let ready = expect_ready(next_event(&manager));
         assert_eq!(ready.source, ImageSource::DiskCache);
-        assert_eq!(ready.bytes, b"cached bytes");
+        assert_eq!(encoded_bytes(&ready.payload), b"cached bytes");
         assert_eq!(fetcher.calls(), 0);
     }
 
@@ -873,7 +933,7 @@ mod tests {
             .expect("enqueue");
         let ready = expect_ready(next_event(&manager));
         assert_eq!(ready.source, ImageSource::Network);
-        assert_eq!(ready.bytes, b"network bytes");
+        assert_eq!(encoded_bytes(&ready.payload), b"network bytes");
         let stats = manager.cache_stats().expect("cache stats");
         assert_eq!(stats.entries, 1);
         assert!(stats.bytes > 0);
@@ -958,6 +1018,101 @@ mod tests {
         let (id, error) = expect_failed(next_event(&manager));
         assert_eq!(id, RequestId(4));
         assert_eq!(error, MediaError::EmptyResponse);
+        assert_eq!(manager.pending(), 0);
+    }
+
+    #[test]
+    fn worker_decodes_static_images_at_the_requested_target() {
+        let source = png_bytes(8, 4, [10, 20, 30, 200]);
+        let fetcher = FakeFetcher::new(Box::new(move |_| Ok(source.clone())));
+        let manager = manager_with(Arc::clone(&fetcher), test_config());
+        manager
+            .enqueue_image(
+                ImageRequest::new(
+                    5_u64,
+                    "https://pbs.twimg.com/media/sized.png",
+                    ImageKind::Image,
+                )
+                .with_target(4),
+            )
+            .expect("enqueue");
+        let ready = expect_ready(next_event(&manager));
+        assert_eq!(ready.source, ImageSource::Network);
+        let (width, height, bytes) = rgba_payload(&ready.payload);
+        assert_eq!((width, height), (4, 2));
+        assert_eq!(bytes.len(), 4 * 2 * 4);
+    }
+
+    #[test]
+    fn worker_keeps_encoded_bytes_without_a_target() {
+        let source = png_bytes(8, 4, [0, 0, 0, 255]);
+        let expected = source.clone();
+        let fetcher = FakeFetcher::new(Box::new(move |_| Ok(source.clone())));
+        let manager = manager_with(Arc::clone(&fetcher), test_config());
+        manager
+            .enqueue(
+                6_u64,
+                "https://pbs.twimg.com/media/original.png",
+                ImageKind::Poster,
+            )
+            .expect("enqueue");
+        let ready = expect_ready(next_event(&manager));
+        assert!(ready.payload.is_encoded());
+        assert_eq!(encoded_bytes(&ready.payload), expected);
+        assert_eq!(encoded_estimate(&ready.payload), 8 * 4 * 4);
+    }
+
+    #[test]
+    fn the_cache_identity_ignores_the_display_target() {
+        let scratch = ScratchDir::new("manager-cache-target");
+        let url = "https://pbs.twimg.com/media/targeted.png";
+        let source = png_bytes(8, 4, [0, 0, 0, 255]);
+        let source_len = source.len();
+        let fetcher = FakeFetcher::new(Box::new(move |_| Ok(source.clone())));
+        let config = test_config().with_cache(DiskCacheConfig::new(scratch.path()));
+        let manager = manager_with(Arc::clone(&fetcher), config);
+
+        manager
+            .enqueue_image(ImageRequest::new(1_u64, url, ImageKind::Image).with_target(4))
+            .expect("enqueue resized");
+        let ready = expect_ready(next_event(&manager));
+        assert_eq!(rgba_payload(&ready.payload).0, 4);
+
+        manager
+            .enqueue_image(ImageRequest::new(2_u64, url, ImageKind::Image))
+            .expect("enqueue original");
+        let ready = expect_ready(next_event(&manager));
+        assert_eq!(ready.source, ImageSource::DiskCache);
+        assert_eq!(encoded_bytes(&ready.payload).len(), source_len);
+        assert_eq!(fetcher.calls(), 1, "both targets reuse one raw cache entry");
+    }
+
+    #[test]
+    fn cancelled_target_request_never_emits_a_payload() {
+        let source = png_bytes(8, 4, [0, 0, 0, 255]);
+        let (fetcher, release, started) = blocking_setup(Box::new(move |_| Ok(source.clone())));
+        let manager = manager_with(Arc::clone(&fetcher), test_config());
+        manager
+            .enqueue_image(
+                ImageRequest::new(
+                    7_u64,
+                    "https://pbs.twimg.com/media/cancel.png",
+                    ImageKind::Image,
+                )
+                .with_target(4),
+            )
+            .expect("enqueue");
+        assert_eq!(
+            started.recv_timeout(Duration::from_secs(5)).unwrap(),
+            RequestId(7)
+        );
+        assert!(manager.cancel(7_u64));
+        release.send(()).expect("release cancelled fetch");
+        assert_eq!(
+            manager.try_recv(),
+            None,
+            "a cancelled request must not emit a decoded payload"
+        );
         assert_eq!(manager.pending(), 0);
     }
 

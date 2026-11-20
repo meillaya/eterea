@@ -969,6 +969,7 @@ dependencies = [
  "anyhow",
  "crossbeam-channel",
  "eterea-logic",
+ "image",
  "serde_json",
  "ureq",
 ]

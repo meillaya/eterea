@@ -4,6 +4,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod image_budget;
+
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 /// Byte ranges of plain-text links, hashtags and mentions, in source order.
